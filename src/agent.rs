@@ -35,7 +35,7 @@ impl AgentSpawner {
                     "hooks": [{
                         "type": "command",
                         "command": format!(
-                            "hive log-tool --run {run_id} --agent {agent_id} --tool $TOOL_NAME --status $TOOL_STATUS"
+                            "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
                         )
                     }]
                 }]
