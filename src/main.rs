@@ -48,6 +48,7 @@ fn main() {
         Commands::Summary { run } => cmd_summary(run),
         Commands::History => cmd_history(),
         Commands::Stop => cmd_stop(),
+        Commands::Watch { interval } => cmd_watch(interval),
     };
 
     if let Err(e) = result {
@@ -683,6 +684,114 @@ fn cmd_history() -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn cmd_watch(interval: u64) -> Result<(), String> {
+    loop {
+        // Clear screen
+        print!("\x1b[2J\x1b[H");
+
+        let now = chrono::Utc::now();
+        println!(
+            "=== Hive Watch (every {}s) === {}",
+            interval,
+            now.format("%H:%M:%S")
+        );
+        println!();
+
+        let state = HiveState::discover()?;
+        let run_id = state.active_run_id()?;
+        let meta = state.load_run_metadata(&run_id)?;
+        let agents = state.list_agents(&run_id)?;
+        let tasks = state.list_tasks(&run_id)?;
+        let queue = state.load_merge_queue(&run_id)?;
+
+        // Duration
+        let elapsed = chrono::Utc::now() - meta.created_at;
+        let total_secs = elapsed.num_seconds().max(0);
+        let mins = total_secs / 60;
+        let secs = total_secs % 60;
+
+        println!("Run: {} ({:?}, {}m {}s)", run_id, meta.status, mins, secs);
+
+        // Agent counts by status
+        let count_agents =
+            |s: types::AgentStatus| agents.iter().filter(|a| a.status == s).count();
+        let mut agent_parts = vec![];
+        for (status, label) in [
+            (types::AgentStatus::Running, "running"),
+            (types::AgentStatus::Idle, "idle"),
+            (types::AgentStatus::Done, "done"),
+            (types::AgentStatus::Failed, "failed"),
+            (types::AgentStatus::Stalled, "stalled"),
+        ] {
+            let c = count_agents(status);
+            if c > 0 {
+                agent_parts.push(format!("{c} {label}"));
+            }
+        }
+        println!(
+            "Agents: {}",
+            if agent_parts.is_empty() {
+                "none".to_string()
+            } else {
+                agent_parts.join(" · ")
+            }
+        );
+
+        // Task counts by status
+        let count_tasks =
+            |s: types::TaskStatus| tasks.iter().filter(|t| t.status == s).count();
+        let mut task_parts = vec![];
+        for (status, label) in [
+            (types::TaskStatus::Active, "active"),
+            (types::TaskStatus::Pending, "pending"),
+            (types::TaskStatus::Review, "review"),
+            (types::TaskStatus::Merged, "merged"),
+            (types::TaskStatus::Failed, "failed"),
+        ] {
+            let c = count_tasks(status);
+            if c > 0 {
+                task_parts.push(format!("{c} {label}"));
+            }
+        }
+        println!(
+            "Tasks:  {}",
+            if task_parts.is_empty() {
+                "none".to_string()
+            } else {
+                task_parts.join(" · ")
+            }
+        );
+
+        println!("Queue:  {} entries", queue.entries.len());
+
+        // Recent messages
+        println!();
+        println!("--- Recent Activity ---");
+        let messages = state.list_messages(&run_id)?;
+        let recent: Vec<_> = messages.iter().rev().take(5).collect();
+        if recent.is_empty() {
+            println!("  (no messages)");
+        } else {
+            for msg in recent.iter().rev() {
+                let body = if msg.body.len() > 80 {
+                    &msg.body[..80]
+                } else {
+                    &msg.body
+                };
+                println!(
+                    "  [{}] {} -> {}: {}",
+                    msg.timestamp.format("%H:%M:%S"),
+                    msg.from,
+                    msg.to,
+                    body
+                );
+            }
+        }
+
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+    }
 }
 
 fn cmd_stop() -> Result<(), String> {

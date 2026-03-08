@@ -127,4 +127,11 @@ pub enum Commands {
 
     /// Stop the current run and clean up worktrees
     Stop,
+
+    /// Watch run status with periodic refresh
+    Watch {
+        /// Refresh interval in seconds (default 10)
+        #[arg(long, default_value = "10")]
+        interval: u64,
+    },
 }
