@@ -9,6 +9,7 @@ pub struct HiveConfig {
     pub stall_timeout_seconds: i64,
     pub verify_command: Option<String>,
     pub max_retries: u32,
+    pub budget_usd: Option<f64>,
 }
 
 impl Default for HiveConfig {
@@ -17,6 +18,7 @@ impl Default for HiveConfig {
             stall_timeout_seconds: 300,
             verify_command: None,
             max_retries: 2,
+            budget_usd: None,
         }
     }
 }
@@ -96,6 +98,11 @@ impl HiveState {
                 && let Ok(v) = value.trim().parse::<u32>()
             {
                 config.max_retries = v;
+            }
+            if let Some(value) = line.strip_prefix("budget_usd:")
+                && let Ok(v) = value.trim().parse::<f64>()
+            {
+                config.budget_usd = Some(v);
             }
             if let Some(value) = line.strip_prefix("verify_command:") {
                 let value = value.trim();
@@ -394,6 +401,17 @@ impl HiveState {
             cost_usd,
             session_duration_secs,
         })
+    }
+
+    // --- Cost ---
+
+    pub fn total_run_cost(&self, run_id: &str) -> f64 {
+        let agents = self.list_agents(run_id).unwrap_or_default();
+        agents
+            .iter()
+            .filter_map(|a| self.load_agent_cost(run_id, &a.id))
+            .map(|c| c.cost_usd)
+            .sum()
     }
 
     // --- Worktree path ---
