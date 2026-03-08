@@ -75,11 +75,19 @@ impl AgentSpawner {
         fs::write(worktree_path.join("CLAUDE.local.md"), &prompt).map_err(|e| e.to_string())?;
 
         // Step 5: Launch claude code process
+        let agent_output_dir = state.agents_dir(run_id).join(agent_id);
+        fs::create_dir_all(&agent_output_dir).map_err(|e| e.to_string())?;
+        let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
+            .map_err(|e| format!("Failed to create output file: {e}"))?;
+
         let child = Command::new("claude")
-            .arg("--print")
-            .arg("--dangerously-skip-permissions")
+            .arg("-p")
             .arg(&prompt)
+            .arg("--output-format")
+            .arg("json")
+            .arg("--dangerously-skip-permissions")
             .current_dir(&worktree_path)
+            .stdout(output_file)
             .spawn()
             .map_err(|e| format!("Failed to launch claude: {e}"))?;
 
@@ -92,9 +100,9 @@ impl AgentSpawner {
             pid: Some(child.id()),
             worktree: Some(worktree_path.to_string_lossy().to_string()),
             heartbeat: Some(Utc::now()),
-            task_id: None,
             session_id: None,
             last_completed_at: None,
+            task_id: None,
         };
         state.save_agent(run_id, &agent)?;
 
@@ -172,11 +180,14 @@ Parent: {}
 - Send workers back with feedback if changes are needed.
 - Submit approved branches to the merge queue via hive_submit_to_queue.
 - Report progress to the coordinator via hive_send_message.
+- When you have no more actions to take, finish your response.
+  You will be resumed when workers complete or the coordinator sends a message.
 
 ## Constraints
 - You may only spawn workers, not other leads.
 - You may only send messages to your workers and the coordinator.
 - Do not process the merge queue — the coordinator handles that.
+- When you have nothing to do, stop and wait to be resumed. Do not loop.
 "#,
                 parent.unwrap_or("coordinator")
             ),
@@ -195,12 +206,14 @@ Parent: {}
 - When done, call hive_update_task to set status to "review".
 - If you discover an unrelated bug or issue, call hive_create_task
   with urgency and a description. It will be routed to your lead.
+- When finished, stop. Your lead will resume you if changes are needed.
 
 ## Constraints
 - Do not spawn other agents.
 - Do not submit to the merge queue directly.
 - Do not send messages to agents other than your lead.
 - Stay focused on your assigned task.
+- When done, stop and wait. Do not loop.
 "#,
                 parent.unwrap_or("unknown")
             ),
