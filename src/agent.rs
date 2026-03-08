@@ -340,4 +340,20 @@ mod tests {
     fn is_alive_returns_false_for_bogus_pid() {
         assert!(!AgentSpawner::is_alive(99999999));
     }
+
+    #[test]
+    #[allow(clippy::zombie_processes)] // Intentionally creating a zombie to test reaping
+    fn is_alive_reaps_zombie_child() {
+        // Spawn a child that exits immediately, creating a zombie
+        let child = std::process::Command::new("true")
+            .spawn()
+            .expect("failed to spawn 'true'");
+        let pid = child.id();
+
+        // Wait briefly for the child to exit and become a zombie
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // is_alive should reap the zombie and return false
+        assert!(!AgentSpawner::is_alive(pid));
+    }
 }
