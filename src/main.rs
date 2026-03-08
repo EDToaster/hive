@@ -72,7 +72,18 @@ fn cmd_init() -> Result<(), String> {
     fs::create_dir_all(hive_dir.join("runs")).map_err(|e| e.to_string())?;
 
     // Write default config
-    let config = "# Hive configuration\nstall_timeout_seconds: 300\n";
+    let config = "# Hive configuration\n\
+        # How long (seconds) before an agent with no heartbeat is considered stalled\n\
+        stall_timeout_seconds: 300\n\
+        \n\
+        # Maximum retry attempts for failed agents\n\
+        max_retries: 2\n\
+        \n\
+        # Command to run for verification after merges (uncomment to enable)\n\
+        # verify_command: \"cargo test --all-targets && cargo clippy --all-targets -- -D warnings\"\n\
+        \n\
+        # Maximum budget in USD for a single run (uncomment to enable)\n\
+        # budget_usd: 50.0\n";
     fs::write(hive_dir.join("config.yaml"), config).map_err(|e| e.to_string())?;
 
     println!("Initialized .hive/ in {}", cwd.display());
@@ -166,23 +177,84 @@ fn cmd_status() -> Result<(), String> {
     let agents = state.list_agents(&run_id)?;
     let tasks = state.list_tasks(&run_id)?;
     let queue = state.load_merge_queue(&run_id)?;
+    let meta = state.load_run_metadata(&run_id)?;
 
-    println!("Run: {run_id}");
-    println!("Agents: {} total", agents.len());
-    for agent in &agents {
-        println!("  {} ({:?}) - {:?}", agent.id, agent.role, agent.status);
-    }
-    println!("Tasks: {} total", tasks.len());
-    let by_status = |s: types::TaskStatus| tasks.iter().filter(|t| t.status == s).count();
+    // ANSI color codes
+    const GREEN: &str = "\x1b[32m";
+    const YELLOW: &str = "\x1b[33m";
+    const RED: &str = "\x1b[31m";
+    const CYAN: &str = "\x1b[36m";
+    const BOLD: &str = "\x1b[1m";
+    const RESET: &str = "\x1b[0m";
+
+    // Duration
+    let elapsed = chrono::Utc::now() - meta.created_at;
+    let total_seconds = elapsed.num_seconds().max(0);
+    let minutes = total_seconds / 60;
+    let secs = total_seconds % 60;
+    let status_str = format!("{:?}", meta.status).to_lowercase();
+
     println!(
-        "  pending={} active={} review={} merged={} failed={}",
-        by_status(types::TaskStatus::Pending),
-        by_status(types::TaskStatus::Active),
-        by_status(types::TaskStatus::Review),
-        by_status(types::TaskStatus::Merged),
-        by_status(types::TaskStatus::Failed),
+        "{BOLD}Run:{RESET} {CYAN}{run_id}{RESET} ({status_str}, {minutes}m {secs}s)"
     );
-    println!("Merge queue: {} entries", queue.entries.len());
+
+    // Agent counts by status
+    let agent_count = |s: types::AgentStatus| agents.iter().filter(|a| a.status == s).count();
+    let mut agent_parts: Vec<String> = Vec::new();
+    for (status, label, color) in [
+        (types::AgentStatus::Running, "running", GREEN),
+        (types::AgentStatus::Idle, "idle", YELLOW),
+        (types::AgentStatus::Done, "done", RESET),
+        (types::AgentStatus::Failed, "failed", RED),
+        (types::AgentStatus::Stalled, "stalled", RED),
+    ] {
+        let count = agent_count(status);
+        if count > 0 {
+            agent_parts.push(format!("{color}{count} {label}{RESET}"));
+        }
+    }
+    println!(
+        "{BOLD}Agents:{RESET} {}",
+        if agent_parts.is_empty() {
+            "0".to_string()
+        } else {
+            agent_parts.join(" · ")
+        }
+    );
+
+    // Task counts by status
+    let task_count = |s: types::TaskStatus| tasks.iter().filter(|t| t.status == s).count();
+    let mut task_parts: Vec<String> = Vec::new();
+    for (status, label, color) in [
+        (types::TaskStatus::Active, "active", GREEN),
+        (types::TaskStatus::Pending, "pending", YELLOW),
+        (types::TaskStatus::Blocked, "blocked", YELLOW),
+        (types::TaskStatus::Review, "review", YELLOW),
+        (types::TaskStatus::Approved, "approved", GREEN),
+        (types::TaskStatus::Queued, "queued", YELLOW),
+        (types::TaskStatus::Merged, "merged", RESET),
+        (types::TaskStatus::Failed, "failed", RED),
+    ] {
+        let count = task_count(status);
+        if count > 0 {
+            task_parts.push(format!("{color}{count} {label}{RESET}"));
+        }
+    }
+    println!(
+        "{BOLD}Tasks:{RESET}  {}",
+        if task_parts.is_empty() {
+            "0".to_string()
+        } else {
+            task_parts.join(" · ")
+        }
+    );
+
+    // Merge queue
+    let queue_len = queue.entries.len();
+    println!(
+        "{BOLD}Queue:{RESET}  {queue_len} {}",
+        if queue_len == 1 { "entry" } else { "entries" }
+    );
 
     Ok(())
 }
