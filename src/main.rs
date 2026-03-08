@@ -32,6 +32,7 @@ fn main() {
             status,
             duration,
         } => cmd_log_tool(&run, &agent, &tool, &status, duration),
+        Commands::Heartbeat { run, agent } => cmd_heartbeat(&run, &agent),
         Commands::Logs { agent } => cmd_logs(agent),
         Commands::Tui => cmd_tui(),
         Commands::Mcp { run, agent } => cmd_mcp(&run, &agent),
@@ -307,6 +308,11 @@ fn cmd_log_tool(
         duration,
     )?;
     Ok(())
+}
+
+fn cmd_heartbeat(run_id: &str, agent_id: &str) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    state.update_agent_heartbeat(run_id, agent_id)
 }
 
 fn cmd_logs(agent_filter: Option<String>) -> Result<(), String> {

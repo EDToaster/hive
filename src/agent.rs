@@ -32,12 +32,20 @@ impl AgentSpawner {
             "hooks": {
                 "PostToolUse": [{
                     "matcher": "",
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!(
-                            "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
-                        )
-                    }]
+                    "hooks": [
+                        {
+                            "type": "command",
+                            "command": format!(
+                                "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
+                            )
+                        },
+                        {
+                            "type": "command",
+                            "command": format!(
+                                "hive heartbeat --run {run_id} --agent {agent_id}"
+                            )
+                        }
+                    ]
                 }]
             }
         });

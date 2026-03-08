@@ -55,6 +55,14 @@ pub enum Commands {
         duration: Option<i64>,
     },
 
+    /// Update an agent's heartbeat timestamp (called by agent hooks)
+    Heartbeat {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        agent: String,
+    },
+
     /// Query the event log
     Logs {
         /// Filter by agent
