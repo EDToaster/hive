@@ -115,6 +115,16 @@ pub enum Commands {
         stop_hook: bool,
     },
 
+    /// Show run summary (cost, agents, tasks, merged commits)
+    Summary {
+        /// Run ID (defaults to active run)
+        #[arg(long)]
+        run: Option<String>,
+    },
+
+    /// List all past runs
+    History,
+
     /// Stop the current run and clean up worktrees
     Stop,
 }

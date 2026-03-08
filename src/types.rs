@@ -134,6 +134,16 @@ pub enum RunStatus {
     Failed,
 }
 
+// --- Cost Tracking ---
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct AgentCost {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: f64,
+    pub session_duration_secs: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

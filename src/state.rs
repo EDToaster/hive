@@ -341,6 +341,61 @@ impl HiveState {
         serde_json::from_str(&data).map_err(|e| format!("Run {run_id}: {e}"))
     }
 
+    pub fn save_run_metadata(&self, run_id: &str, metadata: &RunMetadata) -> Result<(), String> {
+        let path = self.run_dir(run_id).join("run.json");
+        let json = serde_json::to_string_pretty(metadata).map_err(|e| e.to_string())?;
+        atomic_write(&path, &json)
+    }
+
+    pub fn list_runs(&self) -> Result<Vec<RunMetadata>, String> {
+        let runs_dir = self.runs_dir();
+        if !runs_dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut runs = Vec::new();
+        for entry in fs::read_dir(&runs_dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.path().is_dir() {
+                let run_json = entry.path().join("run.json");
+                if run_json.exists() {
+                    let data = fs::read_to_string(&run_json).map_err(|e| e.to_string())?;
+                    if let Ok(meta) = serde_json::from_str::<RunMetadata>(&data) {
+                        runs.push(meta);
+                    }
+                }
+            }
+        }
+        runs.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(runs)
+    }
+
+    pub fn load_agent_cost(&self, run_id: &str, agent_id: &str) -> Option<AgentCost> {
+        let output_path = self
+            .agents_dir(run_id)
+            .join(agent_id)
+            .join("output.json");
+        let data = fs::read_to_string(&output_path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+
+        let input_tokens = json.get("num_input_tokens")?.as_u64()?;
+        let output_tokens = json.get("num_output_tokens")?.as_u64()?;
+        let session_duration_secs = json
+            .get("session_duration_seconds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+
+        // Claude Opus pricing: $15/M input, $75/M output
+        let cost_usd =
+            (input_tokens as f64 * 15.0 / 1_000_000.0) + (output_tokens as f64 * 75.0 / 1_000_000.0);
+
+        Some(AgentCost {
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            session_duration_secs,
+        })
+    }
+
     // --- Worktree path ---
 
     pub fn worktrees_dir(&self, run_id: &str) -> PathBuf {
