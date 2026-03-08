@@ -38,6 +38,7 @@ fn main() {
         Commands::Tui => cmd_tui(),
         Commands::Mcp { run, agent } => cmd_mcp(&run, &agent),
         Commands::Wait { run, timeout } => cmd_wait(run, timeout),
+        Commands::ReviewAgent { agent_id, run } => cmd_review_agent(&agent_id, run),
         Commands::Stop => cmd_stop(),
     };
 
@@ -378,6 +379,53 @@ fn cmd_wait(run: Option<String>, timeout: u64) -> Result<(), String> {
         timeout,
     ))?;
     println!("{result}");
+    Ok(())
+}
+
+fn cmd_review_agent(agent_id: &str, run: Option<String>) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let run_id = match run {
+        Some(r) => r,
+        None => state.active_run_id()?,
+    };
+    let agent = state.load_agent(&run_id, agent_id)?;
+
+    if agent.status == types::AgentStatus::Running {
+        return Err("Cannot review a running agent.".into());
+    }
+
+    let worktree = agent
+        .worktree
+        .as_deref()
+        .ok_or("Agent has no worktree.")?;
+    let wt_path = std::path::Path::new(worktree);
+    if !wt_path.exists() {
+        return Err("Agent worktree no longer exists.".into());
+    }
+
+    // Auto-commit any uncommitted work
+    let status = crate::git::Git::status_porcelain(wt_path).unwrap_or_default();
+    if !status.is_empty() {
+        let _ = crate::git::Git::add_all(wt_path);
+        let _ = crate::git::Git::commit(wt_path, "wip: salvaged by coordinator");
+        println!("Auto-committed uncommitted changes.");
+    }
+
+    let branch = format!("hive/{run_id}/{agent_id}");
+    let commits = crate::git::Git::log_oneline_since(wt_path, "main")
+        .unwrap_or_else(|_| "(no commits)".to_string());
+    let diff_stat = crate::git::Git::diff_stat_since(wt_path, "main")
+        .unwrap_or_else(|_| "(no diff)".to_string());
+
+    println!("Agent:  {}", agent.id);
+    println!("Role:   {:?}", agent.role);
+    println!("Status: {:?}", agent.status);
+    println!("Branch: {branch}");
+    if let Some(tid) = &agent.task_id {
+        println!("Task:   {tid}");
+    }
+    println!("\n--- Commits ---\n{commits}");
+    println!("\n--- Diff Stat ---\n{diff_stat}");
     Ok(())
 }
 
