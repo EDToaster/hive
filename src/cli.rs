@@ -122,6 +122,13 @@ pub enum Commands {
         run: Option<String>,
     },
 
+    /// Show cost breakdown for the current run
+    Cost {
+        /// Run ID (defaults to active run)
+        #[arg(long)]
+        run: Option<String>,
+    },
+
     /// List all past runs
     History,
 
