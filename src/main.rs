@@ -39,6 +39,12 @@ fn main() {
         Commands::Mcp { run, agent } => cmd_mcp(&run, &agent),
         Commands::Wait { run, timeout } => cmd_wait(run, timeout),
         Commands::ReviewAgent { agent_id, run } => cmd_review_agent(&agent_id, run),
+        Commands::ReadMessages {
+            agent,
+            run,
+            unread,
+            stop_hook,
+        } => cmd_read_messages(&agent, run, unread, stop_hook),
         Commands::Stop => cmd_stop(),
     };
 
@@ -425,6 +431,49 @@ fn cmd_review_agent(agent_id: &str, run: Option<String>) -> Result<(), String> {
     println!("\n--- Commits ---\n{commits}");
     println!("\n--- Diff Stat ---\n{diff_stat}");
     Ok(())
+}
+
+fn cmd_read_messages(
+    agent_id: &str,
+    run: Option<String>,
+    unread: bool,
+    stop_hook: bool,
+) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let run_id = match run {
+        Some(r) => r,
+        None => state.active_run_id()?,
+    };
+
+    let agent = state.load_agent(&run_id, agent_id)?;
+
+    let since = if unread {
+        // Use max(messages_read_at, last_completed_at) as the "unread" cursor
+        match (agent.messages_read_at, agent.last_completed_at) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    } else {
+        None
+    };
+
+    let messages = state.load_messages_for_agent(&run_id, agent_id, since)?;
+
+    if stop_hook {
+        if messages.is_empty() {
+            return Ok(());
+        } else {
+            let json = serde_json::to_string_pretty(&messages).map_err(|e| e.to_string())?;
+            eprintln!("Unread messages for agent {}:\n{}", agent_id, json);
+            std::process::exit(2);
+        }
+    } else {
+        let json = serde_json::to_string_pretty(&messages).map_err(|e| e.to_string())?;
+        println!("{}", json);
+        Ok(())
+    }
 }
 
 fn cmd_stop() -> Result<(), String> {
