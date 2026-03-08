@@ -289,6 +289,14 @@ impl HiveState {
         self.save_agent(run_id, &agent)
     }
 
+    // --- Run Metadata ---
+
+    pub fn load_run_metadata(&self, run_id: &str) -> Result<RunMetadata, String> {
+        let path = self.run_dir(run_id).join("run.json");
+        let data = fs::read_to_string(&path).map_err(|e| format!("Run {run_id}: {e}"))?;
+        serde_json::from_str(&data).map_err(|e| format!("Run {run_id}: {e}"))
+    }
+
     // --- Worktree path ---
 
     pub fn worktrees_dir(&self, run_id: &str) -> PathBuf {
@@ -725,6 +733,26 @@ mod tests {
             state.worktree_path("run-1", "agent-1"),
             std::path::PathBuf::from("/tmp/myrepo/.hive/runs/run-1/worktrees/agent-1")
         );
+    }
+
+    // --- Run Metadata ---
+
+    #[test]
+    fn load_run_metadata_returns_metadata() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let meta = state.load_run_metadata("run-1").unwrap();
+        assert_eq!(meta.id, "run-1");
+        assert_eq!(meta.status, RunStatus::Active);
+    }
+
+    #[test]
+    fn load_run_metadata_nonexistent_run_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        assert!(state.load_run_metadata("no-such-run").is_err());
     }
 
     // --- load_messages_for_agent ---
