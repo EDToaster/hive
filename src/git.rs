@@ -118,6 +118,32 @@ impl Git {
     pub fn diff_stat_since(cwd: &Path, base: &str) -> Result<String, String> {
         Self::run(&["diff", "--stat", &format!("{base}..HEAD")], cwd)
     }
+
+    /// Run a shell command in the given directory. Returns Ok(stdout) or Err(stderr).
+    pub fn run_shell_command(cwd: &Path, command: &str) -> Result<String, String> {
+        let output = std::process::Command::new("sh")
+            .args(["-c", command])
+            .current_dir(cwd)
+            .output()
+            .map_err(|e| format!("Failed to run command: {e}"))?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        }
+    }
+
+    /// Rebase a branch onto a target branch
+    pub fn rebase(repo_root: &Path, branch: &str, onto: &str) -> Result<(), String> {
+        Self::run(&["rebase", onto, branch], repo_root)?;
+        Ok(())
+    }
+
+    /// Abort a rebase in progress
+    pub fn rebase_abort(repo_root: &Path) -> Result<(), String> {
+        Self::run(&["rebase", "--abort"], repo_root)?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -324,5 +350,63 @@ mod tests {
         Git::commit(dir.path(), "feature2 work").unwrap();
         let stat = Git::diff_stat_since(dir.path(), &main).unwrap();
         assert!(stat.contains("g.txt"));
+    }
+
+    #[test]
+    fn run_shell_command_success() {
+        let dir = TempDir::new().unwrap();
+        let result = Git::run_shell_command(dir.path(), "echo hello").unwrap();
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn run_shell_command_failure() {
+        let dir = TempDir::new().unwrap();
+        let result = Git::run_shell_command(dir.path(), "sh -c 'echo fail >&2 && exit 1'");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("fail"));
+    }
+
+    #[test]
+    fn rebase_onto_main_succeeds() {
+        let dir = init_test_repo();
+        let main_branch = Git::current_branch(dir.path()).unwrap();
+
+        // Create a commit on main after branching point
+        fs::write(dir.path().join("main.txt"), "main content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "main work").unwrap();
+
+        // Create feature branch from before that commit
+        Git::run(&["checkout", "-b", "feature-rebase", "HEAD~1"], dir.path()).unwrap();
+        fs::write(dir.path().join("feature.txt"), "feature content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "feature work").unwrap();
+
+        // Rebase feature onto main (no conflicts since different files)
+        Git::rebase(dir.path(), "feature-rebase", &main_branch).unwrap();
+    }
+
+    #[test]
+    fn rebase_conflicting_branch_fails() {
+        let dir = init_test_repo();
+        let main_branch = Git::current_branch(dir.path()).unwrap();
+
+        // Create conflicting changes
+        fs::write(dir.path().join("conflict.txt"), "main content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "main version").unwrap();
+
+        Git::run(&["checkout", "-b", "conflict-rebase", "HEAD~1"], dir.path()).unwrap();
+        fs::write(dir.path().join("conflict.txt"), "branch content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "branch version").unwrap();
+
+        // Rebase should fail due to conflicts
+        let result = Git::rebase(dir.path(), "conflict-rebase", &main_branch);
+        assert!(result.is_err());
+
+        // Clean up
+        Git::rebase_abort(dir.path()).unwrap();
     }
 }

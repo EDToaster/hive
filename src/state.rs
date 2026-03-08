@@ -6,12 +6,14 @@ use std::path::{Path, PathBuf};
 /// Configuration loaded from `.hive/config.yaml`.
 pub struct HiveConfig {
     pub stall_timeout_seconds: i64,
+    pub verify_command: Option<String>,
 }
 
 impl Default for HiveConfig {
     fn default() -> Self {
         Self {
             stall_timeout_seconds: 300,
+            verify_command: None,
         }
     }
 }
@@ -63,6 +65,17 @@ impl HiveState {
                 && let Ok(v) = value.trim().parse::<i64>()
             {
                 config.stall_timeout_seconds = v;
+            }
+            if let Some(value) = line.strip_prefix("verify_command:") {
+                let value = value.trim();
+                let value = value
+                    .strip_prefix('"')
+                    .and_then(|v| v.strip_suffix('"'))
+                    .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')))
+                    .unwrap_or(value);
+                if !value.is_empty() {
+                    config.verify_command = Some(value.to_string());
+                }
             }
         }
         config
@@ -813,6 +826,35 @@ mod tests {
         assert_eq!(msgs.len(), 2);
         assert_eq!(msgs[0].id, "msg-2");
         assert_eq!(msgs[1].id, "msg-3");
+    }
+
+    #[test]
+    fn load_config_reads_verify_command() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "stall_timeout_seconds: 300\nverify_command: cargo test --all-targets\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert_eq!(
+            config.verify_command.as_deref(),
+            Some("cargo test --all-targets")
+        );
+    }
+
+    #[test]
+    fn load_config_verify_command_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "stall_timeout_seconds: 300\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert!(config.verify_command.is_none());
     }
 
     #[test]
