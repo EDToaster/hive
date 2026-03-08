@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 pub struct HiveConfig {
     pub stall_timeout_seconds: i64,
     pub verify_command: Option<String>,
+    pub max_retries: u32,
 }
 
 impl Default for HiveConfig {
@@ -14,6 +15,7 @@ impl Default for HiveConfig {
         Self {
             stall_timeout_seconds: 300,
             verify_command: None,
+            max_retries: 2,
         }
     }
 }
@@ -65,6 +67,11 @@ impl HiveState {
                 && let Ok(v) = value.trim().parse::<i64>()
             {
                 config.stall_timeout_seconds = v;
+            }
+            if let Some(value) = line.strip_prefix("max_retries:")
+                && let Ok(v) = value.trim().parse::<u32>()
+            {
+                config.max_retries = v;
             }
             if let Some(value) = line.strip_prefix("verify_command:") {
                 let value = value.trim();
@@ -364,6 +371,7 @@ mod tests {
             session_id: None,
             last_completed_at: None,
             messages_read_at: None,
+            retry_count: 0,
         }
     }
 
@@ -904,5 +912,56 @@ mod tests {
             .load_messages_for_agent("run-1", "worker-1", None)
             .unwrap();
         assert!(msgs.is_empty());
+    }
+
+    // --- max_retries config ---
+
+    #[test]
+    fn load_config_reads_max_retries() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "max_retries: 3\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert_eq!(config.max_retries, 3);
+    }
+
+    #[test]
+    fn load_config_max_retries_defaults_to_2() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "stall_timeout_seconds: 300\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert_eq!(config.max_retries, 2);
+    }
+
+    // --- retry_count ---
+
+    #[test]
+    fn agent_retry_count_serialization_roundtrip() {
+        let agent = Agent {
+            id: "agent-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 1,
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.retry_count, 1);
     }
 }

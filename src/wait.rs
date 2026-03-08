@@ -401,6 +401,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             task_id: None,
+            retry_count: 0,
         };
         state.save_agent(run_id, &running_agent).unwrap();
 
@@ -416,6 +417,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             task_id: None,
+            retry_count: 0,
         };
         state.save_agent(run_id, &done_agent).unwrap();
 
@@ -437,6 +439,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             task_id: Some("task-1".into()),
+            retry_count: 0,
         }
     }
 
