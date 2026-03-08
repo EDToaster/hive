@@ -133,6 +133,12 @@ impl Git {
         }
     }
 
+    /// Reset the current branch hard to a given ref (e.g. "HEAD~1")
+    pub fn reset_hard(repo_root: &Path, to_ref: &str) -> Result<(), String> {
+        Self::run(&["reset", "--hard", to_ref], repo_root)?;
+        Ok(())
+    }
+
     /// Rebase a branch onto a target branch
     pub fn rebase(repo_root: &Path, branch: &str, onto: &str) -> Result<(), String> {
         Self::run(&["rebase", onto, branch], repo_root)?;
@@ -385,6 +391,31 @@ mod tests {
 
         // Rebase feature onto main (no conflicts since different files)
         Git::rebase(dir.path(), "feature-rebase", &main_branch).unwrap();
+    }
+
+    #[test]
+    fn reset_hard_undoes_commit() {
+        let dir = init_test_repo();
+        let before = Git::run(&["rev-parse", "HEAD"], dir.path()).unwrap();
+
+        fs::write(dir.path().join("reset.txt"), "content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "to be undone").unwrap();
+
+        let after = Git::run(&["rev-parse", "HEAD"], dir.path()).unwrap();
+        assert_ne!(before, after);
+
+        Git::reset_hard(dir.path(), "HEAD~1").unwrap();
+
+        let restored = Git::run(&["rev-parse", "HEAD"], dir.path()).unwrap();
+        assert_eq!(before, restored);
+        assert!(!dir.path().join("reset.txt").exists());
+    }
+
+    #[test]
+    fn reset_hard_invalid_ref_fails() {
+        let dir = init_test_repo();
+        assert!(Git::reset_hard(dir.path(), "nonexistent-ref-abc123").is_err());
     }
 
     #[test]
