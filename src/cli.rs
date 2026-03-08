@@ -99,6 +99,22 @@ pub enum Commands {
         run: Option<String>,
     },
 
+    /// Read messages for an agent
+    ReadMessages {
+        /// Agent ID whose messages to read
+        #[arg(long)]
+        agent: String,
+        /// Run ID (defaults to active run)
+        #[arg(long)]
+        run: Option<String>,
+        /// Only show unread messages (since last read or last idle)
+        #[arg(long)]
+        unread: bool,
+        /// Stop hook mode: exit 2 with stderr output if unread messages exist
+        #[arg(long)]
+        stop_hook: bool,
+    },
+
     /// Stop the current run and clean up worktrees
     Stop,
 }
