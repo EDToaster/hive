@@ -92,3 +92,146 @@ impl Git {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn init_test_repo() -> TempDir {
+        let dir = TempDir::new().unwrap();
+        Command::new("git")
+            .args(["init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "--allow-empty", "-m", "init"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        dir
+    }
+
+    #[test]
+    fn worktree_add_creates_worktree() {
+        let dir = init_test_repo();
+        let wt_path = dir.path().join("worktree-1");
+
+        Git::worktree_add(dir.path(), &wt_path, "test-branch").unwrap();
+
+        assert!(wt_path.exists());
+        assert!(wt_path.is_dir());
+        assert_eq!(Git::current_branch(&wt_path).unwrap(), "test-branch");
+    }
+
+    #[test]
+    fn worktree_add_fails_on_duplicate_branch() {
+        let dir = init_test_repo();
+        let wt1 = dir.path().join("wt1");
+        let wt2 = dir.path().join("wt2");
+
+        Git::worktree_add(dir.path(), &wt1, "same-branch").unwrap();
+        assert!(Git::worktree_add(dir.path(), &wt2, "same-branch").is_err());
+    }
+
+    #[test]
+    fn worktree_remove_cleans_up() {
+        let dir = init_test_repo();
+        let wt_path = dir.path().join("wt-remove");
+
+        Git::worktree_add(dir.path(), &wt_path, "remove-branch").unwrap();
+        assert!(wt_path.exists());
+
+        Git::worktree_remove(dir.path(), &wt_path).unwrap();
+        assert!(!wt_path.exists());
+    }
+
+    #[test]
+    fn worktree_prune_succeeds() {
+        let dir = init_test_repo();
+        Git::worktree_prune(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn current_branch_returns_branch_name() {
+        let dir = init_test_repo();
+        let branch = Git::current_branch(dir.path()).unwrap();
+        assert!(!branch.is_empty());
+    }
+
+    #[test]
+    fn checkout_switches_branch() {
+        let dir = init_test_repo();
+        Git::run(&["branch", "feature-1"], dir.path()).unwrap();
+        Git::checkout(dir.path(), "feature-1").unwrap();
+        assert_eq!(Git::current_branch(dir.path()).unwrap(), "feature-1");
+    }
+
+    #[test]
+    fn checkout_nonexistent_branch_fails() {
+        let dir = init_test_repo();
+        assert!(Git::checkout(dir.path(), "nonexistent-branch").is_err());
+    }
+
+    #[test]
+    fn branch_delete_removes_branch() {
+        let dir = init_test_repo();
+        Git::run(&["branch", "to-delete"], dir.path()).unwrap();
+        Git::branch_delete(dir.path(), "to-delete").unwrap();
+
+        let branches = Git::run(&["branch"], dir.path()).unwrap();
+        assert!(!branches.contains("to-delete"));
+    }
+
+    #[test]
+    fn merge_no_ff_creates_merge_commit() {
+        let dir = init_test_repo();
+        let main_branch = Git::current_branch(dir.path()).unwrap();
+
+        Git::run(&["checkout", "-b", "feature-merge"], dir.path()).unwrap();
+        fs::write(dir.path().join("feature.txt"), "feature content").unwrap();
+        Git::run(&["add", "feature.txt"], dir.path()).unwrap();
+        Git::run(&["commit", "-m", "add feature"], dir.path()).unwrap();
+
+        Git::checkout(dir.path(), &main_branch).unwrap();
+        Git::merge(dir.path(), "feature-merge").unwrap();
+
+        let log = Git::run(&["log", "--oneline", "-1"], dir.path()).unwrap();
+        assert!(log.contains("Merge branch"));
+    }
+
+    #[test]
+    fn has_conflicts_returns_false_on_clean_repo() {
+        let dir = init_test_repo();
+        assert!(!Git::has_conflicts(dir.path()).unwrap());
+    }
+
+    #[test]
+    fn merge_conflicting_branches_detected() {
+        let dir = init_test_repo();
+        let main_branch = Git::current_branch(dir.path()).unwrap();
+
+        // Create conflicting file on main
+        fs::write(dir.path().join("conflict.txt"), "main content").unwrap();
+        Git::run(&["add", "conflict.txt"], dir.path()).unwrap();
+        Git::run(&["commit", "-m", "main version"], dir.path()).unwrap();
+
+        // Create branch with different content for same file
+        Git::run(&["checkout", "-b", "conflict-branch", "HEAD~1"], dir.path()).unwrap();
+        fs::write(dir.path().join("conflict.txt"), "branch content").unwrap();
+        Git::run(&["add", "conflict.txt"], dir.path()).unwrap();
+        Git::run(&["commit", "-m", "branch version"], dir.path()).unwrap();
+
+        // Try to merge — should fail
+        Git::checkout(dir.path(), &main_branch).unwrap();
+        assert!(Git::merge(dir.path(), "conflict-branch").is_err());
+
+        // Check for conflicts
+        assert!(Git::has_conflicts(dir.path()).unwrap());
+
+        // Abort merge
+        Git::merge_abort(dir.path()).unwrap();
+    }
+}

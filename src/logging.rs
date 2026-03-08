@@ -93,3 +93,179 @@ impl LogDb {
         Ok(results)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn open_creates_table() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+        let count: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM tool_calls", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn open_is_idempotent() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("log.db");
+        let _db1 = LogDb::open(&path).unwrap();
+        let _db2 = LogDb::open(&path).unwrap();
+    }
+
+    #[test]
+    fn log_tool_call_inserts_row() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "hive_update_task",
+            Some("task_id=task-1"),
+            "success",
+            Some(150),
+        )
+        .unwrap();
+
+        let (tool_name, status): (String, String) = db
+            .conn
+            .query_row(
+                "SELECT tool_name, status FROM tool_calls WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tool_name, "hive_update_task");
+        assert_eq!(status, "success");
+    }
+
+    #[test]
+    fn log_tool_call_with_null_optionals() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "lead",
+            "hook",
+            "hive_spawn_agent",
+            None,
+            "success",
+            None,
+        )
+        .unwrap();
+
+        let args_summary: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT args_summary FROM tool_calls WHERE id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(args_summary.is_none());
+    }
+
+    #[test]
+    fn agent_tool_summary_groups_correctly() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        // Agent-1 calls tool_a 3 times, tool_b 1 time
+        for _ in 0..3 {
+            db.log_tool_call(
+                "run-1",
+                "agent-1",
+                "worker",
+                "mcp",
+                "tool_a",
+                None,
+                "success",
+                Some(100),
+            )
+            .unwrap();
+        }
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_b",
+            None,
+            "success",
+            Some(200),
+        )
+        .unwrap();
+
+        // Agent-2 calls tool_a 2 times
+        for _ in 0..2 {
+            db.log_tool_call(
+                "run-1",
+                "agent-2",
+                "lead",
+                "mcp",
+                "tool_a",
+                None,
+                "success",
+                Some(50),
+            )
+            .unwrap();
+        }
+
+        let results = db.agent_tool_summary("run-1").unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0], ("agent-1".into(), "tool_a".into(), 3, 100));
+        assert_eq!(results[1], ("agent-1".into(), "tool_b".into(), 1, 200));
+        assert_eq!(results[2], ("agent-2".into(), "tool_a".into(), 2, 50));
+    }
+
+    #[test]
+    fn agent_tool_summary_empty_run() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+        let results = db.agent_tool_summary("nonexistent-run").unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn agent_tool_summary_ignores_other_runs() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_a",
+            None,
+            "success",
+            Some(100),
+        )
+        .unwrap();
+        db.log_tool_call(
+            "run-2",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_b",
+            None,
+            "success",
+            Some(200),
+        )
+        .unwrap();
+
+        let results = db.agent_tool_summary("run-1").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].1, "tool_a");
+    }
+}

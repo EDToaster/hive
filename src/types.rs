@@ -127,3 +127,204 @@ pub enum RunStatus {
     Completed,
     Failed,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_role_serializes_lowercase() {
+        assert_eq!(
+            serde_json::to_string(&AgentRole::Coordinator).unwrap(),
+            "\"coordinator\""
+        );
+        assert_eq!(serde_json::to_string(&AgentRole::Lead).unwrap(), "\"lead\"");
+        assert_eq!(
+            serde_json::to_string(&AgentRole::Worker).unwrap(),
+            "\"worker\""
+        );
+
+        let role: AgentRole = serde_json::from_str("\"coordinator\"").unwrap();
+        assert_eq!(role, AgentRole::Coordinator);
+    }
+
+    #[test]
+    fn agent_status_serializes_lowercase() {
+        for (variant, expected) in [
+            (AgentStatus::Running, "\"running\""),
+            (AgentStatus::Done, "\"done\""),
+            (AgentStatus::Failed, "\"failed\""),
+            (AgentStatus::Stalled, "\"stalled\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn task_status_all_variants_roundtrip() {
+        let variants = [
+            TaskStatus::Pending,
+            TaskStatus::Active,
+            TaskStatus::Blocked,
+            TaskStatus::Review,
+            TaskStatus::Approved,
+            TaskStatus::Queued,
+            TaskStatus::Merged,
+            TaskStatus::Failed,
+        ];
+        for variant in variants {
+            let json = serde_json::to_string(&variant).unwrap();
+            let back: TaskStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(variant, back);
+        }
+    }
+
+    #[test]
+    fn urgency_all_variants_roundtrip() {
+        for (variant, expected) in [
+            (Urgency::Low, "\"low\""),
+            (Urgency::Normal, "\"normal\""),
+            (Urgency::High, "\"high\""),
+            (Urgency::Critical, "\"critical\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn message_type_serializes_kebab_case() {
+        assert_eq!(
+            serde_json::to_string(&MessageType::TaskSuggestion).unwrap(),
+            "\"task-suggestion\""
+        );
+        let back: MessageType = serde_json::from_str("\"task-suggestion\"").unwrap();
+        assert_eq!(back, MessageType::TaskSuggestion);
+        assert_eq!(
+            serde_json::to_string(&MessageType::Info).unwrap(),
+            "\"info\""
+        );
+    }
+
+    #[test]
+    fn run_status_all_variants_roundtrip() {
+        for (variant, expected) in [
+            (RunStatus::Active, "\"active\""),
+            (RunStatus::Completed, "\"completed\""),
+            (RunStatus::Failed, "\"failed\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+            let back: RunStatus = serde_json::from_str(expected).unwrap();
+            assert_eq!(variant, back);
+        }
+    }
+
+    #[test]
+    fn agent_struct_roundtrip() {
+        let agent = Agent {
+            id: "agent-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-1".into()),
+            pid: Some(12345),
+            worktree: Some("/tmp/wt".into()),
+            heartbeat: Some(chrono::Utc::now()),
+            task_id: Some("task-1".into()),
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "agent-1");
+        assert_eq!(back.role, AgentRole::Worker);
+        assert_eq!(back.pid, Some(12345));
+    }
+
+    #[test]
+    fn agent_struct_with_null_optionals() {
+        let agent = Agent {
+            id: "coord-1".into(),
+            role: AgentRole::Coordinator,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.role, AgentRole::Coordinator);
+        assert!(back.parent.is_none());
+        assert!(back.pid.is_none());
+    }
+
+    #[test]
+    fn task_struct_roundtrip() {
+        let now = chrono::Utc::now();
+        let task = Task {
+            id: "task-1".into(),
+            title: "Implement feature X".into(),
+            description: "Build the thing".into(),
+            status: TaskStatus::Pending,
+            urgency: Urgency::High,
+            blocking: vec!["task-2".into()],
+            blocked_by: vec![],
+            assigned_to: None,
+            created_by: "coordinator".into(),
+            parent_task: None,
+            branch: None,
+            domain: Some("backend".into()),
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        let back: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.status, TaskStatus::Pending);
+        assert_eq!(back.urgency, Urgency::High);
+        assert_eq!(back.blocking, vec!["task-2"]);
+    }
+
+    #[test]
+    fn message_struct_roundtrip() {
+        let msg = Message {
+            id: "msg-1".into(),
+            from: "lead-1".into(),
+            to: "coordinator".into(),
+            timestamp: chrono::Utc::now(),
+            message_type: MessageType::Status,
+            body: "All tasks complete".into(),
+            refs: vec!["task-1".into(), "task-2".into()],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.message_type, MessageType::Status);
+        assert_eq!(back.refs.len(), 2);
+    }
+
+    #[test]
+    fn merge_queue_roundtrip() {
+        let queue = MergeQueue {
+            entries: vec![MergeQueueEntry {
+                task_id: "task-1".into(),
+                branch: "hive/run1/lead-1".into(),
+                submitted_by: "lead-1".into(),
+                submitted_at: chrono::Utc::now(),
+            }],
+        };
+        let json = serde_json::to_string(&queue).unwrap();
+        let back: MergeQueue = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.entries.len(), 1);
+        assert_eq!(back.entries[0].task_id, "task-1");
+    }
+
+    #[test]
+    fn run_metadata_roundtrip() {
+        let run = RunMetadata {
+            id: "run-abc".into(),
+            created_at: chrono::Utc::now(),
+            status: RunStatus::Active,
+        };
+        let json = serde_json::to_string(&run).unwrap();
+        let back: RunMetadata = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "run-abc");
+        assert_eq!(back.status, RunStatus::Active);
+    }
+}

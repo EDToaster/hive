@@ -226,3 +226,372 @@ impl HiveState {
         self.worktrees_dir(run_id).join(agent_id)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_state(dir: &std::path::Path) -> HiveState {
+        std::fs::create_dir_all(dir.join(".hive")).unwrap();
+        HiveState::new(dir.to_path_buf())
+    }
+
+    fn make_task(id: &str, status: TaskStatus) -> Task {
+        let now = chrono::Utc::now();
+        Task {
+            id: id.into(),
+            title: format!("Task {id}"),
+            description: "A test task".into(),
+            status,
+            urgency: Urgency::Normal,
+            blocking: vec![],
+            blocked_by: vec![],
+            assigned_to: None,
+            created_by: "test".into(),
+            parent_task: None,
+            branch: None,
+            domain: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    fn make_agent(id: &str, role: AgentRole, status: AgentStatus) -> Agent {
+        Agent {
+            id: id.into(),
+            role,
+            status,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+        }
+    }
+
+    fn make_message(
+        id: &str,
+        from: &str,
+        to: &str,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) -> Message {
+        Message {
+            id: id.into(),
+            from: from.into(),
+            to: to.into(),
+            timestamp,
+            message_type: MessageType::Info,
+            body: "hello".into(),
+            refs: vec![],
+        }
+    }
+
+    // --- Run management ---
+
+    #[test]
+    fn create_run_creates_directory_structure() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("test-run-1").unwrap();
+
+        let run_dir = state.run_dir("test-run-1");
+        assert!(run_dir.join("tasks").is_dir());
+        assert!(run_dir.join("agents").is_dir());
+        assert!(run_dir.join("messages").is_dir());
+        assert!(run_dir.join("worktrees").is_dir());
+    }
+
+    #[test]
+    fn create_run_writes_run_json() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-abc").unwrap();
+
+        let data = std::fs::read_to_string(state.run_dir("run-abc").join("run.json")).unwrap();
+        let meta: RunMetadata = serde_json::from_str(&data).unwrap();
+        assert_eq!(meta.id, "run-abc");
+        assert_eq!(meta.status, RunStatus::Active);
+    }
+
+    #[test]
+    fn create_run_initializes_empty_merge_queue() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let queue = state.load_merge_queue("run-1").unwrap();
+        assert!(queue.entries.is_empty());
+    }
+
+    #[test]
+    fn active_run_read_write() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+
+        assert!(state.active_run_id().is_err());
+
+        state.set_active_run("run-123").unwrap();
+        assert_eq!(state.active_run_id().unwrap(), "run-123");
+    }
+
+    // --- Task CRUD ---
+
+    #[test]
+    fn task_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let task = make_task("task-1", TaskStatus::Pending);
+        state.save_task("run-1", &task).unwrap();
+
+        let loaded = state.load_task("run-1", "task-1").unwrap();
+        assert_eq!(loaded.id, "task-1");
+        assert_eq!(loaded.status, TaskStatus::Pending);
+    }
+
+    #[test]
+    fn task_update_overwrites() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let task = make_task("task-1", TaskStatus::Pending);
+        state.save_task("run-1", &task).unwrap();
+
+        let mut updated = task;
+        updated.status = TaskStatus::Active;
+        state.save_task("run-1", &updated).unwrap();
+
+        let loaded = state.load_task("run-1", "task-1").unwrap();
+        assert_eq!(loaded.status, TaskStatus::Active);
+    }
+
+    #[test]
+    fn list_tasks_returns_all() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        for i in 1..=3 {
+            state
+                .save_task(
+                    "run-1",
+                    &make_task(&format!("task-{i}"), TaskStatus::Pending),
+                )
+                .unwrap();
+        }
+
+        let tasks = state.list_tasks("run-1").unwrap();
+        assert_eq!(tasks.len(), 3);
+    }
+
+    #[test]
+    fn list_tasks_empty_dir_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let tasks = state.list_tasks("run-1").unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn list_tasks_nonexistent_run_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let tasks = state.list_tasks("no-such-run").unwrap();
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn load_nonexistent_task_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        assert!(state.load_task("run-1", "nonexistent").is_err());
+    }
+
+    // --- Agent CRUD ---
+
+    #[test]
+    fn agent_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("agent-1", AgentRole::Worker, AgentStatus::Running);
+        state.save_agent("run-1", &agent).unwrap();
+
+        let loaded = state.load_agent("run-1", "agent-1").unwrap();
+        assert_eq!(loaded.id, "agent-1");
+        assert_eq!(loaded.role, AgentRole::Worker);
+        assert_eq!(loaded.status, AgentStatus::Running);
+    }
+
+    #[test]
+    fn agent_save_creates_subdirectory() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("lead-1", AgentRole::Lead, AgentStatus::Running);
+        state.save_agent("run-1", &agent).unwrap();
+
+        assert!(state.agents_dir("run-1").join("lead-1").is_dir());
+        assert!(
+            state
+                .agents_dir("run-1")
+                .join("lead-1")
+                .join("agent.json")
+                .exists()
+        );
+    }
+
+    #[test]
+    fn list_agents_reads_subdirectories() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        for id in ["agent-1", "agent-2"] {
+            state
+                .save_agent(
+                    "run-1",
+                    &make_agent(id, AgentRole::Worker, AgentStatus::Running),
+                )
+                .unwrap();
+        }
+
+        let agents = state.list_agents("run-1").unwrap();
+        assert_eq!(agents.len(), 2);
+    }
+
+    #[test]
+    fn list_agents_empty_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agents = state.list_agents("run-1").unwrap();
+        assert!(agents.is_empty());
+    }
+
+    // --- Message CRUD ---
+
+    #[test]
+    fn message_save_and_list() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let msg = make_message("msg-1", "lead-1", "coord", chrono::Utc::now());
+        state.save_message("run-1", &msg).unwrap();
+
+        let messages = state.list_messages("run-1").unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "msg-1");
+        assert_eq!(messages[0].from, "lead-1");
+    }
+
+    #[test]
+    fn list_messages_sorted_by_timestamp() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let t1 = "2026-03-08T10:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let t2 = "2026-03-08T11:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let t3 = "2026-03-08T12:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+
+        // Save out of order
+        state
+            .save_message("run-1", &make_message("msg-3", "a", "b", t3))
+            .unwrap();
+        state
+            .save_message("run-1", &make_message("msg-1", "a", "b", t1))
+            .unwrap();
+        state
+            .save_message("run-1", &make_message("msg-2", "a", "b", t2))
+            .unwrap();
+
+        let messages = state.list_messages("run-1").unwrap();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].id, "msg-1");
+        assert_eq!(messages[1].id, "msg-2");
+        assert_eq!(messages[2].id, "msg-3");
+    }
+
+    // --- Merge Queue ---
+
+    #[test]
+    fn merge_queue_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let queue = MergeQueue {
+            entries: vec![
+                MergeQueueEntry {
+                    task_id: "task-1".into(),
+                    branch: "hive/run-1/lead-1".into(),
+                    submitted_by: "lead-1".into(),
+                    submitted_at: chrono::Utc::now(),
+                },
+                MergeQueueEntry {
+                    task_id: "task-2".into(),
+                    branch: "hive/run-1/lead-2".into(),
+                    submitted_by: "lead-2".into(),
+                    submitted_at: chrono::Utc::now(),
+                },
+            ],
+        };
+        state.save_merge_queue("run-1", &queue).unwrap();
+
+        let loaded = state.load_merge_queue("run-1").unwrap();
+        assert_eq!(loaded.entries.len(), 2);
+        assert_eq!(loaded.entries[0].task_id, "task-1");
+        assert_eq!(loaded.entries[1].task_id, "task-2");
+    }
+
+    // --- Spec ---
+
+    #[test]
+    fn spec_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let spec = "# My Project Spec\n\nBuild something cool.";
+        state.save_spec("run-1", spec).unwrap();
+
+        let loaded = state.load_spec("run-1").unwrap();
+        assert_eq!(loaded, spec);
+    }
+
+    // --- Path helpers ---
+
+    #[test]
+    fn path_structure_is_correct() {
+        let state = HiveState::new("/tmp/myrepo".into());
+        assert_eq!(
+            state.hive_dir(),
+            std::path::PathBuf::from("/tmp/myrepo/.hive")
+        );
+        assert_eq!(
+            state.run_dir("run-1"),
+            std::path::PathBuf::from("/tmp/myrepo/.hive/runs/run-1")
+        );
+        assert_eq!(
+            state.worktree_path("run-1", "agent-1"),
+            std::path::PathBuf::from("/tmp/myrepo/.hive/runs/run-1/worktrees/agent-1")
+        );
+    }
+}

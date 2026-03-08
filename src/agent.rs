@@ -177,3 +177,77 @@ Parent: {}
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coordinator_prompt_contains_role_and_id() {
+        let prompt = AgentSpawner::generate_prompt(
+            "coord-1",
+            AgentRole::Coordinator,
+            None,
+            "Build a REST API",
+        );
+        assert!(prompt.contains("Agent ID: coord-1"));
+        assert!(prompt.contains("Role: coordinator"));
+        assert!(prompt.contains("Build a REST API"));
+        assert!(prompt.contains("Decompose the spec"));
+        assert!(prompt.contains("Do NOT read or write implementation code"));
+    }
+
+    #[test]
+    fn lead_prompt_contains_parent() {
+        let prompt = AgentSpawner::generate_prompt(
+            "lead-1",
+            AgentRole::Lead,
+            Some("coord-1"),
+            "Handle backend domain",
+        );
+        assert!(prompt.contains("Agent ID: lead-1"));
+        assert!(prompt.contains("Role: lead"));
+        assert!(prompt.contains("Parent: coord-1"));
+        assert!(prompt.contains("Handle backend domain"));
+        assert!(prompt.contains("Spawn workers"));
+        assert!(prompt.contains("Submit approved branches"));
+    }
+
+    #[test]
+    fn lead_prompt_defaults_parent_to_coordinator() {
+        let prompt = AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, None, "task");
+        assert!(prompt.contains("Parent: coordinator"));
+    }
+
+    #[test]
+    fn worker_prompt_contains_parent_and_constraints() {
+        let prompt = AgentSpawner::generate_prompt(
+            "worker-1",
+            AgentRole::Worker,
+            Some("lead-1"),
+            "Implement login endpoint",
+        );
+        assert!(prompt.contains("Agent ID: worker-1"));
+        assert!(prompt.contains("Role: worker"));
+        assert!(prompt.contains("Parent: lead-1"));
+        assert!(prompt.contains("Implement login endpoint"));
+        assert!(prompt.contains("Do not spawn other agents"));
+        assert!(prompt.contains("Do not submit to the merge queue"));
+    }
+
+    #[test]
+    fn worker_prompt_defaults_parent_to_unknown() {
+        let prompt = AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, None, "task");
+        assert!(prompt.contains("Parent: unknown"));
+    }
+
+    #[test]
+    fn is_alive_returns_true_for_current_process() {
+        assert!(AgentSpawner::is_alive(std::process::id()));
+    }
+
+    #[test]
+    fn is_alive_returns_false_for_bogus_pid() {
+        assert!(!AgentSpawner::is_alive(99999999));
+    }
+}
