@@ -578,21 +578,32 @@ impl HiveMcp {
                         crate::git::Git::run_shell_command(&repo_root, verify_cmd)
                 {
                     // Verification failed — undo merge commit
-                    let _ = crate::git::Git::run_shell_command(
-                        &repo_root,
-                        "git reset --hard HEAD~1",
-                    );
+                    if let Err(reset_err) = crate::git::Git::reset_hard(&repo_root, "HEAD~1") {
+                        return Ok(CallToolResult::error(vec![Content::text(format!(
+                            "CRITICAL: Verification failed for '{}' AND reset failed: {reset_err}. Repository may be in inconsistent state. Manual intervention required.",
+                            entry.branch
+                        ))]));
+                    }
                     mark_failed(&state, &self.run_id, &entry.task_id);
                     state.save_merge_queue(&self.run_id, &queue).ok();
+                    let truncated_output = if verify_err.len() > 500 {
+                        format!("{}...(truncated)", &verify_err[..500])
+                    } else {
+                        verify_err.clone()
+                    };
                     let msg = format!(
                         "Verification failed for branch '{}' (task '{}'): {verify_err}",
+                        entry.branch, entry.task_id
+                    );
+                    let notify_msg = format!(
+                        "Verification failed for branch '{}' (task '{}').\nOutput:\n{truncated_output}",
                         entry.branch, entry.task_id
                     );
                     Self::notify_submitter(
                         &state,
                         &self.run_id,
                         &entry.submitted_by,
-                        &msg,
+                        &notify_msg,
                     );
                     return Ok(CallToolResult::error(vec![Content::text(msg)]));
                 }

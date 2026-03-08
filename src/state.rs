@@ -858,6 +858,38 @@ mod tests {
     }
 
     #[test]
+    fn load_config_verify_command_with_ampersand() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "verify_command: cargo test && cargo clippy\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert_eq!(
+            config.verify_command.as_deref(),
+            Some("cargo test && cargo clippy")
+        );
+    }
+
+    #[test]
+    fn load_config_verify_command_with_quotes() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "verify_command: \"cargo test && cargo clippy\"\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert_eq!(
+            config.verify_command.as_deref(),
+            Some("cargo test && cargo clippy")
+        );
+    }
+
+    #[test]
     fn load_messages_for_agent_returns_empty_when_none_match() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
