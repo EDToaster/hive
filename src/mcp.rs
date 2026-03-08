@@ -568,6 +568,17 @@ impl HiveMcp {
         Ok(CallToolResult::success(vec![Content::text(summary)]))
     }
 
+    #[tool(description = "Update this agent's heartbeat timestamp to signal liveness")]
+    async fn hive_heartbeat(&self) -> Result<CallToolResult, McpError> {
+        let state = self.state();
+        match state.update_agent_heartbeat(&self.run_id, &self.agent_id) {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(
+                "Heartbeat updated.",
+            )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
     #[tool(description = "Record a tool call event for observability")]
     async fn hive_log_tool(
         &self,

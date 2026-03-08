@@ -248,6 +248,14 @@ impl HiveState {
         fs::read_to_string(&path).map_err(|e| e.to_string())
     }
 
+    // --- Heartbeat ---
+
+    pub fn update_agent_heartbeat(&self, run_id: &str, agent_id: &str) -> Result<(), String> {
+        let mut agent = self.load_agent(run_id, agent_id)?;
+        agent.heartbeat = Some(chrono::Utc::now());
+        self.save_agent(run_id, &agent)
+    }
+
     // --- Worktree path ---
 
     pub fn worktrees_dir(&self, run_id: &str) -> PathBuf {
@@ -606,6 +614,28 @@ mod tests {
 
         let loaded = state.load_spec("run-1").unwrap();
         assert_eq!(loaded, spec);
+    }
+
+    // --- Heartbeat ---
+
+    #[test]
+    fn update_agent_heartbeat_sets_timestamp() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("agent-1", AgentRole::Worker, AgentStatus::Running);
+        state.save_agent("run-1", &agent).unwrap();
+
+        // Agent starts with no heartbeat
+        let loaded = state.load_agent("run-1", "agent-1").unwrap();
+        assert!(loaded.heartbeat.is_none());
+
+        // Update heartbeat
+        state.update_agent_heartbeat("run-1", "agent-1").unwrap();
+
+        let loaded = state.load_agent("run-1", "agent-1").unwrap();
+        assert!(loaded.heartbeat.is_some());
     }
 
     // --- Path helpers ---
