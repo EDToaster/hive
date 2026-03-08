@@ -244,9 +244,22 @@ Parent: {}
         }
     }
 
-    /// Check if an agent process is still alive by PID
+    /// Check if an agent process is still alive by PID.
+    /// Uses waitpid(WNOHANG) first to reap zombies, then falls back to kill(0).
     pub fn is_alive(pid: u32) -> bool {
-        // Send signal 0 to check if process exists
+        // First, try to reap the process if it's a zombie child of ours.
+        // waitpid returns: pid if reaped, 0 if still running, -1 on error (not our child).
+        let mut status: libc::c_int = 0;
+        let result = unsafe { libc::waitpid(pid as i32, &mut status, libc::WNOHANG) };
+        if result == pid as i32 {
+            // Process was a zombie child and we just reaped it — it's dead
+            return false;
+        }
+        if result == 0 {
+            // Process is our child and still running
+            return true;
+        }
+        // result == -1: not our child (or invalid pid). Fall back to kill(0).
         unsafe { libc::kill(pid as i32, 0) == 0 }
     }
 }
