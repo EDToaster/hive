@@ -89,6 +89,9 @@ impl AgentSpawner {
         let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
             .map_err(|e| format!("Failed to create output file: {e}"))?;
 
+        let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log"))
+            .map_err(|e| format!("Failed to create stderr file: {e}"))?;
+
         let child = Command::new("claude")
             .arg("-p")
             .arg(&prompt)
@@ -97,7 +100,9 @@ impl AgentSpawner {
             .arg("--dangerously-skip-permissions")
             .env_remove("CLAUDECODE")
             .current_dir(&worktree_path)
+            .stdin(std::process::Stdio::null())
             .stdout(output_file)
+            .stderr(std::process::Stdio::from(stderr_file))
             .spawn()
             .map_err(|e| format!("Failed to launch claude: {e}"))?;
 

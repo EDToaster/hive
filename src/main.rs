@@ -463,7 +463,7 @@ fn cmd_read_messages(
 
     if stop_hook {
         if messages.is_empty() {
-            return Ok(());
+            Ok(())
         } else {
             let json = serde_json::to_string_pretty(&messages).map_err(|e| e.to_string())?;
             eprintln!("Unread messages for agent {}:\n{}", agent_id, json);

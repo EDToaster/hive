@@ -438,17 +438,23 @@ impl HiveMcp {
                 .map_err(|e| format!("Failed to create output file: {e}"));
             if let Ok(output_file) = output_file {
                 let worktree = target_agent.worktree.clone().unwrap_or_default();
-                let result = std::process::Command::new("claude")
-                    .arg("-p")
+                let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log")).ok();
+                let mut cmd = std::process::Command::new("claude");
+                cmd.arg("-p")
                     .arg(&p.body)
                     .arg("--resume")
                     .arg(session_id)
                     .arg("--output-format")
                     .arg("json")
                     .arg("--dangerously-skip-permissions")
+                    .env_remove("CLAUDECODE")
                     .current_dir(&worktree)
-                    .stdout(output_file)
-                    .spawn();
+                    .stdin(std::process::Stdio::null())
+                    .stdout(output_file);
+                if let Some(f) = stderr_file {
+                    cmd.stderr(std::process::Stdio::from(f));
+                }
+                let result = cmd.spawn();
                 match result {
                     Ok(child) => {
                         target_agent.status = AgentStatus::Running;
