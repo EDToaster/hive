@@ -720,6 +720,7 @@ dependencies = [
  "chrono",
  "clap",
  "crossterm",
+ "libc",
  "notify",
  "ratatui",
  "rmcp",
