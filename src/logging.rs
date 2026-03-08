@@ -2,6 +2,17 @@ use chrono::Utc;
 use rusqlite::Connection;
 use std::path::Path;
 
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct ToolCallRow {
+    pub timestamp: String,
+    pub agent_id: String,
+    pub tool_name: String,
+    pub args_summary: Option<String>,
+    pub status: String,
+    pub duration_ms: Option<i64>,
+}
+
 pub struct LogDb {
     conn: Connection,
 }
@@ -90,6 +101,56 @@ impl LogDb {
         for row in rows {
             results.push(row.map_err(|e| e.to_string())?);
         }
+        Ok(results)
+    }
+
+    #[allow(dead_code)]
+    pub fn recent_tool_calls(
+        &self,
+        run_id: &str,
+        limit: usize,
+        agent_id: Option<&str>,
+    ) -> Result<Vec<ToolCallRow>, String> {
+        let (sql, params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = match agent_id {
+            Some(aid) => (
+                "SELECT timestamp, agent_id, tool_name, args_summary, status, duration_ms \
+                 FROM tool_calls WHERE run_id = ?1 AND agent_id = ?2 \
+                 ORDER BY timestamp DESC LIMIT ?3"
+                    .to_string(),
+                vec![
+                    Box::new(run_id.to_string()),
+                    Box::new(aid.to_string()),
+                    Box::new(limit as i64),
+                ],
+            ),
+            None => (
+                "SELECT timestamp, agent_id, tool_name, args_summary, status, duration_ms \
+                 FROM tool_calls WHERE run_id = ?1 \
+                 ORDER BY timestamp DESC LIMIT ?2"
+                    .to_string(),
+                vec![Box::new(run_id.to_string()), Box::new(limit as i64)],
+            ),
+        };
+
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), |row| {
+                Ok(ToolCallRow {
+                    timestamp: row.get(0)?,
+                    agent_id: row.get(1)?,
+                    tool_name: row.get(2)?,
+                    args_summary: row.get(3)?,
+                    status: row.get(4)?,
+                    duration_ms: row.get(5)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| e.to_string())?);
+        }
+        results.reverse();
         Ok(results)
     }
 }
@@ -267,5 +328,143 @@ mod tests {
         let results = db.agent_tool_summary("run-1").unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].1, "tool_a");
+    }
+
+    #[test]
+    fn recent_tool_calls_empty_db() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+        let results = db.recent_tool_calls("run-1", 10, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn recent_tool_calls_respects_limit() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        for i in 0..5 {
+            db.log_tool_call(
+                "run-1",
+                "agent-1",
+                "worker",
+                "mcp",
+                &format!("tool_{}", i),
+                None,
+                "success",
+                Some(100),
+            )
+            .unwrap();
+        }
+
+        let results = db.recent_tool_calls("run-1", 3, None).unwrap();
+        assert_eq!(results.len(), 3);
+        // Should be the 3 most recent, in chronological order
+        assert_eq!(results[0].tool_name, "tool_2");
+        assert_eq!(results[1].tool_name, "tool_3");
+        assert_eq!(results[2].tool_name, "tool_4");
+    }
+
+    #[test]
+    fn recent_tool_calls_filters_by_agent() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_a",
+            None,
+            "success",
+            Some(100),
+        )
+        .unwrap();
+        db.log_tool_call(
+            "run-1",
+            "agent-2",
+            "worker",
+            "mcp",
+            "tool_b",
+            None,
+            "success",
+            Some(100),
+        )
+        .unwrap();
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_c",
+            None,
+            "success",
+            Some(100),
+        )
+        .unwrap();
+
+        let results = db.recent_tool_calls("run-1", 10, Some("agent-1")).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.agent_id == "agent-1"));
+    }
+
+    #[test]
+    fn recent_tool_calls_chronological_order() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        for _ in 0..3 {
+            db.log_tool_call(
+                "run-1",
+                "agent-1",
+                "worker",
+                "mcp",
+                "tool_a",
+                None,
+                "success",
+                Some(100),
+            )
+            .unwrap();
+        }
+
+        let results = db.recent_tool_calls("run-1", 10, None).unwrap();
+        assert_eq!(results.len(), 3);
+        for i in 0..results.len() - 1 {
+            assert!(results[i].timestamp <= results[i + 1].timestamp);
+        }
+    }
+
+    #[test]
+    fn recent_tool_calls_ignores_other_runs() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_a",
+            None,
+            "success",
+            Some(100),
+        )
+        .unwrap();
+        db.log_tool_call(
+            "run-2",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_b",
+            None,
+            "success",
+            Some(100),
+        )
+        .unwrap();
+
+        let results = db.recent_tool_calls("run-1", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tool_name, "tool_a");
     }
 }
