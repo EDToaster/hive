@@ -920,11 +920,7 @@ mod tests {
     fn load_config_reads_max_retries() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "max_retries: 3\n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "max_retries: 3\n").unwrap();
         let config = state.load_config();
         assert_eq!(config.max_retries, 3);
     }
