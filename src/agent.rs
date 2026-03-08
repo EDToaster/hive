@@ -103,6 +103,7 @@ impl AgentSpawner {
             heartbeat: Some(Utc::now()),
             session_id: None,
             last_completed_at: None,
+            messages_read_at: None,
             task_id: None,
         };
         state.save_agent(run_id, &agent)?;

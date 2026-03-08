@@ -135,6 +135,12 @@ pub struct LogToolParams {
     pub args_summary: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ReadMessagesParams {
+    /// Only return messages newer than this timestamp (ISO 8601). If omitted, returns unread messages since last read or last idle.
+    pub since: Option<String>,
+}
+
 #[tool_router]
 impl HiveMcp {
     pub fn new(run_id: String, agent_id: String, repo_root: String) -> Self {
@@ -426,41 +432,36 @@ impl HiveMcp {
             && target_agent.status == AgentStatus::Idle
             && let Some(ref session_id) = target_agent.session_id
         {
-                    // Spawn a --resume invocation
-                    let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
-                    let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
-                        .map_err(|e| format!("Failed to create output file: {e}"));
-                    if let Ok(output_file) = output_file {
-                        let worktree = target_agent.worktree.clone().unwrap_or_default();
-                        let result = std::process::Command::new("claude")
-                            .arg("-p")
-                            .arg(&p.body)
-                            .arg("--resume")
-                            .arg(session_id)
-                            .arg("--output-format")
-                            .arg("json")
-                            .arg("--dangerously-skip-permissions")
-                            .current_dir(&worktree)
-                            .stdout(output_file)
-                            .spawn();
-                        match result {
-                            Ok(child) => {
-                                target_agent.status = AgentStatus::Running;
-                                target_agent.pid = Some(child.id());
-                                target_agent.heartbeat = Some(Utc::now());
-                                let _ = state.save_agent(&self.run_id, &target_agent);
-                                wake_info = Some(format!(
-                                    " (woke agent '{}', pid {})",
-                                    p.to,
-                                    child.id()
-                                ));
-                            }
-                            Err(e) => {
-                                wake_info =
-                                    Some(format!(" (failed to wake agent '{}': {e})", p.to));
-                            }
-                        }
+            // Spawn a --resume invocation
+            let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
+            let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
+                .map_err(|e| format!("Failed to create output file: {e}"));
+            if let Ok(output_file) = output_file {
+                let worktree = target_agent.worktree.clone().unwrap_or_default();
+                let result = std::process::Command::new("claude")
+                    .arg("-p")
+                    .arg(&p.body)
+                    .arg("--resume")
+                    .arg(session_id)
+                    .arg("--output-format")
+                    .arg("json")
+                    .arg("--dangerously-skip-permissions")
+                    .current_dir(&worktree)
+                    .stdout(output_file)
+                    .spawn();
+                match result {
+                    Ok(child) => {
+                        target_agent.status = AgentStatus::Running;
+                        target_agent.pid = Some(child.id());
+                        target_agent.heartbeat = Some(Utc::now());
+                        let _ = state.save_agent(&self.run_id, &target_agent);
+                        wake_info = Some(format!(" (woke agent '{}', pid {})", p.to, child.id()));
                     }
+                    Err(e) => {
+                        wake_info = Some(format!(" (failed to wake agent '{}': {e})", p.to));
+                    }
+                }
+            }
         }
 
         let wake_suffix = wake_info.unwrap_or_default();
@@ -656,10 +657,7 @@ impl HiveMcp {
                 }
             };
 
-            let uncommitted_changes = agent
-                .worktree
-                .as_deref()
-                .and_then(Self::worktree_status);
+            let uncommitted_changes = agent.worktree.as_deref().and_then(Self::worktree_status);
 
             reports.push(serde_json::json!({
                 "agent_id": agent.id,
@@ -805,6 +803,72 @@ impl HiveMcp {
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
+    }
+
+    #[tool(
+        description = "Read messages sent to this agent. Updates the read cursor so subsequent calls only return new messages."
+    )]
+    async fn hive_read_messages(
+        &self,
+        params: Parameters<ReadMessagesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let state = self.state();
+        let mut agent = match state.load_agent(&self.run_id, &self.agent_id) {
+            Ok(a) => a,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+
+        // Determine "since" cutoff
+        let since =
+            if let Some(ref since_str) = params.0.since {
+                Some(since_str.parse::<chrono::DateTime<Utc>>().map_err(|e| {
+                    McpError::invalid_params(format!("Invalid timestamp: {e}"), None)
+                })?)
+            } else {
+                // Use max(messages_read_at, last_completed_at)
+                match (agent.messages_read_at, agent.last_completed_at) {
+                    (Some(a), Some(b)) => Some(a.max(b)),
+                    (Some(a), None) => Some(a),
+                    (None, Some(b)) => Some(b),
+                    (None, None) => None,
+                }
+            };
+
+        let messages = match state.load_messages_for_agent(&self.run_id, &self.agent_id, since) {
+            Ok(m) => m,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+
+        // Update read cursor
+        agent.messages_read_at = Some(Utc::now());
+        if let Err(e) = state.save_agent(&self.run_id, &agent) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to update read cursor: {e}"
+            ))]));
+        }
+
+        let count = messages.len();
+        let msg_data: Vec<serde_json::Value> = messages
+            .iter()
+            .map(|m| {
+                serde_json::json!({
+                    "id": m.id,
+                    "from": m.from,
+                    "timestamp": m.timestamp,
+                    "message_type": m.message_type,
+                    "body": m.body,
+                })
+            })
+            .collect();
+
+        let result = serde_json::json!({
+            "messages": msg_data,
+            "count": count,
+        });
+
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&result).unwrap_or_default(),
+        )]))
     }
 }
 

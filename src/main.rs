@@ -140,6 +140,7 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
         task_id: None,
         session_id: None,
         last_completed_at: None,
+        messages_read_at: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 
@@ -394,10 +395,7 @@ fn cmd_review_agent(agent_id: &str, run: Option<String>) -> Result<(), String> {
         return Err("Cannot review a running agent.".into());
     }
 
-    let worktree = agent
-        .worktree
-        .as_deref()
-        .ok_or("Agent has no worktree.")?;
+    let worktree = agent.worktree.as_deref().ok_or("Agent has no worktree.")?;
     let wt_path = std::path::Path::new(worktree);
     if !wt_path.exists() {
         return Err("Agent worktree no longer exists.".into());

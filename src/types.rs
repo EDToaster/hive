@@ -33,6 +33,7 @@ pub struct Agent {
     pub task_id: Option<String>,
     pub session_id: Option<String>,
     pub last_completed_at: Option<DateTime<Utc>>,
+    pub messages_read_at: Option<DateTime<Utc>>,
 }
 
 // --- Task Types ---
@@ -235,6 +236,7 @@ mod tests {
             task_id: Some("task-1".into()),
             session_id: None,
             last_completed_at: None,
+            messages_read_at: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -256,6 +258,7 @@ mod tests {
             task_id: None,
             session_id: None,
             last_completed_at: None,
+            messages_read_at: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
