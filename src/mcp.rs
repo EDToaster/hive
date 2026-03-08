@@ -286,6 +286,7 @@ impl HiveMcp {
     ) -> Result<CallToolResult, McpError> {
         let p = &params.0;
         let state = self.state();
+        let _lock = state.lock_file(&format!("task-{}", p.task_id)).map_err(|e| McpError::internal_error(e, None))?;
         let mut task = match state.load_task(&self.run_id, &p.task_id) {
             Ok(t) => t,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
@@ -501,6 +502,7 @@ impl HiveMcp {
         }
         let p = &params.0;
         let state = self.state();
+        let _lock = state.lock_file("merge-queue").map_err(|e| McpError::internal_error(e, None))?;
         let mut queue = match state.load_merge_queue(&self.run_id) {
             Ok(q) => q,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
@@ -532,6 +534,7 @@ impl HiveMcp {
             return Ok(result);
         }
         let state = self.state();
+        let _lock = state.lock_file("merge-queue").map_err(|e| McpError::internal_error(e, None))?;
         let mut queue = match state.load_merge_queue(&self.run_id) {
             Ok(q) => q,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
@@ -690,6 +693,7 @@ impl HiveMcp {
         let now = Utc::now();
         let mut reports = Vec::new();
         for mut agent in agents {
+            let _lock = state.lock_file(&format!("agent-{}", agent.id)).map_err(|e| McpError::internal_error(e, None))?;
             let process_alive = agent.pid.map(crate::agent::AgentSpawner::is_alive);
             let heartbeat_age_secs = agent.heartbeat.map(|hb| (now - hb).num_seconds());
 
