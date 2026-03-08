@@ -511,7 +511,7 @@ impl HiveMcp {
     }
 
     #[tool(
-        description = "Process the next item in the merge queue. Merges the branch into main and runs tests."
+        description = "Process the next item in the merge queue. Merges the branch into main, runs verification, and handles conflicts with auto-rebase."
     )]
     async fn hive_merge_next(&self) -> Result<CallToolResult, McpError> {
         if let Err(result) = self.require_role(&[AgentRole::Coordinator]) {
@@ -530,11 +530,73 @@ impl HiveMcp {
         }
 
         let entry = queue.entries.remove(0);
+        let repo_root = state.repo_root().to_path_buf();
+
+        // Helper closure: mark task as failed
+        let mark_failed = |state: &HiveState, run_id: &str, task_id: &str| {
+            if let Ok(mut task) = state.load_task(run_id, task_id) {
+                task.status = TaskStatus::Failed;
+                task.updated_at = Utc::now();
+                let _ = state.save_task(run_id, &task);
+            }
+        };
 
         // Attempt merge
-        let repo_root = state.repo_root();
-        match crate::git::Git::merge(repo_root, &entry.branch) {
+        let merge_result = crate::git::Git::merge(&repo_root, &entry.branch);
+
+        // If merge failed, try auto-rebase then retry
+        let merge_result = if let Err(merge_err) = merge_result {
+            let _ = crate::git::Git::merge_abort(&repo_root);
+
+            match crate::git::Git::rebase(&repo_root, &entry.branch, "main") {
+                Ok(()) => {
+                    // Rebase succeeded, retry merge
+                    crate::git::Git::merge(&repo_root, &entry.branch)
+                }
+                Err(rebase_err) => {
+                    let _ = crate::git::Git::rebase_abort(&repo_root);
+                    mark_failed(&state, &self.run_id, &entry.task_id);
+                    state.save_merge_queue(&self.run_id, &queue).ok();
+                    let msg = format!(
+                        "Merge failed for branch '{}': {merge_err}. Auto-rebase also failed: {rebase_err}. Task marked as failed.",
+                        entry.branch
+                    );
+                    Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &msg);
+                    return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                }
+            }
+        } else {
+            merge_result
+        };
+
+        match merge_result {
             Ok(()) => {
+                // Run verification command if configured
+                let config = state.load_config();
+                if let Some(ref verify_cmd) = config.verify_command
+                    && let Err(verify_err) =
+                        crate::git::Git::run_shell_command(&repo_root, verify_cmd)
+                {
+                    // Verification failed — undo merge commit
+                    let _ = crate::git::Git::run_shell_command(
+                        &repo_root,
+                        "git reset --hard HEAD~1",
+                    );
+                    mark_failed(&state, &self.run_id, &entry.task_id);
+                    state.save_merge_queue(&self.run_id, &queue).ok();
+                    let msg = format!(
+                        "Verification failed for branch '{}' (task '{}'): {verify_err}",
+                        entry.branch, entry.task_id
+                    );
+                    Self::notify_submitter(
+                        &state,
+                        &self.run_id,
+                        &entry.submitted_by,
+                        &msg,
+                    );
+                    return Ok(CallToolResult::error(vec![Content::text(msg)]));
+                }
+
                 let mut warnings = Vec::new();
 
                 // Update task status
@@ -561,18 +623,27 @@ impl HiveMcp {
                 for w in &warnings {
                     msg.push_str(&format!("\n{w}"));
                 }
+
+                Self::notify_submitter(
+                    &state,
+                    &self.run_id,
+                    &entry.submitted_by,
+                    &msg,
+                );
+
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
             Err(e) => {
-                // Abort the failed merge
-                let _ = crate::git::Git::merge_abort(repo_root);
-                // Put entry back at front
-                queue.entries.insert(0, entry.clone());
+                // Merge failed even after rebase
+                let _ = crate::git::Git::merge_abort(&repo_root);
+                mark_failed(&state, &self.run_id, &entry.task_id);
                 state.save_merge_queue(&self.run_id, &queue).ok();
-                Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Merge failed for branch '{}': {e}. Entry remains in queue.",
+                let msg = format!(
+                    "Merge failed for branch '{}' after rebase: {e}. Task marked as failed.",
                     entry.branch
-                ))]))
+                );
+                Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &msg);
+                Ok(CallToolResult::error(vec![Content::text(msg)]))
             }
         }
     }
@@ -908,6 +979,20 @@ impl HiveMcp {
         crate::git::Git::add_all(wt_path).ok()?;
         let _ = crate::git::Git::commit(wt_path, "wip: auto-commit on agent exit");
         Some(status)
+    }
+
+    fn notify_submitter(state: &HiveState, run_id: &str, to: &str, body: &str) {
+        let msg_id = format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let message = Message {
+            id: msg_id,
+            from: "coordinator".to_string(),
+            to: to.to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Info,
+            body: body.to_string(),
+            refs: vec![],
+        };
+        let _ = state.save_message(run_id, &message);
     }
 
     fn worktree_status(worktree: &str) -> Option<String> {
