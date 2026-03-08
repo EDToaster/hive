@@ -1,9 +1,9 @@
-#[allow(dead_code)]
 mod agent;
 mod cli;
 #[allow(dead_code)]
 mod git;
 mod logging;
+mod mcp;
 #[allow(dead_code)]
 mod state;
 mod types;
@@ -296,8 +296,7 @@ fn cmd_tui() -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_mcp(_run_id: &str, _agent_id: &str) -> Result<(), String> {
-    // TODO: Phase 5
-    println!("MCP server not yet implemented.");
-    Ok(())
+fn cmd_mcp(run_id: &str, agent_id: &str) -> Result<(), String> {
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    rt.block_on(crate::mcp::run_mcp_server(run_id, agent_id))
 }
