@@ -46,6 +46,15 @@ impl AgentSpawner {
                             )
                         }
                     ]
+                }],
+                "Stop": [{
+                    "matcher": "*",
+                    "hooks": [{
+                        "type": "command",
+                        "command": format!(
+                            "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
+                        )
+                    }]
                 }]
             }
         });
@@ -181,6 +190,8 @@ Parent: {}
 - Review worker output when they submit for review.
 - Send workers back with feedback if changes are needed.
 - Submit approved branches to the merge queue via hive_submit_to_queue.
+- When you receive messages via the Stop hook, process them before finishing.
+- Use hive_read_messages to acknowledge messages and check for more.
 - Report progress to the coordinator via hive_send_message.
 - Commit your work with descriptive messages as you go.
 - Always commit before finishing — uncommitted work may be lost.
@@ -210,6 +221,8 @@ Parent: {}
 - When done, call hive_update_task to set status to "review".
 - If you discover an unrelated bug or issue, call hive_create_task
   with urgency and a description. It will be routed to your lead.
+- When you receive messages via the Stop hook, process them before finishing.
+- Use hive_read_messages to acknowledge messages and check for more.
 - Commit your work with descriptive messages as you go.
 - Always commit before finishing — uncommitted work may be lost.
 - When finished, stop. Your lead will resume you if changes are needed.
@@ -267,6 +280,7 @@ mod tests {
         assert!(prompt.contains("Spawn workers"));
         assert!(prompt.contains("Submit approved branches"));
         assert!(prompt.contains("Commit your work"));
+        assert!(prompt.contains("Stop hook"));
     }
 
     #[test]
@@ -290,6 +304,7 @@ mod tests {
         assert!(prompt.contains("Do not spawn other agents"));
         assert!(prompt.contains("Do not submit to the merge queue"));
         assert!(prompt.contains("Commit your work"));
+        assert!(prompt.contains("Stop hook"));
     }
 
     #[test]
