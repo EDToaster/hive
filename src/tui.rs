@@ -209,7 +209,7 @@ fn agent_status_color(s: AgentStatus) -> Color {
     match s {
         AgentStatus::Running => Color::Green,
         AgentStatus::Idle => Color::Cyan,
-        AgentStatus::Done => Color::Blue,
+        AgentStatus::Done => Color::LightBlue,
         AgentStatus::Failed => Color::Red,
         AgentStatus::Stalled => Color::Yellow,
     }
@@ -218,9 +218,9 @@ fn agent_status_color(s: AgentStatus) -> Color {
 fn task_status_color(s: TaskStatus) -> Color {
     match s {
         TaskStatus::Active | TaskStatus::Approved => Color::Green,
-        TaskStatus::Merged => Color::Blue,
+        TaskStatus::Merged => Color::LightBlue,
         TaskStatus::Queued | TaskStatus::Review | TaskStatus::Blocked => Color::Yellow,
-        TaskStatus::Pending => Color::DarkGray,
+        TaskStatus::Pending => Color::Gray,
         TaskStatus::Failed => Color::Red,
     }
 }
@@ -262,7 +262,7 @@ fn border_color(focused: Pane, this: Pane) -> Color {
     if focused == this {
         Color::Cyan
     } else {
-        Color::DarkGray
+        Color::Gray
     }
 }
 
@@ -592,7 +592,7 @@ fn render_title_bar(frame: &mut Frame, area: Rect, run_id: &str, run_meta: &Opti
     let line = Line::from(vec![
         Span::styled(left_text, Style::default().fg(Color::Cyan).bold()),
         Span::raw(" ".repeat(gap)),
-        Span::styled(right, Style::default().fg(Color::DarkGray)),
+        Span::styled(right, Style::default().fg(Color::Gray)),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -618,7 +618,7 @@ fn render_stats_bar(frame: &mut Frame, area: Rect, agents: &[Agent], tasks: &[Ta
             if !first {
                 spans.push(Span::styled(
                     " \u{00B7} ",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
                 ));
             }
             spans.push(Span::styled(
@@ -648,7 +648,7 @@ fn render_stats_bar(frame: &mut Frame, area: Rect, agents: &[Agent], tasks: &[Ta
             if !first {
                 spans.push(Span::styled(
                     " \u{00B7} ",
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(Color::Gray),
                 ));
             }
             spans.push(Span::styled(
@@ -680,7 +680,7 @@ fn render_swarm_pane(
         .map(|node| {
             let dimmed = matches!(node.status, AgentStatus::Done | AgentStatus::Failed);
             let base_color = if dimmed {
-                Color::DarkGray
+                Color::Gray
             } else {
                 agent_status_color(node.status)
             };
@@ -698,7 +698,7 @@ fn render_swarm_pane(
                 spans.push(Span::styled(
                     format!(" {tid}"),
                     Style::default().fg(if dimmed {
-                        Color::DarkGray
+                        Color::Gray
                     } else {
                         Color::White
                     }),
@@ -708,7 +708,7 @@ fn render_swarm_pane(
             if let Some(hb) = node.heartbeat {
                 let age = (now - hb).num_seconds().max(0);
                 let hb_color = if dimmed {
-                    Color::DarkGray
+                    Color::Gray
                 } else {
                     heartbeat_color(age, stall_timeout)
                 };
@@ -727,7 +727,7 @@ fn render_swarm_pane(
         items.push(ListItem::new(""));
         items.push(ListItem::new(Span::styled(
             "Queue \u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}\u{2500}",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )));
         for (i, entry) in queue.entries.iter().enumerate() {
             items.push(ListItem::new(Span::styled(
@@ -748,7 +748,7 @@ fn render_swarm_pane(
 
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::default().bg(Color::Rgb(40, 40, 60)));
+        .highlight_style(Style::default().bg(Color::Rgb(55, 55, 90)));
 
     frame.render_stateful_widget(list, area, &mut list_state);
 }
@@ -763,7 +763,7 @@ fn render_tasks_pane(frame: &mut Frame, area: Rect, tasks: &[Task], ui: &TuiStat
         .enumerate()
         .map(|(i, t)| {
             let stripe = if i % 2 == 0 {
-                Style::default().bg(Color::Rgb(30, 30, 30))
+                Style::default().bg(Color::Rgb(45, 45, 55))
             } else {
                 Style::default()
             };
@@ -804,7 +804,7 @@ fn render_tasks_pane(frame: &mut Frame, area: Rect, tasks: &[Task], ui: &TuiStat
                 .bold()
                 .style(Style::default().fg(Color::White)),
         )
-        .row_highlight_style(Style::default().bg(Color::Rgb(40, 40, 60)));
+        .row_highlight_style(Style::default().bg(Color::Rgb(55, 55, 90)));
 
     frame.render_stateful_widget(table, area, &mut table_state);
 }
@@ -837,7 +837,7 @@ fn render_activity_stream(
                     let ts = timestamp.format("%H:%M:%S");
                     let text = format!("{ts} \u{25B8} {from} \u{2192} {to}: {body}");
                     let color = if is_dimmed {
-                        Color::Rgb(60, 60, 60)
+                        Color::Rgb(110, 110, 120)
                     } else {
                         Color::Cyan
                     };
@@ -855,12 +855,12 @@ fn render_activity_stream(
                     let args = args_summary.as_deref().unwrap_or("");
                     let (icon, color) = if status == "success" {
                         if is_dimmed {
-                            ("\u{2713}", Color::Rgb(60, 60, 60))
+                            ("\u{2713}", Color::Rgb(110, 110, 120))
                         } else {
-                            ("\u{2713}", Color::DarkGray)
+                            ("\u{2713}", Color::Gray)
                         }
                     } else if is_dimmed {
-                        ("\u{2717}", Color::Rgb(60, 60, 60))
+                        ("\u{2717}", Color::Rgb(110, 110, 120))
                     } else {
                         ("\u{2717}", Color::Red)
                     };
@@ -962,7 +962,7 @@ fn render_agent_overlay(frame: &mut Frame, area: Rect, agent: &Agent) {
         Line::from(""),
         Line::from(Span::styled(
             "                               [Esc] close",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )),
     ];
 
@@ -1028,7 +1028,7 @@ fn render_task_overlay(frame: &mut Frame, area: Rect, task: &Task) {
 
     lines.push(Line::from(Span::styled(
         "                                [Esc] close",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
 
     let block = Block::default()
