@@ -107,6 +107,17 @@ pub struct SubmitToQueueParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct WaitForActivityParams {
+    /// Timeout in seconds (default 60)
+    #[serde(default = "default_wait_timeout")]
+    pub timeout_secs: u64,
+}
+
+fn default_wait_timeout() -> u64 {
+    60
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct LogToolParams {
     /// Tool name
     pub tool: String,
@@ -611,6 +622,28 @@ impl HiveMcp {
             Ok(()) => Ok(CallToolResult::success(vec![Content::text(
                 "Heartbeat updated.",
             )])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    #[tool(
+        description = "Block until activity is detected in the hive run directory, or timeout. Returns a summary of what changed."
+    )]
+    async fn hive_wait_for_activity(
+        &self,
+        params: Parameters<WaitForActivityParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
+            return Ok(result);
+        }
+        let result = crate::wait::wait_for_activity(
+            self.repo_root.as_ref(),
+            &self.run_id,
+            params.0.timeout_secs,
+        )
+        .await;
+        match result {
+            Ok(summary) => Ok(CallToolResult::success(vec![Content::text(summary)])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }

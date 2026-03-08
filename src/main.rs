@@ -8,6 +8,7 @@ mod mcp;
 mod state;
 mod tui;
 mod types;
+mod wait;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -36,6 +37,7 @@ fn main() {
         Commands::Logs { agent } => cmd_logs(agent),
         Commands::Tui => cmd_tui(),
         Commands::Mcp { run, agent } => cmd_mcp(&run, &agent),
+        Commands::Wait { run, timeout } => cmd_wait(run, timeout),
         Commands::Stop => cmd_stop(),
     };
 
@@ -361,6 +363,22 @@ fn cmd_tui() -> Result<(), String> {
 fn cmd_mcp(run_id: &str, agent_id: &str) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(crate::mcp::run_mcp_server(run_id, agent_id))
+}
+
+fn cmd_wait(run: Option<String>, timeout: u64) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let run_id = match run {
+        Some(r) => r,
+        None => state.active_run_id()?,
+    };
+    let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    let result = rt.block_on(crate::wait::wait_for_activity(
+        state.repo_root(),
+        &run_id,
+        timeout,
+    ))?;
+    println!("{result}");
+    Ok(())
 }
 
 fn cmd_stop() -> Result<(), String> {

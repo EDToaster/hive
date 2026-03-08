@@ -81,6 +81,15 @@ pub enum Commands {
         agent: String,
     },
 
+    /// Wait for activity in the current run (blocks until change or timeout)
+    Wait {
+        #[arg(long)]
+        run: Option<String>,
+        /// Timeout in seconds (default 60)
+        #[arg(long, default_value = "60")]
+        timeout: u64,
+    },
+
     /// Stop the current run and clean up worktrees
     Stop,
 }
