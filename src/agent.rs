@@ -119,6 +119,7 @@ impl AgentSpawner {
             last_completed_at: None,
             messages_read_at: None,
             task_id: None,
+            retry_count: 0,
         };
         state.save_agent(run_id, &agent)?;
 

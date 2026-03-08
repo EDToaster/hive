@@ -34,6 +34,8 @@ pub struct Agent {
     pub session_id: Option<String>,
     pub last_completed_at: Option<DateTime<Utc>>,
     pub messages_read_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub retry_count: u32,
 }
 
 // --- Task Types ---
@@ -237,6 +239,7 @@ mod tests {
             session_id: None,
             last_completed_at: None,
             messages_read_at: None,
+            retry_count: 0,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -259,6 +262,7 @@ mod tests {
             session_id: None,
             last_completed_at: None,
             messages_read_at: None,
+            retry_count: 0,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
