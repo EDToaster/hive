@@ -616,7 +616,10 @@ fn render_stats_bar(frame: &mut Frame, area: Rect, agents: &[Agent], tasks: &[Ta
         let count = agents.iter().filter(|a| a.status == status).count();
         if count > 0 {
             if !first {
-                spans.push(Span::styled(" \u{00B7} ", Style::default().fg(Color::Gray)));
+                spans.push(Span::styled(
+                    " \u{00B7} ",
+                    Style::default().fg(Color::Gray),
+                ));
             }
             spans.push(Span::styled(
                 format!("{count} {}", format!("{status:?}").to_lowercase()),
@@ -643,7 +646,10 @@ fn render_stats_bar(frame: &mut Frame, area: Rect, agents: &[Agent], tasks: &[Ta
         let count = tasks.iter().filter(|t| t.status == status).count();
         if count > 0 {
             if !first {
-                spans.push(Span::styled(" \u{00B7} ", Style::default().fg(Color::Gray)));
+                spans.push(Span::styled(
+                    " \u{00B7} ",
+                    Style::default().fg(Color::Gray),
+                ));
             }
             spans.push(Span::styled(
                 format!("{count} {}", format!("{status:?}").to_lowercase()),
@@ -691,7 +697,11 @@ fn render_swarm_pane(
             if let Some(ref tid) = node.task_id {
                 spans.push(Span::styled(
                     format!(" {tid}"),
-                    Style::default().fg(if dimmed { Color::Gray } else { Color::White }),
+                    Style::default().fg(if dimmed {
+                        Color::Gray
+                    } else {
+                        Color::White
+                    }),
                 ));
             }
 
