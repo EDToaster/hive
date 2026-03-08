@@ -204,6 +204,11 @@ Parent: {}
 - When you have no more actions to take, finish your response.
   You will be resumed when workers complete or the coordinator sends a message.
 
+## Context Management
+- If you notice your context is getting large, summarize your progress so far in a commit message.
+- Before making large file reads, check if smaller targeted reads would suffice.
+- If you're running low on context, commit your work, update the task status to "review" with a note about remaining work, and stop.
+
 ## Constraints
 - You may only spawn workers, not other leads.
 - You may only send messages to your workers and the coordinator.
@@ -232,6 +237,11 @@ Parent: {}
 - Commit your work with descriptive messages as you go.
 - Always commit before finishing — uncommitted work may be lost.
 - When finished, stop. Your lead will resume you if changes are needed.
+
+## Context Management
+- If you notice your context is getting large, summarize your progress so far in a commit message.
+- Before making large file reads, check if smaller targeted reads would suffice.
+- If you're running low on context, commit your work, update the task status to "review" with a note about remaining work, and stop.
 
 ## Constraints
 - Do not spawn other agents.
@@ -330,6 +340,28 @@ mod tests {
     fn worker_prompt_defaults_parent_to_unknown() {
         let prompt = AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, None, "task");
         assert!(prompt.contains("Parent: unknown"));
+    }
+
+    #[test]
+    fn context_management_prompt_in_lead() {
+        let prompt =
+            AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, Some("coord-1"), "task");
+        assert!(prompt.contains("## Context Management"));
+        assert!(prompt.contains("commit your work, update the task status"));
+    }
+
+    #[test]
+    fn context_management_prompt_in_worker() {
+        let prompt =
+            AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, Some("lead-1"), "task");
+        assert!(prompt.contains("## Context Management"));
+        assert!(prompt.contains("commit your work, update the task status"));
+    }
+
+    #[test]
+    fn context_management_prompt_not_in_coordinator() {
+        let prompt = AgentSpawner::generate_prompt("coord-1", AgentRole::Coordinator, None, "task");
+        assert!(!prompt.contains("## Context Management"));
     }
 
     #[test]

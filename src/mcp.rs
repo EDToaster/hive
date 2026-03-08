@@ -68,6 +68,8 @@ pub struct UpdateTaskParams {
     pub assigned_to: Option<String>,
     /// Branch name
     pub branch: Option<String>,
+    /// Optional notes to append to task description (for context handoff)
+    pub notes: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -139,6 +141,14 @@ pub struct LogToolParams {
 pub struct ReadMessagesParams {
     /// Only return messages newer than this timestamp (ISO 8601). If omitted, returns unread messages since last read or last idle.
     pub since: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct RetryAgentParams {
+    /// Agent ID of the failed agent to retry
+    pub agent_id: String,
+    /// Optional feedback about what went wrong, appended to the new agent's prompt
+    pub feedback: Option<String>,
 }
 
 #[tool_router]
@@ -305,6 +315,10 @@ impl HiveMcp {
 
         if let Some(ref branch) = p.branch {
             task.branch = Some(branch.clone());
+        }
+
+        if let Some(ref notes) = p.notes {
+            task.description.push_str(&format!("\n\n## Notes\n{notes}"));
         }
 
         task.updated_at = Utc::now();
@@ -599,12 +613,7 @@ impl HiveMcp {
                         "Verification failed for branch '{}' (task '{}').\nOutput:\n{truncated_output}",
                         entry.branch, entry.task_id
                     );
-                    Self::notify_submitter(
-                        &state,
-                        &self.run_id,
-                        &entry.submitted_by,
-                        &notify_msg,
-                    );
+                    Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &notify_msg);
                     return Ok(CallToolResult::error(vec![Content::text(msg)]));
                 }
 
@@ -635,12 +644,7 @@ impl HiveMcp {
                     msg.push_str(&format!("\n{w}"));
                 }
 
-                Self::notify_submitter(
-                    &state,
-                    &self.run_id,
-                    &entry.submitted_by,
-                    &msg,
-                );
+                Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &msg);
 
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
@@ -735,9 +739,43 @@ impl HiveMcp {
                 AgentStatus::Running => {
                     if process_alive == Some(false) {
                         "dead"
-                    } else if heartbeat_age_secs
-                        .is_some_and(|age| age > config.stall_timeout_seconds)
+                    } else if process_alive == Some(true)
+                        && heartbeat_age_secs.is_some_and(|age| age > config.stall_timeout_seconds)
                     {
+                        // Active stall recovery: kill the stalled process
+                        if let Some(pid) = agent.pid {
+                            unsafe {
+                                libc::kill(pid as i32, libc::SIGTERM);
+                            }
+                            std::thread::sleep(std::time::Duration::from_secs(5));
+                            if crate::agent::AgentSpawner::is_alive(pid) {
+                                unsafe {
+                                    libc::kill(pid as i32, libc::SIGKILL);
+                                }
+                            }
+                        }
+
+                        // Auto-commit any work
+                        if let Some(ref wt) = agent.worktree {
+                            Self::auto_commit_worktree(wt);
+                        }
+
+                        // Try to capture session_id
+                        if agent.session_id.is_none() {
+                            let output_path = state
+                                .agents_dir(&self.run_id)
+                                .join(&agent.id)
+                                .join("output.json");
+                            if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
+                                agent.session_id = Some(sid);
+                            }
+                        }
+
+                        // Update agent state
+                        agent.status = AgentStatus::Stalled;
+                        agent.pid = None;
+                        let _ = state.save_agent(&self.run_id, &agent);
+
                         "stalled"
                     } else {
                         "running"
@@ -890,6 +928,148 @@ impl HiveMcp {
                 }
             }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    #[tool(
+        description = "Retry a failed agent by re-spawning it with the same task and a fresh worktree"
+    )]
+    async fn hive_retry_agent(
+        &self,
+        params: Parameters<RetryAgentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        // Permission check: only coordinator and leads can retry
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
+            return Ok(result);
+        }
+
+        let p = &params.0;
+        let state = self.state();
+        let agent = match state.load_agent(&self.run_id, &p.agent_id) {
+            Ok(a) => a,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+
+        // Enforce hierarchy: coordinator retries leads, leads retry own workers
+        let caller_role = self.agent_role();
+        match caller_role {
+            AgentRole::Coordinator => {
+                if agent.role != AgentRole::Lead {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Coordinator can only retry lead agents.",
+                    )]));
+                }
+            }
+            AgentRole::Lead => {
+                if agent.role != AgentRole::Worker
+                    || agent.parent.as_deref() != Some(&self.agent_id)
+                {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Leads can only retry their own workers.",
+                    )]));
+                }
+            }
+            AgentRole::Worker => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Workers cannot retry agents.",
+                )]));
+            }
+        }
+
+        // Verify agent is in a retriable state
+        if agent.status != AgentStatus::Failed && agent.status != AgentStatus::Stalled {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Agent is not in Failed or Stalled state.",
+            )]));
+        }
+
+        // Check retry limit
+        let config = state.load_config();
+        if agent.retry_count >= config.max_retries {
+            // Mark permanently failed
+            let mut failed_agent = agent.clone();
+            failed_agent.status = AgentStatus::Failed;
+            let _ = state.save_agent(&self.run_id, &failed_agent);
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Agent has exceeded max retries ({})",
+                config.max_retries
+            ))]));
+        }
+
+        // Get task description for re-spawn
+        let task_description = match &agent.task_id {
+            Some(tid) => match state.load_task(&self.run_id, tid) {
+                Ok(task) => task.description.clone(),
+                Err(_) => {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Agent has no associated task or task not found.",
+                    )]));
+                }
+            },
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Agent has no associated task.",
+                )]));
+            }
+        };
+
+        // Handle old worktree: auto-commit, get diff, remove
+        let mut diff_stat = String::new();
+        if let Some(ref worktree) = agent.worktree {
+            let wt_path = std::path::Path::new(worktree);
+            if wt_path.exists() {
+                Self::auto_commit_worktree(worktree);
+                diff_stat = crate::git::Git::diff_stat_since(wt_path, "main").unwrap_or_default();
+                if let Err(_e) = crate::git::Git::worktree_remove(state.repo_root(), wt_path) {
+                    let _ = crate::git::Git::worktree_prune(state.repo_root());
+                }
+            }
+            // Delete old branch (ignore errors)
+            let _ = crate::git::Git::branch_delete(
+                state.repo_root(),
+                &format!("hive/{}/{}", self.run_id, agent.id),
+            );
+        }
+
+        // Build enhanced task description with previous attempt context
+        let retry_num = agent.retry_count + 1;
+        let mut enhanced_desc = task_description;
+        enhanced_desc.push_str(&format!("\n\n## Previous Attempt (retry #{})\n", retry_num));
+        if let Some(ref feedback) = p.feedback {
+            enhanced_desc.push_str(feedback);
+            enhanced_desc.push('\n');
+        }
+        if !diff_stat.is_empty() {
+            enhanced_desc.push_str(&format!(
+                "\n### Diff from previous attempt:\n```\n{}\n```",
+                diff_stat
+            ));
+        }
+
+        // Re-spawn agent
+        match crate::agent::AgentSpawner::spawn(
+            &state,
+            &self.run_id,
+            &agent.id,
+            agent.role,
+            agent.parent.as_deref(),
+            &enhanced_desc,
+        ) {
+            Ok(mut new_agent) => {
+                new_agent.retry_count = retry_num;
+                new_agent.task_id = agent.task_id.clone();
+                let _ = state.save_agent(&self.run_id, &new_agent);
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Retried agent '{}' (retry #{}, pid={}, worktree={})",
+                    new_agent.id,
+                    retry_num,
+                    new_agent.pid.unwrap_or(0),
+                    new_agent.worktree.unwrap_or_default()
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to re-spawn agent: {e}"
+            ))])),
         }
     }
 
