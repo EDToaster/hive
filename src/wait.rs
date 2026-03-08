@@ -1,10 +1,28 @@
 use notify::{Event, RecursiveMode, Watcher};
+use std::collections::HashMap;
 use std::path::Path;
 
 use crate::state::HiveState;
 use crate::types::{Agent, MergeQueue, Message, Task};
 
-fn describe_event(run_dir: &Path, path: &Path) -> Option<String> {
+/// Returns true if the only differences between two agents are timestamp-only
+/// fields (heartbeat, messages_read_at, last_completed_at).
+fn is_heartbeat_only_change(old: &Agent, new: &Agent) -> bool {
+    old.id == new.id
+        && old.role == new.role
+        && old.status == new.status
+        && old.parent == new.parent
+        && old.pid == new.pid
+        && old.worktree == new.worktree
+        && old.task_id == new.task_id
+        && old.session_id == new.session_id
+}
+
+fn describe_event(
+    run_dir: &Path,
+    path: &Path,
+    agent_snapshots: &HashMap<String, Agent>,
+) -> Option<String> {
     let rel = path.strip_prefix(run_dir).ok()?;
     let components: Vec<&str> = rel.iter().filter_map(|c| c.to_str()).collect();
 
@@ -13,6 +31,14 @@ fn describe_event(run_dir: &Path, path: &Path) -> Option<String> {
         ["agents", agent_id, "agent.json"] => {
             let data = std::fs::read_to_string(path).ok()?;
             let agent: Agent = serde_json::from_str(&data).ok()?;
+
+            // Skip heartbeat-only changes
+            if let Some(old) = agent_snapshots.get(*agent_id)
+                && is_heartbeat_only_change(old, &agent)
+            {
+                return None;
+            }
+
             let process_alive = agent.pid.map(crate::agent::AgentSpawner::is_alive);
             Some(format!(
                 "agent {} status: {:?}, process_alive: {}",
@@ -128,6 +154,15 @@ pub async fn wait_for_activity(
         ));
     }
 
+    // Snapshot current agent states before watching so we can detect heartbeat-only changes
+    let state = HiveState::new(repo_root.to_path_buf());
+    let agent_snapshots: HashMap<String, Agent> = state
+        .list_agents(run_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|a| (a.id.clone(), a))
+        .collect();
+
     let repo_root_owned = repo_root.to_path_buf();
     let run_id_owned = run_id.to_string();
     let run_dir_owned = run_dir.clone();
@@ -156,21 +191,38 @@ pub async fn wait_for_activity(
         })
         .map_err(|e| format!("Failed to create file watcher: {e}"))?;
 
-        match rx.recv_timeout(std::time::Duration::from_secs(timeout_dur)) {
-            Ok(paths) => {
-                for path in &paths {
-                    if let Some(desc) = describe_event(&run_dir_owned, path) {
-                        return Ok(desc);
-                    }
-                }
-                let rel = paths[0].strip_prefix(&run_dir_owned).unwrap_or(&paths[0]);
-                Ok(format!("activity detected: {}", rel.display()))
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_dur);
+
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Ok(timeout_summary(
+                    &repo_root_owned,
+                    &run_id_owned,
+                    timeout_dur,
+                ));
             }
-            Err(_) => Ok(timeout_summary(
-                &repo_root_owned,
-                &run_id_owned,
-                timeout_dur,
-            )),
+
+            match rx.recv_timeout(remaining) {
+                Ok(paths) => {
+                    for path in &paths {
+                        if let Some(desc) =
+                            describe_event(&run_dir_owned, path, &agent_snapshots)
+                        {
+                            return Ok(desc);
+                        }
+                    }
+                    // All events were heartbeat-only, keep waiting
+                    continue;
+                }
+                Err(_) => {
+                    return Ok(timeout_summary(
+                        &repo_root_owned,
+                        &run_id_owned,
+                        timeout_dur,
+                    ));
+                }
+            }
         }
     })
     .await
@@ -223,7 +275,7 @@ mod tests {
         let task_path = run_dir.join("tasks").join("task-1.json");
         std::fs::write(&task_path, serde_json::to_string_pretty(&task).unwrap()).unwrap();
 
-        let desc = describe_event(run_dir, &task_path).unwrap();
+        let desc = describe_event(run_dir, &task_path, &HashMap::new()).unwrap();
         assert!(desc.contains("task-1"), "unexpected: {desc}");
         assert!(desc.contains("Active"), "unexpected: {desc}");
     }
@@ -246,7 +298,7 @@ mod tests {
         let msg_path = run_dir.join("messages").join("msg-42.json");
         std::fs::write(&msg_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
 
-        let desc = describe_event(run_dir, &msg_path).unwrap();
+        let desc = describe_event(run_dir, &msg_path, &HashMap::new()).unwrap();
         assert!(desc.contains("msg-42"), "unexpected: {desc}");
         assert!(desc.contains("lead-1"), "unexpected: {desc}");
         assert!(desc.contains("coordinator"), "unexpected: {desc}");
@@ -270,7 +322,7 @@ mod tests {
         let queue_path = run_dir.join("merge-queue.json");
         std::fs::write(&queue_path, serde_json::to_string_pretty(&queue).unwrap()).unwrap();
 
-        let desc = describe_event(run_dir, &queue_path).unwrap();
+        let desc = describe_event(run_dir, &queue_path, &HashMap::new()).unwrap();
         assert!(desc.contains("merge queue"), "unexpected: {desc}");
         assert!(desc.contains("1 entries"), "unexpected: {desc}");
     }
@@ -282,7 +334,7 @@ mod tests {
         let path = run_dir.join("run.json");
         std::fs::write(&path, "{}").unwrap();
 
-        assert!(describe_event(run_dir, &path).is_none());
+        assert!(describe_event(run_dir, &path, &HashMap::new()).is_none());
     }
 
     #[test]
@@ -370,5 +422,120 @@ mod tests {
         let result = timeout_summary(dir.path(), run_id, 30);
         assert!(result.contains("1 running"), "unexpected: {result}");
         assert!(result.contains("1 done"), "unexpected: {result}");
+    }
+
+    fn make_test_agent(id: &str) -> Agent {
+        Agent {
+            id: id.into(),
+            role: crate::types::AgentRole::Worker,
+            status: crate::types::AgentStatus::Running,
+            parent: Some("lead-1".into()),
+            pid: Some(12345),
+            worktree: Some("/tmp/wt".into()),
+            heartbeat: Some(chrono::Utc::now()),
+            session_id: Some("sess-1".into()),
+            last_completed_at: None,
+            messages_read_at: None,
+            task_id: Some("task-1".into()),
+        }
+    }
+
+    #[test]
+    fn is_heartbeat_only_change_returns_true_for_heartbeat_update() {
+        let old = make_test_agent("w-1");
+        let mut new = old.clone();
+        new.heartbeat = Some(chrono::Utc::now() + chrono::Duration::seconds(30));
+        assert!(is_heartbeat_only_change(&old, &new));
+    }
+
+    #[test]
+    fn is_heartbeat_only_change_returns_true_for_messages_read_at_update() {
+        let old = make_test_agent("w-1");
+        let mut new = old.clone();
+        new.messages_read_at = Some(chrono::Utc::now());
+        assert!(is_heartbeat_only_change(&old, &new));
+    }
+
+    #[test]
+    fn is_heartbeat_only_change_returns_false_for_status_change() {
+        let old = make_test_agent("w-1");
+        let mut new = old.clone();
+        new.status = crate::types::AgentStatus::Done;
+        assert!(!is_heartbeat_only_change(&old, &new));
+    }
+
+    #[test]
+    fn is_heartbeat_only_change_returns_false_for_task_change() {
+        let old = make_test_agent("w-1");
+        let mut new = old.clone();
+        new.task_id = Some("task-2".into());
+        assert!(!is_heartbeat_only_change(&old, &new));
+    }
+
+    #[test]
+    fn is_heartbeat_only_change_returns_false_for_pid_change() {
+        let old = make_test_agent("w-1");
+        let mut new = old.clone();
+        new.pid = Some(99999);
+        assert!(!is_heartbeat_only_change(&old, &new));
+    }
+
+    #[test]
+    fn describe_event_skips_heartbeat_only_agent_change() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path();
+        std::fs::create_dir_all(run_dir.join("agents").join("w-1")).unwrap();
+
+        let agent = make_test_agent("w-1");
+        let mut snapshots = HashMap::new();
+        snapshots.insert("w-1".to_string(), agent.clone());
+
+        // Write agent with only heartbeat changed
+        let mut updated = agent;
+        updated.heartbeat = Some(chrono::Utc::now() + chrono::Duration::seconds(10));
+        let agent_path = run_dir.join("agents").join("w-1").join("agent.json");
+        std::fs::write(&agent_path, serde_json::to_string(&updated).unwrap()).unwrap();
+
+        assert!(describe_event(run_dir, &agent_path, &snapshots).is_none());
+    }
+
+    #[test]
+    fn describe_event_reports_agent_status_change() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path();
+        std::fs::create_dir_all(run_dir.join("agents").join("w-1")).unwrap();
+
+        let agent = make_test_agent("w-1");
+        let mut snapshots = HashMap::new();
+        snapshots.insert("w-1".to_string(), agent.clone());
+
+        // Write agent with status changed
+        let mut updated = agent;
+        updated.status = crate::types::AgentStatus::Done;
+        updated.pid = None;
+        let agent_path = run_dir.join("agents").join("w-1").join("agent.json");
+        std::fs::write(&agent_path, serde_json::to_string(&updated).unwrap()).unwrap();
+
+        let desc = describe_event(run_dir, &agent_path, &snapshots);
+        assert!(desc.is_some(), "should report status change");
+        assert!(desc.unwrap().contains("Done"));
+    }
+
+    #[test]
+    fn describe_event_reports_new_agent_not_in_snapshot() {
+        let dir = TempDir::new().unwrap();
+        let run_dir = dir.path();
+        std::fs::create_dir_all(run_dir.join("agents").join("w-2")).unwrap();
+
+        // Empty snapshots — agent is new
+        let snapshots = HashMap::new();
+
+        let agent = make_test_agent("w-2");
+        let agent_path = run_dir.join("agents").join("w-2").join("agent.json");
+        std::fs::write(&agent_path, serde_json::to_string(&agent).unwrap()).unwrap();
+
+        let desc = describe_event(run_dir, &agent_path, &snapshots);
+        assert!(desc.is_some(), "new agent should be reported");
+        assert!(desc.unwrap().contains("w-2"));
     }
 }
