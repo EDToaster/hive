@@ -3,6 +3,7 @@ use crate::state::HiveState;
 use crate::types::*;
 use chrono::Utc;
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 
 pub struct AgentSpawner;
@@ -126,12 +127,73 @@ impl AgentSpawner {
         Ok(agent)
     }
 
-    pub fn coordinator_prompt(run_id: &str, spec_content: &str) -> String {
+    /// Scan the repo and return a brief summary of the project structure.
+    pub fn generate_codebase_summary(repo_root: &Path) -> String {
+        let mut lines = Vec::new();
+
+        // Read project name/version from Cargo.toml
+        let cargo_path = repo_root.join("Cargo.toml");
+        if let Ok(content) = fs::read_to_string(&cargo_path) {
+            for line in content.lines().take(10) {
+                if line.starts_with("name") || line.starts_with("version") {
+                    lines.push(line.trim().to_string());
+                }
+            }
+        }
+
+        // Count .rs files
+        let mut rs_count = 0u32;
+        fn count_rs_files(dir: &Path, count: &mut u32) {
+            if let Ok(entries) = fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        if !name.starts_with('.') && name != "target" {
+                            count_rs_files(&path, count);
+                        }
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        *count += 1;
+                    }
+                }
+            }
+        }
+        count_rs_files(repo_root, &mut rs_count);
+        lines.push(format!("Rust files: {rs_count}"));
+
+        // List src/ modules
+        let src_dir = repo_root.join("src");
+        if let Ok(entries) = fs::read_dir(&src_dir) {
+            let mut modules: Vec<String> = entries
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().to_string();
+                    if name.ends_with(".rs") {
+                        Some(name.trim_end_matches(".rs").to_string())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            modules.sort();
+            lines.push(format!("Modules: {}", modules.join(", ")));
+        }
+
+        // Detect test framework
+        lines.push("Test framework: cargo test".to_string());
+
+        lines.join("\n")
+    }
+
+    pub fn coordinator_prompt(run_id: &str, spec_content: &str, codebase_summary: &str) -> String {
         format!(
             r#"You are the coordinator agent in a hive swarm.
 Run ID: {run_id}
 Agent ID: coordinator
 Role: coordinator
+
+## Project Summary
+{codebase_summary}
 
 ## Spec
 {spec_content}
@@ -148,6 +210,17 @@ Role: coordinator
 - Do NOT read or write implementation code.
 - Only spawn leads, not workers.
 - Let leads handle code review and task decomposition within their domain.
+
+## Task Creation Protocol
+- Create ALL tasks FIRST with proper blocked_by relationships before spawning any leads.
+- Use the domain field to tag each task for file-conflict prevention.
+- Set urgency: critical for blocking tasks, high for core features, normal for polish.
+- Each task title should be specific and actionable, not vague.
+
+## Merge Queue Protocol
+- After hive_wait_for_activity reports a queue entry, immediately call hive_merge_next.
+- If merge fails, notify the lead and consider using hive_retry_agent.
+- After each merge, rebuild if needed and check for regressions.
 "#
         )
     }
@@ -179,6 +252,17 @@ Role: coordinator
 - Do NOT read or write implementation code.
 - Only spawn leads, not workers.
 - Let leads handle code review and task decomposition within their domain.
+
+## Task Creation Protocol
+- Create ALL tasks FIRST with proper blocked_by relationships before spawning any leads.
+- Use the domain field to tag each task for file-conflict prevention.
+- Set urgency: critical for blocking tasks, high for core features, normal for polish.
+- Each task title should be specific and actionable, not vague.
+
+## Merge Queue Protocol
+- After hive_wait_for_activity reports a queue entry, immediately call hive_merge_next.
+- If merge fails, notify the lead and consider using hive_retry_agent.
+- After each merge, rebuild if needed and check for regressions.
 "#
             ),
             AgentRole::Lead => format!(
@@ -203,6 +287,24 @@ Parent: {}
 - Always commit before finishing — uncommitted work may be lost.
 - When you have no more actions to take, finish your response.
   You will be resumed when workers complete or the coordinator sends a message.
+
+## Delegation Protocol
+- ALWAYS spawn workers for implementation. You are a manager, not an implementer.
+- Read the relevant source files to understand the codebase, then write a detailed implementation plan.
+- Spawn one worker per logical unit of work (usually one file or one feature).
+- After spawning workers, use hive_wait_for_activity and hive_check_agents to monitor.
+- When workers finish, review their work with hive_review_agent before submitting.
+
+## Code Review Protocol
+- Use hive_review_agent to see commits and diff stat.
+- Verify: tests pass (check worker's output), no unrelated changes, matches the task description.
+- If changes needed, send a message to the worker explaining what to fix. They will be auto-resumed.
+- Only submit to merge queue after review passes.
+
+## Health Monitoring
+- After spawning workers, call hive_check_agents every 60 seconds.
+- If a worker is idle or failed, review their work immediately.
+- Don't wait indefinitely — if hive_wait_for_activity times out, check agents.
 
 ## Context Management
 - If you notice your context is getting large, summarize your progress so far in a commit message.
@@ -237,6 +339,26 @@ Parent: {}
 - Commit your work with descriptive messages as you go.
 - Always commit before finishing — uncommitted work may be lost.
 - When finished, stop. Your lead will resume you if changes are needed.
+
+## Implementation Protocol
+- Read the existing code in your target file(s) FIRST to understand patterns and conventions.
+- Write tests BEFORE implementation when possible.
+- Run tests after every significant change: `cargo test --all-targets`
+- Run clippy before finishing: `cargo clippy --all-targets -- -D warnings`
+- Fix any issues before marking the task as review.
+
+## Scope Discipline
+- Only modify files in your assigned domain. Do not touch files outside your scope.
+- If you discover a bug in another file, create a task for it — don't fix it yourself.
+- Do not run `cargo fmt` on the entire project — only format files you modified.
+- Keep commits focused: one logical change per commit.
+
+## Completion Protocol
+- Before finishing: git add your changed files, commit with a descriptive message.
+- Run the full test suite one final time.
+- Call hive_update_task to set status to "review".
+- Send a message to your lead summarizing what you implemented and any concerns.
+- Then stop. Do not loop or do additional work.
 
 ## Context Management
 - If you notice your context is getting large, summarize your progress so far in a commit message.
@@ -388,5 +510,85 @@ mod tests {
 
         // is_alive should reap the zombie and return false
         assert!(!AgentSpawner::is_alive(pid));
+    }
+
+    #[test]
+    fn coordinator_prompt_has_task_creation_and_merge_protocols() {
+        let prompt = AgentSpawner::generate_prompt(
+            "coord-1",
+            AgentRole::Coordinator,
+            None,
+            "Build something",
+        );
+        assert!(prompt.contains("## Task Creation Protocol"));
+        assert!(prompt.contains("blocked_by relationships"));
+        assert!(prompt.contains("## Merge Queue Protocol"));
+        assert!(prompt.contains("hive_merge_next"));
+    }
+
+    #[test]
+    fn coordinator_prompt_fn_has_protocols_and_summary() {
+        let prompt =
+            AgentSpawner::coordinator_prompt("run-1", "spec here", "summary: 10 rust files");
+        assert!(prompt.contains("## Project Summary"));
+        assert!(prompt.contains("summary: 10 rust files"));
+        assert!(prompt.contains("## Task Creation Protocol"));
+        assert!(prompt.contains("## Merge Queue Protocol"));
+    }
+
+    #[test]
+    fn lead_prompt_has_delegation_review_health() {
+        let prompt = AgentSpawner::generate_prompt(
+            "lead-1",
+            AgentRole::Lead,
+            Some("coord-1"),
+            "Handle backend",
+        );
+        assert!(prompt.contains("## Delegation Protocol"));
+        assert!(prompt.contains("ALWAYS spawn workers"));
+        assert!(prompt.contains("## Code Review Protocol"));
+        assert!(prompt.contains("hive_review_agent"));
+        assert!(prompt.contains("## Health Monitoring"));
+        assert!(prompt.contains("hive_check_agents every 60 seconds"));
+    }
+
+    #[test]
+    fn worker_prompt_has_implementation_scope_completion() {
+        let prompt = AgentSpawner::generate_prompt(
+            "worker-1",
+            AgentRole::Worker,
+            Some("lead-1"),
+            "Implement feature",
+        );
+        assert!(prompt.contains("## Implementation Protocol"));
+        assert!(prompt.contains("Write tests BEFORE implementation"));
+        assert!(prompt.contains("## Scope Discipline"));
+        assert!(prompt.contains("Only modify files in your assigned domain"));
+        assert!(prompt.contains("## Completion Protocol"));
+        assert!(prompt.contains("Run the full test suite one final time"));
+    }
+
+    #[test]
+    fn generate_codebase_summary_returns_nonempty() {
+        let tmp = std::env::temp_dir().join("hive_test_summary");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("src")).unwrap();
+        fs::write(
+            tmp.join("Cargo.toml"),
+            "name = \"test-project\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        fs::write(tmp.join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(tmp.join("src/lib.rs"), "").unwrap();
+
+        let summary = AgentSpawner::generate_codebase_summary(&tmp);
+        assert!(!summary.is_empty());
+        assert!(summary.contains("test-project"));
+        assert!(summary.contains("Rust files:"));
+        assert!(summary.contains("Modules:"));
+        assert!(summary.contains("main"));
+        assert!(summary.contains("lib"));
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 }
