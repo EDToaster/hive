@@ -83,6 +83,7 @@ fn run_tui_loop(state: &HiveState, run_id: &str) -> Result<(), String> {
                             crate::types::AgentStatus::Running => Style::default().fg(Color::Green),
                             crate::types::AgentStatus::Done => Style::default().fg(Color::Blue),
                             crate::types::AgentStatus::Failed => Style::default().fg(Color::Red),
+                            crate::types::AgentStatus::Idle => Style::default().fg(Color::Cyan),
                             crate::types::AgentStatus::Stalled => {
                                 Style::default().fg(Color::Yellow)
                             }

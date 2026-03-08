@@ -307,6 +307,8 @@ mod tests {
             worktree: None,
             heartbeat: None,
             task_id: None,
+            session_id: None,
+            last_completed_at: None,
         }
     }
 

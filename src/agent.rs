@@ -93,6 +93,8 @@ impl AgentSpawner {
             worktree: Some(worktree_path.to_string_lossy().to_string()),
             heartbeat: Some(Utc::now()),
             task_id: None,
+            session_id: None,
+            last_completed_at: None,
         };
         state.save_agent(run_id, &agent)?;
 

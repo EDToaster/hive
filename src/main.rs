@@ -135,6 +135,8 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
         worktree: None,
         heartbeat: Some(chrono::Utc::now()),
         task_id: None,
+        session_id: None,
+        last_completed_at: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 

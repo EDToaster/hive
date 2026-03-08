@@ -15,6 +15,7 @@ pub enum AgentRole {
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Running,
+    Idle,
     Done,
     Failed,
     Stalled,
@@ -30,6 +31,8 @@ pub struct Agent {
     pub worktree: Option<String>,
     pub heartbeat: Option<DateTime<Utc>>,
     pub task_id: Option<String>,
+    pub session_id: Option<String>,
+    pub last_completed_at: Option<DateTime<Utc>>,
 }
 
 // --- Task Types ---
@@ -152,6 +155,7 @@ mod tests {
     fn agent_status_serializes_lowercase() {
         for (variant, expected) in [
             (AgentStatus::Running, "\"running\""),
+            (AgentStatus::Idle, "\"idle\""),
             (AgentStatus::Done, "\"done\""),
             (AgentStatus::Failed, "\"failed\""),
             (AgentStatus::Stalled, "\"stalled\""),
@@ -229,6 +233,8 @@ mod tests {
             worktree: Some("/tmp/wt".into()),
             heartbeat: Some(chrono::Utc::now()),
             task_id: Some("task-1".into()),
+            session_id: None,
+            last_completed_at: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -248,6 +254,8 @@ mod tests {
             worktree: None,
             heartbeat: None,
             task_id: None,
+            session_id: None,
+            last_completed_at: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();

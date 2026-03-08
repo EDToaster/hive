@@ -536,22 +536,56 @@ impl HiveMcp {
 
         let now = Utc::now();
         let mut reports = Vec::new();
-        for agent in &agents {
+        for mut agent in agents {
             let process_alive = agent.pid.map(crate::agent::AgentSpawner::is_alive);
             let heartbeat_age_secs = agent.heartbeat.map(|hb| (now - hb).num_seconds());
 
-            let status = if process_alive == Some(false) {
-                "dead"
-            } else if process_alive == Some(true)
-                && heartbeat_age_secs.is_some_and(|age| age > config.stall_timeout_seconds)
+            // Session ID capture: if process exited and no session_id yet, parse output.json
+            if process_alive == Some(false) && agent.session_id.is_none() {
+                let output_path = state
+                    .agents_dir(&self.run_id)
+                    .join(&agent.id)
+                    .join("output.json");
+                if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
+                    agent.session_id = Some(sid);
+                    agent.status = AgentStatus::Idle;
+                    agent.last_completed_at = Some(now);
+                    agent.pid = None;
+                    let _ = state.save_agent(&self.run_id, &agent);
+                } else if agent.status == AgentStatus::Running {
+                    // Process exited but no session_id found — mark as failed
+                    agent.status = AgentStatus::Failed;
+                    agent.pid = None;
+                    let _ = state.save_agent(&self.run_id, &agent);
+                }
+            } else if process_alive == Some(false)
+                && agent.session_id.is_some()
+                && agent.status == AgentStatus::Running
             {
-                "stalled"
-            } else {
-                match agent.status {
-                    AgentStatus::Running => "running",
-                    AgentStatus::Done => "done",
-                    AgentStatus::Failed => "failed",
-                    AgentStatus::Stalled => "stalled",
+                // Process exited but has session_id from a previous invocation — mark idle
+                agent.status = AgentStatus::Idle;
+                agent.last_completed_at = Some(now);
+                agent.pid = None;
+                let _ = state.save_agent(&self.run_id, &agent);
+            }
+
+            let idle_since_secs = agent.last_completed_at.map(|lc| (now - lc).num_seconds());
+
+            let status = match agent.status {
+                AgentStatus::Idle => "idle",
+                AgentStatus::Done => "done",
+                AgentStatus::Failed => "failed",
+                AgentStatus::Stalled => "stalled",
+                AgentStatus::Running => {
+                    if process_alive == Some(false) {
+                        "dead"
+                    } else if heartbeat_age_secs
+                        .is_some_and(|age| age > config.stall_timeout_seconds)
+                    {
+                        "stalled"
+                    } else {
+                        "running"
+                    }
                 }
             };
 
@@ -559,8 +593,10 @@ impl HiveMcp {
                 "agent_id": agent.id,
                 "role": agent.role,
                 "status": status,
+                "session_id": agent.session_id,
                 "last_heartbeat_age_secs": heartbeat_age_secs,
                 "process_alive": process_alive,
+                "idle_since_secs": idle_since_secs,
             }));
         }
 
@@ -620,6 +656,16 @@ impl ServerHandler for HiveMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("hive", env!("CARGO_PKG_VERSION")))
             .with_instructions("Hive MCP server: orchestrates a swarm of Claude Code agents for autonomous software development.")
+    }
+}
+
+impl HiveMcp {
+    fn parse_session_id_from_output(output_path: &std::path::Path) -> Option<String> {
+        let data = std::fs::read_to_string(output_path).ok()?;
+        let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+        json.get("session_id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
     }
 }
 
