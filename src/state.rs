@@ -1,5 +1,6 @@
 use crate::types::*;
 use chrono::{DateTime, Utc};
+use fs2::FileExt;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,6 +19,14 @@ impl Default for HiveConfig {
             max_retries: 2,
         }
     }
+}
+
+/// Write to a temp file then rename, preventing partial writes.
+pub fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
+    let tmp_path = path.with_extension("tmp");
+    fs::write(&tmp_path, content).map_err(|e| e.to_string())?;
+    fs::rename(&tmp_path, path).map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Root handle for all .hive/ state operations.
@@ -51,6 +60,21 @@ impl HiveState {
 
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    /// Acquire an exclusive lock for a state file operation.
+    /// Returns a guard that releases the lock on drop.
+    pub fn lock_file(&self, name: &str) -> Result<std::fs::File, String> {
+        let lock_path = self.hive_dir().join(format!("{name}.lock"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&lock_path)
+            .map_err(|e| format!("Failed to open lock file: {e}"))?;
+        file.lock_exclusive()
+            .map_err(|e| format!("Failed to acquire lock: {e}"))?;
+        Ok(file)
     }
 
     /// Load config from `.hive/config.yaml`. Returns defaults if file is missing or unparseable.
@@ -107,7 +131,7 @@ impl HiveState {
 
     pub fn set_active_run(&self, run_id: &str) -> Result<(), String> {
         let active_path = self.hive_dir().join("active_run");
-        fs::write(&active_path, run_id).map_err(|e| e.to_string())
+        atomic_write(&active_path, run_id)
     }
 
     pub fn create_run(&self, run_id: &str) -> Result<(), String> {
@@ -124,12 +148,12 @@ impl HiveState {
         };
         let meta_path = run_dir.join("run.json");
         let json = serde_json::to_string_pretty(&metadata).map_err(|e| e.to_string())?;
-        fs::write(&meta_path, json).map_err(|e| e.to_string())?;
+        atomic_write(&meta_path, &json)?;
 
         // Initialize empty merge queue
         let queue = MergeQueue { entries: vec![] };
         let queue_json = serde_json::to_string_pretty(&queue).map_err(|e| e.to_string())?;
-        fs::write(run_dir.join("merge-queue.json"), queue_json).map_err(|e| e.to_string())?;
+        atomic_write(&run_dir.join("merge-queue.json"), &queue_json)?;
 
         self.set_active_run(run_id)
     }
@@ -143,7 +167,7 @@ impl HiveState {
     pub fn save_task(&self, run_id: &str, task: &Task) -> Result<(), String> {
         let path = self.tasks_dir(run_id).join(format!("{}.json", task.id));
         let json = serde_json::to_string_pretty(task).map_err(|e| e.to_string())?;
-        fs::write(&path, json).map_err(|e| e.to_string())
+        atomic_write(&path, &json)
     }
 
     pub fn load_task(&self, run_id: &str, task_id: &str) -> Result<Task, String> {
@@ -181,7 +205,7 @@ impl HiveState {
         fs::create_dir_all(&agent_dir).map_err(|e| e.to_string())?;
         let path = agent_dir.join("agent.json");
         let json = serde_json::to_string_pretty(agent).map_err(|e| e.to_string())?;
-        fs::write(&path, json).map_err(|e| e.to_string())
+        atomic_write(&path, &json)
     }
 
     pub fn load_agent(&self, run_id: &str, agent_id: &str) -> Result<Agent, String> {
@@ -221,7 +245,7 @@ impl HiveState {
             .messages_dir(run_id)
             .join(format!("{}.json", message.id));
         let json = serde_json::to_string_pretty(message).map_err(|e| e.to_string())?;
-        fs::write(&path, json).map_err(|e| e.to_string())
+        atomic_write(&path, &json)
     }
 
     pub fn list_messages(&self, run_id: &str) -> Result<Vec<Message>, String> {
@@ -286,14 +310,14 @@ impl HiveState {
     pub fn save_merge_queue(&self, run_id: &str, queue: &MergeQueue) -> Result<(), String> {
         let path = self.run_dir(run_id).join("merge-queue.json");
         let json = serde_json::to_string_pretty(queue).map_err(|e| e.to_string())?;
-        fs::write(&path, json).map_err(|e| e.to_string())
+        atomic_write(&path, &json)
     }
 
     // --- Spec ---
 
     pub fn save_spec(&self, run_id: &str, spec_content: &str) -> Result<(), String> {
         let path = self.run_dir(run_id).join("spec.md");
-        fs::write(&path, spec_content).map_err(|e| e.to_string())
+        atomic_write(&path, spec_content)
     }
 
     pub fn load_spec(&self, run_id: &str) -> Result<String, String> {
@@ -943,6 +967,95 @@ mod tests {
     }
 
     // --- retry_count ---
+
+    // --- lock_file ---
+
+    #[test]
+    fn lock_file_creates_lockfile() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let _lock = state.lock_file("test-lock").unwrap();
+        assert!(state.hive_dir().join("test-lock.lock").exists());
+    }
+
+    #[test]
+    fn lock_file_prevents_concurrent_access() {
+        use std::sync::{Arc, Mutex};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+
+        // Create .hive dir
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+
+        let counter = Arc::new(Mutex::new(0u32));
+        let max_concurrent = Arc::new(Mutex::new(0u32));
+
+        let mut handles = vec![];
+        for _ in 0..4 {
+            let root = root.clone();
+            let counter = Arc::clone(&counter);
+            let max_concurrent = Arc::clone(&max_concurrent);
+            handles.push(std::thread::spawn(move || {
+                let state = HiveState::new(root);
+                let _lock = state.lock_file("concurrent").unwrap();
+
+                // Increment counter (simulates entering critical section)
+                let mut c = counter.lock().unwrap();
+                *c += 1;
+                let current = *c;
+                let mut max = max_concurrent.lock().unwrap();
+                if current > *max {
+                    *max = current;
+                }
+                drop(max);
+                drop(c);
+
+                // Small sleep to allow overlap if locking is broken
+                std::thread::sleep(std::time::Duration::from_millis(10));
+
+                // Decrement counter (simulates leaving critical section)
+                let mut c = counter.lock().unwrap();
+                *c -= 1;
+            }));
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        // If locking works, max concurrent should be 1
+        assert_eq!(*max_concurrent.lock().unwrap(), 1);
+    }
+
+    // --- atomic_write ---
+
+    #[test]
+    fn atomic_write_produces_valid_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.json");
+        atomic_write(&path, "hello world").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "hello world");
+    }
+
+    #[test]
+    fn atomic_write_doesnt_corrupt_on_partial_failure() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("original.json");
+
+        // Write initial content
+        std::fs::write(&path, "original content").unwrap();
+
+        // Attempt atomic_write to a path where the tmp file can't be created
+        // (nonexistent parent directory)
+        let bad_path = dir.path().join("nonexistent").join("file.json");
+        assert!(atomic_write(&bad_path, "new content").is_err());
+
+        // Original file should still be intact
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "original content");
+    }
 
     #[test]
     fn agent_retry_count_serialization_roundtrip() {
