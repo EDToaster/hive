@@ -24,14 +24,14 @@ impl AgentSpawner {
         // Step 1: Create worktree
         Git::worktree_add(state.repo_root(), &worktree_path, &branch)?;
 
-        // Step 2: Write .claude/hooks.json
+        // Step 2: Write .claude/settings.local.json (hooks)
         let claude_dir = worktree_path.join(".claude");
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
 
-        let hooks_json = serde_json::json!({
+        let settings_json = serde_json::json!({
             "hooks": {
                 "PostToolUse": [{
-                    "matcher": "",
+                    "matcher": "*",
                     "hooks": [
                         {
                             "type": "command",
@@ -50,8 +50,8 @@ impl AgentSpawner {
             }
         });
         fs::write(
-            claude_dir.join("hooks.json"),
-            serde_json::to_string_pretty(&hooks_json).unwrap(),
+            claude_dir.join("settings.local.json"),
+            serde_json::to_string_pretty(&settings_json).unwrap(),
         )
         .map_err(|e| e.to_string())?;
 
@@ -86,6 +86,7 @@ impl AgentSpawner {
             .arg("--output-format")
             .arg("json")
             .arg("--dangerously-skip-permissions")
+            .env_remove("CLAUDECODE")
             .current_dir(&worktree_path)
             .stdout(output_file)
             .spawn()

@@ -90,13 +90,13 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
     let repo_root = state.repo_root();
     fs::write(repo_root.join("CLAUDE.local.md"), &coordinator_prompt).map_err(|e| e.to_string())?;
 
-    // Write .claude/hooks.json for coordinator tool logging
+    // Write .claude/settings.local.json for coordinator hooks
     let claude_dir = repo_root.join(".claude");
     fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
-    let hooks_json = serde_json::json!({
+    let settings_json = serde_json::json!({
         "hooks": {
             "PostToolUse": [{
-                "matcher": "",
+                "matcher": "*",
                 "hooks": [{
                     "type": "command",
                     "command": format!(
@@ -107,8 +107,8 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
         }
     });
     fs::write(
-        claude_dir.join("hooks.json"),
-        serde_json::to_string_pretty(&hooks_json).unwrap(),
+        claude_dir.join("settings.local.json"),
+        serde_json::to_string_pretty(&settings_json).unwrap(),
     )
     .map_err(|e| e.to_string())?;
 
@@ -424,7 +424,7 @@ fn cmd_stop() -> Result<(), String> {
     let repo_root = state.repo_root();
     let _ = std::fs::remove_file(repo_root.join("CLAUDE.local.md"));
     let _ = std::fs::remove_file(repo_root.join(".mcp.json"));
-    let _ = std::fs::remove_file(repo_root.join(".claude/hooks.json"));
+    let _ = std::fs::remove_file(repo_root.join(".claude/settings.local.json"));
 
     println!("Run {run_id} stopped.");
     Ok(())
