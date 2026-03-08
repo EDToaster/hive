@@ -1,4 +1,5 @@
 use crate::types::*;
+use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -222,6 +223,38 @@ impl HiveState {
         Ok(messages)
     }
 
+    pub fn load_messages_for_agent(
+        &self,
+        run_id: &str,
+        agent_id: &str,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<Vec<Message>, String> {
+        let dir = self.messages_dir(run_id);
+        if !dir.exists() {
+            return Ok(vec![]);
+        }
+        let mut messages = Vec::new();
+        for entry in fs::read_dir(&dir).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                let data = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                let msg: Message = serde_json::from_str(&data).map_err(|e| e.to_string())?;
+                if msg.to != agent_id {
+                    continue;
+                }
+                if let Some(since_ts) = since
+                    && msg.timestamp <= since_ts
+                {
+                    continue;
+                }
+                messages.push(msg);
+            }
+        }
+        messages.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
+        Ok(messages)
+    }
+
     // --- Merge Queue ---
 
     pub fn load_merge_queue(&self, run_id: &str) -> Result<MergeQueue, String> {
@@ -309,6 +342,7 @@ mod tests {
             task_id: None,
             session_id: None,
             last_completed_at: None,
+            messages_read_at: None,
         }
     }
 
@@ -691,5 +725,82 @@ mod tests {
             state.worktree_path("run-1", "agent-1"),
             std::path::PathBuf::from("/tmp/myrepo/.hive/runs/run-1/worktrees/agent-1")
         );
+    }
+
+    // --- load_messages_for_agent ---
+
+    #[test]
+    fn load_messages_for_agent_filters_by_recipient() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let now = chrono::Utc::now();
+        state
+            .save_message("run-1", &make_message("msg-1", "lead-1", "worker-1", now))
+            .unwrap();
+        state
+            .save_message("run-1", &make_message("msg-2", "lead-1", "worker-2", now))
+            .unwrap();
+        state
+            .save_message("run-1", &make_message("msg-3", "coord", "worker-1", now))
+            .unwrap();
+
+        let msgs = state
+            .load_messages_for_agent("run-1", "worker-1", None)
+            .unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert!(msgs.iter().all(|m| m.to == "worker-1"));
+    }
+
+    #[test]
+    fn load_messages_for_agent_filters_by_since() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let t1 = "2026-03-08T10:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let t2 = "2026-03-08T11:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+        let t3 = "2026-03-08T12:00:00Z"
+            .parse::<chrono::DateTime<chrono::Utc>>()
+            .unwrap();
+
+        state
+            .save_message("run-1", &make_message("msg-1", "a", "worker-1", t1))
+            .unwrap();
+        state
+            .save_message("run-1", &make_message("msg-2", "a", "worker-1", t2))
+            .unwrap();
+        state
+            .save_message("run-1", &make_message("msg-3", "a", "worker-1", t3))
+            .unwrap();
+
+        let msgs = state
+            .load_messages_for_agent("run-1", "worker-1", Some(t1))
+            .unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].id, "msg-2");
+        assert_eq!(msgs[1].id, "msg-3");
+    }
+
+    #[test]
+    fn load_messages_for_agent_returns_empty_when_none_match() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let now = chrono::Utc::now();
+        state
+            .save_message("run-1", &make_message("msg-1", "a", "worker-2", now))
+            .unwrap();
+
+        let msgs = state
+            .load_messages_for_agent("run-1", "worker-1", None)
+            .unwrap();
+        assert!(msgs.is_empty());
     }
 }

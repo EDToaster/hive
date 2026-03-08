@@ -347,6 +347,7 @@ mod tests {
             heartbeat: None,
             session_id: None,
             last_completed_at: None,
+            messages_read_at: None,
             task_id: None,
         };
         state.save_agent(run_id, &running_agent).unwrap();
@@ -361,6 +362,7 @@ mod tests {
             heartbeat: None,
             session_id: None,
             last_completed_at: None,
+            messages_read_at: None,
             task_id: None,
         };
         state.save_agent(run_id, &done_agent).unwrap();
