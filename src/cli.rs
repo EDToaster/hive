@@ -72,4 +72,7 @@ pub enum Commands {
         #[arg(long)]
         agent: String,
     },
+
+    /// Stop the current run and clean up worktrees
+    Stop,
 }

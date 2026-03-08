@@ -35,6 +35,7 @@ fn main() {
         Commands::Logs { agent } => cmd_logs(agent),
         Commands::Tui => cmd_tui(),
         Commands::Mcp { run, agent } => cmd_mcp(&run, &agent),
+        Commands::Stop => cmd_stop(),
     };
 
     if let Err(e) = result {
@@ -80,10 +81,44 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
     LogDb::open(&log_path)?;
 
     println!("Created run: {run_id}");
-    println!("Spec saved to .hive/runs/{run_id}/spec.md");
 
-    // TODO: Spawn coordinator agent
-    println!("TODO: Spawn coordinator agent");
+    // Write coordinator CLAUDE.local.md to the base repo
+    let coordinator_prompt = crate::agent::AgentSpawner::coordinator_prompt(&run_id, &spec_content);
+    let repo_root = state.repo_root();
+    fs::write(repo_root.join("CLAUDE.local.md"), &coordinator_prompt).map_err(|e| e.to_string())?;
+
+    // Write .claude/settings.local.json for coordinator MCP
+    let claude_dir = repo_root.join(".claude");
+    fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
+    let settings = serde_json::json!({
+        "mcpServers": {
+            "hive": {
+                "command": "hive",
+                "args": ["mcp", "--run", &run_id, "--agent", "coordinator"]
+            }
+        }
+    });
+    fs::write(
+        claude_dir.join("settings.local.json"),
+        serde_json::to_string_pretty(&settings).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Register coordinator agent (no PID — user launches claude manually)
+    let coordinator = crate::types::Agent {
+        id: "coordinator".to_string(),
+        role: crate::types::AgentRole::Coordinator,
+        status: crate::types::AgentStatus::Running,
+        parent: None,
+        pid: None,
+        worktree: None,
+        heartbeat: Some(chrono::Utc::now()),
+        task_id: None,
+    };
+    state.save_agent(&run_id, &coordinator)?;
+
+    println!("Coordinator configured. Launch Claude Code in this directory to begin.");
+    println!("Run 'hive tui' in another terminal to monitor progress.");
 
     Ok(())
 }
@@ -298,4 +333,52 @@ fn cmd_tui() -> Result<(), String> {
 fn cmd_mcp(run_id: &str, agent_id: &str) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(crate::mcp::run_mcp_server(run_id, agent_id))
+}
+
+fn cmd_stop() -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let run_id = state.active_run_id()?;
+    let agents = state.list_agents(&run_id)?;
+
+    // Kill agent processes and update status
+    for agent in &agents {
+        let mut updated = agent.clone();
+        if let Some(pid) = agent.pid
+            && crate::agent::AgentSpawner::is_alive(pid)
+        {
+            // SAFETY: We are sending SIGTERM to a process we own (a spawned agent).
+            // The pid was obtained from our own agent records and verified alive above.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
+            }
+            println!("Stopped agent {} (pid {})", agent.id, pid);
+        }
+        updated.status = types::AgentStatus::Done;
+        let _ = state.save_agent(&run_id, &updated);
+    }
+
+    // Remove worktrees
+    for agent in &agents {
+        if let Some(ref wt) = agent.worktree {
+            let wt_path = std::path::Path::new(wt);
+            if wt_path.exists() {
+                match crate::git::Git::worktree_remove(state.repo_root(), wt_path) {
+                    Ok(()) => println!("Removed worktree for {}", agent.id),
+                    Err(e) => {
+                        eprintln!("Warning: failed to remove worktree for {}: {e}", agent.id)
+                    }
+                }
+            }
+        }
+    }
+
+    crate::git::Git::worktree_prune(state.repo_root()).ok();
+
+    // Clean up coordinator files
+    let repo_root = state.repo_root();
+    let _ = std::fs::remove_file(repo_root.join("CLAUDE.local.md"));
+    let _ = std::fs::remove_file(repo_root.join(".claude/settings.local.json"));
+
+    println!("Run {run_id} stopped.");
+    Ok(())
 }

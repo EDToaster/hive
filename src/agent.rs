@@ -91,6 +91,32 @@ impl AgentSpawner {
         Ok(agent)
     }
 
+    pub fn coordinator_prompt(run_id: &str, spec_content: &str) -> String {
+        format!(
+            r#"You are the coordinator agent in a hive swarm.
+Run ID: {run_id}
+Agent ID: coordinator
+Role: coordinator
+
+## Spec
+{spec_content}
+
+## Responsibilities
+- Decompose the spec into domain-level chunks.
+- Spin up lead agents via hive_spawn_agent for each domain.
+- Monitor progress via hive_list_tasks and hive_check_agents.
+- Process the merge queue via hive_merge_next when leads submit work.
+- Handle cross-domain conflicts.
+- You may spin up additional leads mid-run if needed.
+
+## Constraints
+- Do NOT read or write implementation code.
+- Only spawn leads, not workers.
+- Let leads handle code review and task decomposition within their domain.
+"#
+        )
+    }
+
     pub(crate) fn generate_prompt(
         agent_id: &str,
         role: AgentRole,

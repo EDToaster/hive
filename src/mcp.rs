@@ -133,11 +133,33 @@ impl HiveMcp {
         HiveState::new(self.repo_root.clone().into())
     }
 
+    fn agent_role(&self) -> AgentRole {
+        self.state()
+            .load_agent(&self.run_id, &self.agent_id)
+            .map(|a| a.role)
+            .unwrap_or(AgentRole::Worker) // default to most restricted
+    }
+
+    fn require_role(&self, allowed: &[AgentRole]) -> Result<(), CallToolResult> {
+        let role = self.agent_role();
+        if allowed.contains(&role) {
+            Ok(())
+        } else {
+            Err(CallToolResult::error(vec![Content::text(format!(
+                "Permission denied: {:?} cannot use this tool.",
+                role
+            ))]))
+        }
+    }
+
     #[tool(description = "Spawn a new agent (lead or worker) with a worktree and task")]
     async fn hive_spawn_agent(
         &self,
         params: Parameters<SpawnAgentParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
+            return Ok(result);
+        }
         let p = &params.0;
         let role = match p.role.as_str() {
             "lead" => AgentRole::Lead,
@@ -148,6 +170,19 @@ impl HiveMcp {
                 )]));
             }
         };
+
+        // Enforce hierarchy: coordinators spawn leads, leads spawn workers
+        let caller_role = self.agent_role();
+        let allowed = matches!(
+            (caller_role, role),
+            (AgentRole::Coordinator, AgentRole::Lead) | (AgentRole::Lead, AgentRole::Worker)
+        );
+        if !allowed {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Permission denied: {:?} cannot spawn {:?}.",
+                caller_role, role
+            ))]));
+        }
 
         match crate::agent::AgentSpawner::spawn(
             &self.state(),
@@ -325,6 +360,44 @@ impl HiveMcp {
             refs: p.refs.clone(),
         };
 
+        // Validate routing
+        let sender_role = self.agent_role();
+        match sender_role {
+            AgentRole::Worker => {
+                // Workers can only message their parent lead
+                let sender = self.state().load_agent(&self.run_id, &self.agent_id).ok();
+                let parent = sender.and_then(|a| a.parent);
+                if parent.as_deref() != Some(p.to.as_str()) {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Workers can only send messages to their lead.",
+                    )]));
+                }
+            }
+            AgentRole::Lead => {
+                // Leads can message their workers or the coordinator
+                let target = self.state().load_agent(&self.run_id, &p.to).ok();
+                let valid = match target {
+                    Some(ref t) if t.parent.as_deref() == Some(self.agent_id.as_str()) => true,
+                    _ if p.to == "coordinator" => true,
+                    _ => false,
+                };
+                if !valid {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Leads can only message their workers or the coordinator.",
+                    )]));
+                }
+            }
+            AgentRole::Coordinator => {
+                // Coordinator can only message leads
+                let target = self.state().load_agent(&self.run_id, &p.to).ok();
+                if !matches!(target, Some(ref t) if t.role == AgentRole::Lead) {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Coordinator can only send messages to leads.",
+                    )]));
+                }
+            }
+        }
+
         match self.state().save_message(&self.run_id, &message) {
             Ok(()) => {
                 // TODO: inject message into target agent's Claude Code conversation
@@ -342,6 +415,9 @@ impl HiveMcp {
         &self,
         params: Parameters<SubmitToQueueParams>,
     ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Lead]) {
+            return Ok(result);
+        }
         let p = &params.0;
         let state = self.state();
         let mut queue = match state.load_merge_queue(&self.run_id) {
@@ -371,6 +447,9 @@ impl HiveMcp {
         description = "Process the next item in the merge queue. Merges the branch into main and runs tests."
     )]
     async fn hive_merge_next(&self) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator]) {
+            return Ok(result);
+        }
         let state = self.state();
         let mut queue = match state.load_merge_queue(&self.run_id) {
             Ok(q) => q,
@@ -445,6 +524,9 @@ impl HiveMcp {
         description = "Check agent health by comparing heartbeats and verifying processes are alive"
     )]
     async fn hive_check_agents(&self) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
+            return Ok(result);
+        }
         let state = self.state();
         let agents = match state.list_agents(&self.run_id) {
             Ok(a) => a,
