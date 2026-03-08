@@ -1,7 +1,5 @@
 # Agent Work Preservation Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Prevent lost work when hive agents exit by auto-committing uncommitted changes, reporting worktree status in health checks, and providing a review tool for inspecting agent output.
 
 **Architecture:** Four changes to the hive codebase: (1) git helper functions for status/add/commit/log, (2) auto-commit + uncommitted_changes field in hive_check_agents, (3) new hive_review_agent MCP tool + CLI, (4) prompt updates telling agents to commit their work.
