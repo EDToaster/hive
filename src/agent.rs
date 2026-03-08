@@ -47,8 +47,8 @@ impl AgentSpawner {
         )
         .map_err(|e| e.to_string())?;
 
-        // Step 3: Write .claude/settings.local.json (MCP config)
-        let settings_json = serde_json::json!({
+        // Step 3: Write .mcp.json at worktree root
+        let mcp_json = serde_json::json!({
             "mcpServers": {
                 "hive": {
                     "command": "hive",
@@ -57,8 +57,8 @@ impl AgentSpawner {
             }
         });
         fs::write(
-            claude_dir.join("settings.local.json"),
-            serde_json::to_string_pretty(&settings_json).unwrap(),
+            worktree_path.join(".mcp.json"),
+            serde_json::to_string_pretty(&mcp_json).unwrap(),
         )
         .map_err(|e| e.to_string())?;
 

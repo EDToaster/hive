@@ -87,10 +87,8 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
     let repo_root = state.repo_root();
     fs::write(repo_root.join("CLAUDE.local.md"), &coordinator_prompt).map_err(|e| e.to_string())?;
 
-    // Write .claude/settings.local.json for coordinator MCP
-    let claude_dir = repo_root.join(".claude");
-    fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
-    let settings = serde_json::json!({
+    // Write .mcp.json for coordinator MCP
+    let mcp_config = serde_json::json!({
         "mcpServers": {
             "hive": {
                 "command": "hive",
@@ -99,8 +97,8 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
         }
     });
     fs::write(
-        claude_dir.join("settings.local.json"),
-        serde_json::to_string_pretty(&settings).unwrap(),
+        repo_root.join(".mcp.json"),
+        serde_json::to_string_pretty(&mcp_config).unwrap(),
     )
     .map_err(|e| e.to_string())?;
 
@@ -377,7 +375,7 @@ fn cmd_stop() -> Result<(), String> {
     // Clean up coordinator files
     let repo_root = state.repo_root();
     let _ = std::fs::remove_file(repo_root.join("CLAUDE.local.md"));
-    let _ = std::fs::remove_file(repo_root.join(".claude/settings.local.json"));
+    let _ = std::fs::remove_file(repo_root.join(".mcp.json"));
 
     println!("Run {run_id} stopped.");
     Ok(())
