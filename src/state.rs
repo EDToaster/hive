@@ -9,6 +9,7 @@ pub struct HiveConfig {
     pub stall_timeout_seconds: i64,
     pub verify_command: Option<String>,
     pub max_retries: u32,
+    pub budget_usd: Option<f64>,
 }
 
 impl Default for HiveConfig {
@@ -17,6 +18,7 @@ impl Default for HiveConfig {
             stall_timeout_seconds: 300,
             verify_command: None,
             max_retries: 2,
+            budget_usd: None,
         }
     }
 }
@@ -96,6 +98,11 @@ impl HiveState {
                 && let Ok(v) = value.trim().parse::<u32>()
             {
                 config.max_retries = v;
+            }
+            if let Some(value) = line.strip_prefix("budget_usd:")
+                && let Ok(v) = value.trim().parse::<f64>()
+            {
+                config.budget_usd = Some(v);
             }
             if let Some(value) = line.strip_prefix("verify_command:") {
                 let value = value.trim();
@@ -394,6 +401,18 @@ impl HiveState {
             cost_usd,
             session_duration_secs,
         })
+    }
+
+    pub fn total_run_cost(&self, run_id: &str) -> f64 {
+        let agents = match self.list_agents(run_id) {
+            Ok(agents) => agents,
+            Err(_) => return 0.0,
+        };
+        agents
+            .iter()
+            .filter_map(|agent| self.load_agent_cost(run_id, &agent.id))
+            .map(|cost| cost.cost_usd)
+            .sum()
     }
 
     // --- Worktree path ---
@@ -1131,5 +1150,86 @@ mod tests {
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
         assert_eq!(back.retry_count, 1);
+    }
+
+    // --- budget_usd config ---
+
+    #[test]
+    fn load_config_reads_budget_usd() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "budget_usd: 25.0\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert_eq!(config.budget_usd, Some(25.0));
+    }
+
+    #[test]
+    fn load_config_budget_usd_none_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "stall_timeout_seconds: 300\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert!(config.budget_usd.is_none());
+    }
+
+    #[test]
+    fn load_config_budget_usd_ignores_invalid() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "budget_usd: not-a-number\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert!(config.budget_usd.is_none());
+    }
+
+    #[test]
+    fn total_run_cost_sums_agent_costs() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Create two agents
+        let agent1 = make_agent("agent-1", AgentRole::Worker, AgentStatus::Done);
+        let agent2 = make_agent("agent-2", AgentRole::Worker, AgentStatus::Done);
+        state.save_agent("run-1", &agent1).unwrap();
+        state.save_agent("run-1", &agent2).unwrap();
+
+        // Write output.json for agent-1: 1000 input, 500 output
+        let output1 = r#"{"num_input_tokens": 1000, "num_output_tokens": 500, "session_duration_seconds": 60}"#;
+        std::fs::write(
+            state.agents_dir("run-1").join("agent-1").join("output.json"),
+            output1,
+        )
+        .unwrap();
+
+        // Write output.json for agent-2: 2000 input, 1000 output
+        let output2 = r#"{"num_input_tokens": 2000, "num_output_tokens": 1000, "session_duration_seconds": 120}"#;
+        std::fs::write(
+            state.agents_dir("run-1").join("agent-2").join("output.json"),
+            output2,
+        )
+        .unwrap();
+
+        let total = state.total_run_cost("run-1");
+
+        // agent-1: 1000 * 15.0 / 1_000_000 + 500 * 75.0 / 1_000_000 = 0.015 + 0.0375 = 0.0525
+        // agent-2: 2000 * 15.0 / 1_000_000 + 1000 * 75.0 / 1_000_000 = 0.03 + 0.075 = 0.105
+        // total: 0.1575
+        let expected = 0.0525 + 0.105;
+        assert!(
+            (total - expected).abs() < 1e-10,
+            "Expected {expected}, got {total}"
+        );
     }
 }
