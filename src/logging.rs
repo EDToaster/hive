@@ -70,7 +70,7 @@ impl LogDb {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT agent_id, tool_name, COUNT(*), COALESCE(AVG(duration_ms), 0)
+                "SELECT agent_id, tool_name, COUNT(*), CAST(COALESCE(AVG(duration_ms), 0) AS INTEGER)
                  FROM tool_calls WHERE run_id = ?1
                  GROUP BY agent_id, tool_name
                  ORDER BY agent_id, COUNT(*) DESC",

@@ -17,3 +17,6 @@ chrono = { version = "0.4.44", features = ["serde"] }
 uuid = { version = "1.22.0", features = ["v4", "serde"] }
 notify = "8.2.0"
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

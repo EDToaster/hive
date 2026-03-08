@@ -91,7 +91,7 @@ impl AgentSpawner {
         Ok(agent)
     }
 
-    fn generate_prompt(
+    pub(crate) fn generate_prompt(
         agent_id: &str,
         role: AgentRole,
         parent: Option<&str>,
