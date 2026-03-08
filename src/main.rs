@@ -46,6 +46,7 @@ fn main() {
             stop_hook,
         } => cmd_read_messages(&agent, run, unread, stop_hook),
         Commands::Summary { run } => cmd_summary(run),
+        Commands::Cost { run } => cmd_cost(run),
         Commands::History => cmd_history(),
         Commands::Stop => cmd_stop(),
         Commands::Watch { interval } => cmd_watch(interval),
@@ -645,6 +646,59 @@ fn cmd_summary(run: Option<String>) -> Result<(), String> {
                 println!("  - {}", line);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_cost(run: Option<String>) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let run_id = match run {
+        Some(r) => r,
+        None => state.active_run_id()?,
+    };
+
+    let agents = state.list_agents(&run_id)?;
+
+    let mut total_cost = 0.0;
+    let mut agent_costs: Vec<(&types::Agent, types::AgentCost)> = Vec::new();
+    for agent in &agents {
+        if let Some(cost) = state.load_agent_cost(&run_id, &agent.id) {
+            total_cost += cost.cost_usd;
+            agent_costs.push((agent, cost));
+        }
+    }
+
+    if agent_costs.is_empty() {
+        println!("No cost data available (agents still running?).");
+        return Ok(());
+    }
+
+    println!("Run Cost: ${:.2}", total_cost);
+
+    // TODO: uncomment after lead-config merges
+    // let config = state.load_config();
+    // if let Some(budget) = config.budget_usd {
+    //     let pct = (total_cost / budget * 100.0) as u32;
+    //     println!("Budget:   ${:.2} ({}% used)", budget, pct);
+    // }
+
+    println!();
+    println!(
+        "{:<20} {:<12} {:>10} {:>10} {:>10}",
+        "Agent", "Role", "Input", "Output", "Cost"
+    );
+    println!("{}", "-".repeat(65));
+
+    for (agent, cost) in &agent_costs {
+        println!(
+            "{:<20} {:<12} {:>9}k {:>9}k {:>9}",
+            agent.id,
+            format!("{:?}", agent.role).to_lowercase(),
+            cost.input_tokens / 1000,
+            cost.output_tokens / 1000,
+            format!("${:.2}", cost.cost_usd),
+        );
     }
 
     Ok(())
