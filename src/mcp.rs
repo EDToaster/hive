@@ -118,6 +118,12 @@ fn default_wait_timeout() -> u64 {
 }
 
 #[derive(Deserialize, JsonSchema)]
+pub struct ReviewAgentParams {
+    /// Agent ID to review
+    pub agent_id: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
 pub struct LogToolParams {
     /// Tool name
     pub tool: String,
@@ -416,9 +422,10 @@ impl HiveMcp {
 
         // Auto-wake: if target agent is idle with a session_id, resume it
         let mut wake_info = None;
-        if let Ok(mut target_agent) = state.load_agent(&self.run_id, &p.to) {
-            if target_agent.status == AgentStatus::Idle {
-                if let Some(ref session_id) = target_agent.session_id {
+        if let Ok(mut target_agent) = state.load_agent(&self.run_id, &p.to)
+            && target_agent.status == AgentStatus::Idle
+            && let Some(ref session_id) = target_agent.session_id
+        {
                     // Spawn a --resume invocation
                     let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
                     let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
@@ -454,8 +461,6 @@ impl HiveMcp {
                             }
                         }
                     }
-                }
-            }
         }
 
         let wake_suffix = wake_info.unwrap_or_default();
@@ -595,6 +600,13 @@ impl HiveMcp {
             let process_alive = agent.pid.map(crate::agent::AgentSpawner::is_alive);
             let heartbeat_age_secs = agent.heartbeat.map(|hb| (now - hb).num_seconds());
 
+            // Auto-commit any uncommitted work before state transitions
+            if process_alive == Some(false)
+                && let Some(ref wt) = agent.worktree
+            {
+                Self::auto_commit_worktree(wt);
+            }
+
             // Session ID capture: if process exited and no session_id yet, parse output.json
             if process_alive == Some(false) && agent.session_id.is_none() {
                 let output_path = state
@@ -644,6 +656,11 @@ impl HiveMcp {
                 }
             };
 
+            let uncommitted_changes = agent
+                .worktree
+                .as_deref()
+                .and_then(Self::worktree_status);
+
             reports.push(serde_json::json!({
                 "agent_id": agent.id,
                 "role": agent.role,
@@ -652,6 +669,7 @@ impl HiveMcp {
                 "last_heartbeat_age_secs": heartbeat_age_secs,
                 "process_alive": process_alive,
                 "idle_since_secs": idle_since_secs,
+                "uncommitted_changes": uncommitted_changes,
             }));
         }
 
@@ -690,6 +708,69 @@ impl HiveMcp {
             Ok(summary) => Ok(CallToolResult::success(vec![Content::text(summary)])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
+    }
+
+    #[tool(
+        description = "Review a non-running agent's work: commits any uncommitted changes, then returns branch info, commit log, and diff stat vs main."
+    )]
+    async fn hive_review_agent(
+        &self,
+        params: Parameters<ReviewAgentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
+            return Ok(result);
+        }
+
+        let state = self.state();
+        let agent = match state.load_agent(&self.run_id, &params.0.agent_id) {
+            Ok(a) => a,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+
+        if agent.status == AgentStatus::Running {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Cannot review a running agent. Wait for it to exit first.",
+            )]));
+        }
+
+        let worktree = match &agent.worktree {
+            Some(wt) => wt.clone(),
+            None => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Agent has no worktree.",
+                )]));
+            }
+        };
+
+        let wt_path = std::path::Path::new(&worktree);
+        if !wt_path.exists() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "Agent worktree no longer exists.",
+            )]));
+        }
+
+        // Auto-commit any uncommitted work
+        Self::auto_commit_worktree(&worktree);
+
+        // Get branch name, commit log, and diff stat
+        let branch = format!("hive/{}/{}", self.run_id, agent.id);
+        let commits = crate::git::Git::log_oneline_since(wt_path, "main")
+            .unwrap_or_else(|_| "(no commits)".to_string());
+        let diff_stat = crate::git::Git::diff_stat_since(wt_path, "main")
+            .unwrap_or_else(|_| "(no diff)".to_string());
+
+        let report = serde_json::json!({
+            "agent_id": agent.id,
+            "role": agent.role,
+            "status": agent.status,
+            "task_id": agent.task_id,
+            "branch": branch,
+            "commits": commits,
+            "diff_stat": diff_stat,
+        });
+
+        let summary = serde_json::to_string_pretty(&report).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(summary)]))
     }
 
     #[tool(description = "Record a tool call event for observability")]
@@ -743,6 +824,32 @@ impl HiveMcp {
         json.get("session_id")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string())
+    }
+
+    fn auto_commit_worktree(worktree: &str) -> Option<String> {
+        let wt_path = std::path::Path::new(worktree);
+        if !wt_path.exists() {
+            return None;
+        }
+        let status = crate::git::Git::status_porcelain(wt_path).ok()?;
+        if status.is_empty() {
+            return None;
+        }
+        crate::git::Git::add_all(wt_path).ok()?;
+        let _ = crate::git::Git::commit(wt_path, "wip: auto-commit on agent exit");
+        Some(status)
+    }
+
+    fn worktree_status(worktree: &str) -> Option<String> {
+        let wt_path = std::path::Path::new(worktree);
+        if !wt_path.exists() {
+            return None;
+        }
+        let status = crate::git::Git::status_porcelain(wt_path).ok()?;
+        if status.is_empty() {
+            return None;
+        }
+        Some(status)
     }
 }
 
