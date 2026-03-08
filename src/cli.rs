@@ -90,6 +90,15 @@ pub enum Commands {
         timeout: u64,
     },
 
+    /// Review a non-running agent's work (commits, diff stat)
+    ReviewAgent {
+        /// Agent ID to review
+        agent_id: String,
+        /// Run ID (defaults to active run)
+        #[arg(long)]
+        run: Option<String>,
+    },
+
     /// Stop the current run and clean up worktrees
     Stop,
 }

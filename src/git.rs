@@ -91,6 +91,33 @@ impl Git {
         Self::run(&["branch", "-D", branch], repo_root)?;
         Ok(())
     }
+
+    /// Get porcelain status (machine-readable) for a worktree
+    pub fn status_porcelain(cwd: &Path) -> Result<String, String> {
+        Self::run(&["status", "--porcelain"], cwd)
+    }
+
+    /// Stage all changes (tracked and untracked)
+    pub fn add_all(cwd: &Path) -> Result<(), String> {
+        Self::run(&["add", "-A"], cwd)?;
+        Ok(())
+    }
+
+    /// Create a commit with the given message
+    pub fn commit(cwd: &Path, message: &str) -> Result<(), String> {
+        Self::run(&["commit", "-m", message], cwd)?;
+        Ok(())
+    }
+
+    /// Get one-line log of commits since a base branch
+    pub fn log_oneline_since(cwd: &Path, base: &str) -> Result<String, String> {
+        Self::run(&["log", "--oneline", &format!("{base}..HEAD")], cwd)
+    }
+
+    /// Get diff --stat since a base branch
+    pub fn diff_stat_since(cwd: &Path, base: &str) -> Result<String, String> {
+        Self::run(&["diff", "--stat", &format!("{base}..HEAD")], cwd)
+    }
 }
 
 #[cfg(test)]
@@ -233,5 +260,69 @@ mod tests {
 
         // Abort merge
         Git::merge_abort(dir.path()).unwrap();
+    }
+
+    #[test]
+    fn status_porcelain_empty_on_clean_repo() {
+        let dir = init_test_repo();
+        let status = Git::status_porcelain(dir.path()).unwrap();
+        assert!(status.is_empty());
+    }
+
+    #[test]
+    fn status_porcelain_shows_changes() {
+        let dir = init_test_repo();
+        fs::write(dir.path().join("new.txt"), "hello").unwrap();
+        let status = Git::status_porcelain(dir.path()).unwrap();
+        assert!(status.contains("new.txt"));
+    }
+
+    #[test]
+    fn add_all_stages_files() {
+        let dir = init_test_repo();
+        fs::write(dir.path().join("new.txt"), "hello").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        let status = Git::run(&["status", "--porcelain"], dir.path()).unwrap();
+        assert!(status.contains("A  new.txt") || status.contains("A new.txt"));
+    }
+
+    #[test]
+    fn commit_with_message_creates_commit() {
+        let dir = init_test_repo();
+        fs::write(dir.path().join("file.txt"), "content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "test commit").unwrap();
+        let log = Git::run(&["log", "--oneline", "-1"], dir.path()).unwrap();
+        assert!(log.contains("test commit"));
+    }
+
+    #[test]
+    fn commit_empty_repo_fails() {
+        let dir = init_test_repo();
+        assert!(Git::commit(dir.path(), "empty").is_err());
+    }
+
+    #[test]
+    fn log_oneline_since_returns_commits() {
+        let dir = init_test_repo();
+        let main = Git::current_branch(dir.path()).unwrap();
+        Git::run(&["checkout", "-b", "feature"], dir.path()).unwrap();
+        fs::write(dir.path().join("f.txt"), "x").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "feature work").unwrap();
+        let log = Git::log_oneline_since(dir.path(), &main).unwrap();
+        assert!(log.contains("feature work"));
+    }
+
+    #[test]
+    fn diff_stat_since_returns_stats() {
+        let dir = init_test_repo();
+        let main = Git::current_branch(dir.path()).unwrap();
+        Git::run(&["checkout", "-b", "feature2"], dir.path()).unwrap();
+        fs::write(dir.path().join("g.txt"), "y").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "feature2 work").unwrap();
+        let stat = Git::diff_stat_since(dir.path(), &main).unwrap();
+        assert!(stat.contains("g.txt"));
     }
 }
