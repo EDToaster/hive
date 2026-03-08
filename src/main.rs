@@ -147,6 +147,7 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
         session_id: None,
         last_completed_at: None,
         messages_read_at: None,
+        retry_count: 0,
     };
     state.save_agent(&run_id, &coordinator)?;
 
