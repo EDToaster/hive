@@ -45,6 +45,8 @@ fn main() {
             unread,
             stop_hook,
         } => cmd_read_messages(&agent, run, unread, stop_hook),
+        Commands::Summary { run } => cmd_summary(run),
+        Commands::History => cmd_history(),
         Commands::Stop => cmd_stop(),
     };
 
@@ -477,6 +479,139 @@ fn cmd_read_messages(
     }
 }
 
+fn cmd_summary(run: Option<String>) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let run_id = match run {
+        Some(r) => r,
+        None => state.active_run_id()?,
+    };
+
+    let metadata = state.load_run_metadata(&run_id)?;
+    let agents = state.list_agents(&run_id)?;
+    let tasks = state.list_tasks(&run_id)?;
+
+    // Duration
+    let now = chrono::Utc::now();
+    let duration = now - metadata.created_at;
+    let mins = duration.num_minutes();
+    let secs = duration.num_seconds() % 60;
+
+    println!("Run: {} ({:?})", metadata.id, metadata.status);
+    println!("Duration: {}m {}s", mins, secs);
+
+    // Agent costs
+    let mut total_cost = 0.0;
+    let mut agent_costs: Vec<(String, types::AgentCost)> = Vec::new();
+    for agent in &agents {
+        if let Some(cost) = state.load_agent_cost(&run_id, &agent.id) {
+            total_cost += cost.cost_usd;
+            agent_costs.push((agent.id.clone(), cost));
+        }
+    }
+
+    if total_cost > 0.0 {
+        println!("Total Cost: ${:.2}", total_cost);
+    }
+
+    // Agent counts
+    let running = agents
+        .iter()
+        .filter(|a| a.status == types::AgentStatus::Running)
+        .count();
+    let done = agents
+        .iter()
+        .filter(|a| a.status == types::AgentStatus::Done)
+        .count();
+    let failed = agents
+        .iter()
+        .filter(|a| a.status == types::AgentStatus::Failed)
+        .count();
+    println!("\nAgents: {} spawned, {} completed, {} failed", agents.len(), done, failed);
+    if running > 0 {
+        println!("        {} still running", running);
+    }
+
+    // Task counts
+    let task_count = |s: types::TaskStatus| tasks.iter().filter(|t| t.status == s).count();
+    let merged = task_count(types::TaskStatus::Merged);
+    let task_failed = task_count(types::TaskStatus::Failed);
+    println!(
+        "Tasks:  {} created, {} merged, {} failed",
+        tasks.len(),
+        merged,
+        task_failed,
+    );
+
+    // Per-agent cost
+    if !agent_costs.is_empty() {
+        println!("\nPer-Agent Cost:");
+        for (id, cost) in &agent_costs {
+            println!(
+                "  {:<20} ${:.2}  ({}k input, {}k output)",
+                id,
+                cost.cost_usd,
+                cost.input_tokens / 1000,
+                cost.output_tokens / 1000,
+            );
+        }
+    }
+
+    // Merged commits
+    let since_date = metadata.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
+    if let Ok(output) = std::process::Command::new("git")
+        .args(["log", "--oneline", &format!("--since={}", since_date), "main"])
+        .current_dir(state.repo_root())
+        .output()
+    {
+        let commits = String::from_utf8_lossy(&output.stdout);
+        let commits = commits.trim();
+        if !commits.is_empty() {
+            println!("\nMerged Changes:");
+            for line in commits.lines() {
+                println!("  - {}", line);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_history() -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let runs = state.list_runs()?;
+
+    if runs.is_empty() {
+        println!("No runs found.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<12} {:<12} {:<22} {:>7} {:>7} {:>7}",
+        "ID", "Status", "Created", "Agents", "Tasks", "Merged"
+    );
+    println!("{}", "-".repeat(70));
+
+    for run in &runs {
+        let agents_count = state.list_agents(&run.id).map(|a| a.len()).unwrap_or(0);
+        let tasks = state.list_tasks(&run.id).unwrap_or_default();
+        let merged = tasks
+            .iter()
+            .filter(|t| t.status == types::TaskStatus::Merged)
+            .count();
+        println!(
+            "{:<12} {:<12?} {:<22} {:>7} {:>7} {:>7}",
+            &run.id,
+            run.status,
+            run.created_at.format("%Y-%m-%d %H:%M"),
+            agents_count,
+            tasks.len(),
+            merged,
+        );
+    }
+
+    Ok(())
+}
+
 fn cmd_stop() -> Result<(), String> {
     let state = HiveState::discover()?;
     let run_id = state.active_run_id()?;
@@ -522,6 +657,16 @@ fn cmd_stop() -> Result<(), String> {
     let _ = std::fs::remove_file(repo_root.join(".mcp.json"));
     let _ = std::fs::remove_file(repo_root.join(".claude/settings.local.json"));
 
-    println!("Run {run_id} stopped.");
+    // Mark run as completed
+    if let Ok(mut metadata) = state.load_run_metadata(&run_id) {
+        metadata.status = types::RunStatus::Completed;
+        let _ = state.save_run_metadata(&run_id, &metadata);
+    }
+
+    println!("Run {run_id} stopped.\n");
+
+    // Print summary
+    cmd_summary(Some(run_id))?;
+
     Ok(())
 }
