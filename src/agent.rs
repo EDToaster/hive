@@ -180,6 +180,8 @@ Parent: {}
 - Send workers back with feedback if changes are needed.
 - Submit approved branches to the merge queue via hive_submit_to_queue.
 - Report progress to the coordinator via hive_send_message.
+- Commit your work with descriptive messages as you go.
+- Always commit before finishing — uncommitted work may be lost.
 - When you have no more actions to take, finish your response.
   You will be resumed when workers complete or the coordinator sends a message.
 
@@ -206,6 +208,8 @@ Parent: {}
 - When done, call hive_update_task to set status to "review".
 - If you discover an unrelated bug or issue, call hive_create_task
   with urgency and a description. It will be routed to your lead.
+- Commit your work with descriptive messages as you go.
+- Always commit before finishing — uncommitted work may be lost.
 - When finished, stop. Your lead will resume you if changes are needed.
 
 ## Constraints
@@ -260,6 +264,7 @@ mod tests {
         assert!(prompt.contains("Handle backend domain"));
         assert!(prompt.contains("Spawn workers"));
         assert!(prompt.contains("Submit approved branches"));
+        assert!(prompt.contains("Commit your work"));
     }
 
     #[test]
@@ -282,6 +287,7 @@ mod tests {
         assert!(prompt.contains("Implement login endpoint"));
         assert!(prompt.contains("Do not spawn other agents"));
         assert!(prompt.contains("Do not submit to the merge queue"));
+        assert!(prompt.contains("Commit your work"));
     }
 
     #[test]
