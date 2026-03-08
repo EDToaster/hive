@@ -6,6 +6,7 @@ mod logging;
 mod mcp;
 #[allow(dead_code)]
 mod state;
+mod tui;
 mod types;
 
 use clap::Parser;
@@ -291,9 +292,7 @@ fn cmd_logs(agent_filter: Option<String>) -> Result<(), String> {
 }
 
 fn cmd_tui() -> Result<(), String> {
-    // TODO: Phase 6
-    println!("TUI not yet implemented.");
-    Ok(())
+    crate::tui::run_tui()
 }
 
 fn cmd_mcp(run_id: &str, agent_id: &str) -> Result<(), String> {
