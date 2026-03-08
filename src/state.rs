@@ -2,6 +2,19 @@ use crate::types::*;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Configuration loaded from `.hive/config.yaml`.
+pub struct HiveConfig {
+    pub stall_timeout_seconds: i64,
+}
+
+impl Default for HiveConfig {
+    fn default() -> Self {
+        Self {
+            stall_timeout_seconds: 300,
+        }
+    }
+}
+
 /// Root handle for all .hive/ state operations.
 /// All methods are stateless — they read/write the filesystem on every call.
 pub struct HiveState {
@@ -33,6 +46,25 @@ impl HiveState {
 
     pub fn repo_root(&self) -> &Path {
         &self.repo_root
+    }
+
+    /// Load config from `.hive/config.yaml`. Returns defaults if file is missing or unparseable.
+    pub fn load_config(&self) -> HiveConfig {
+        let path = self.hive_dir().join("config.yaml");
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return HiveConfig::default(),
+        };
+        let mut config = HiveConfig::default();
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some(value) = line.strip_prefix("stall_timeout_seconds:")
+                && let Ok(v) = value.trim().parse::<i64>()
+            {
+                config.stall_timeout_seconds = v;
+            }
+        }
+        config
     }
 
     // --- Run Management ---
@@ -574,6 +606,40 @@ mod tests {
 
         let loaded = state.load_spec("run-1").unwrap();
         assert_eq!(loaded, spec);
+    }
+
+    // --- Path helpers ---
+
+    // --- Config ---
+
+    #[test]
+    fn load_config_returns_defaults_when_no_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let config = state.load_config();
+        assert_eq!(config.stall_timeout_seconds, 300);
+    }
+
+    #[test]
+    fn load_config_reads_stall_timeout() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "# Hive configuration\nstall_timeout_seconds: 600\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        assert_eq!(config.stall_timeout_seconds, 600);
+    }
+
+    #[test]
+    fn load_config_handles_malformed_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(state.hive_dir().join("config.yaml"), "garbage content\n").unwrap();
+        let config = state.load_config();
+        assert_eq!(config.stall_timeout_seconds, 300);
     }
 
     // --- Path helpers ---

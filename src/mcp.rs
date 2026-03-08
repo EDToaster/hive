@@ -521,42 +521,51 @@ impl HiveMcp {
     }
 
     #[tool(
-        description = "Check agent health by comparing heartbeats and verifying processes are alive"
+        description = "Check agent health by comparing heartbeats and verifying processes are alive. Returns structured JSON with agent_id, role, status, last_heartbeat_age_secs, and process_alive."
     )]
     async fn hive_check_agents(&self) -> Result<CallToolResult, McpError> {
         if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
             return Ok(result);
         }
         let state = self.state();
+        let config = state.load_config();
         let agents = match state.list_agents(&self.run_id) {
             Ok(a) => a,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
 
-        let mut report = Vec::new();
+        let now = Utc::now();
+        let mut reports = Vec::new();
         for agent in &agents {
-            let alive = agent
-                .pid
-                .map(crate::agent::AgentSpawner::is_alive)
-                .unwrap_or(false);
-            let stalled = agent.heartbeat.is_some_and(|hb| {
-                (Utc::now() - hb).num_seconds() > 300 // 5 min threshold
-            });
+            let process_alive = agent.pid.map(crate::agent::AgentSpawner::is_alive);
+            let heartbeat_age_secs = agent.heartbeat.map(|hb| (now - hb).num_seconds());
 
-            let status_note = if !alive && agent.status == AgentStatus::Running {
-                "DEAD (process not found)"
-            } else if stalled {
-                "STALLED (no heartbeat > 5min)"
+            let status = if process_alive == Some(false) {
+                "dead"
+            } else if process_alive == Some(true)
+                && heartbeat_age_secs.is_some_and(|age| age > config.stall_timeout_seconds)
+            {
+                "stalled"
             } else {
-                "OK"
+                match agent.status {
+                    AgentStatus::Running => "running",
+                    AgentStatus::Done => "done",
+                    AgentStatus::Failed => "failed",
+                    AgentStatus::Stalled => "stalled",
+                }
             };
 
-            report.push(format!("{}: {:?} - {status_note}", agent.id, agent.status));
+            reports.push(serde_json::json!({
+                "agent_id": agent.id,
+                "role": agent.role,
+                "status": status,
+                "last_heartbeat_age_secs": heartbeat_age_secs,
+                "process_alive": process_alive,
+            }));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(
-            report.join("\n"),
-        )]))
+        let summary = serde_json::to_string_pretty(&reports).unwrap_or_default();
+        Ok(CallToolResult::success(vec![Content::text(summary)]))
     }
 
     #[tool(description = "Record a tool call event for observability")]
