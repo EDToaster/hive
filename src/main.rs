@@ -990,8 +990,7 @@ fn cmd_explore(intent: &str) -> Result<(), String> {
     state.save_spec(&run_id, intent)?;
 
     // Generate coordinator prompt for explore mode
-    let codebase_summary =
-        crate::agent::AgentSpawner::generate_codebase_summary(state.repo_root());
+    let codebase_summary = crate::agent::AgentSpawner::generate_codebase_summary(state.repo_root());
     let memory = state.load_memory_for_prompt(&crate::types::AgentRole::Coordinator);
     let coordinator_prompt = crate::agent::AgentSpawner::explore_coordinator_prompt(
         &run_id,
@@ -1254,10 +1253,7 @@ mod tests {
     #[test]
     fn test_cli_explore_command() {
         let cli = crate::cli::Cli::try_parse_from(["hive", "explore", "test intent"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            crate::cli::Commands::Explore { .. }
-        ));
+        assert!(matches!(cli.command, crate::cli::Commands::Explore { .. }));
     }
 
     #[test]

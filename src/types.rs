@@ -66,10 +66,7 @@ impl TaskStatus {
     pub fn is_resolved(&self) -> bool {
         matches!(
             self,
-            TaskStatus::Merged
-                | TaskStatus::Failed
-                | TaskStatus::Absorbed
-                | TaskStatus::Cancelled
+            TaskStatus::Merged | TaskStatus::Failed | TaskStatus::Absorbed | TaskStatus::Cancelled
         )
     }
 
