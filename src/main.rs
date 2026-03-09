@@ -134,13 +134,31 @@ fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
             println!("Planning phase: analyzing codebase and generating spec...");
 
             let memory = state.load_memory_for_prompt(&crate::types::AgentRole::Planner);
+            // TODO(lead-mcp): Replace with proper task-based planner spawning
+            let planner_task = crate::types::Task {
+                id: "planner".to_string(),
+                title: "Generate implementation spec".to_string(),
+                description: goal_str,
+                status: crate::types::TaskStatus::Active,
+                urgency: crate::types::Urgency::Critical,
+                blocking: vec![],
+                blocked_by: vec![],
+                assigned_to: Some("planner".to_string()),
+                created_by: "system".to_string(),
+                parent_task: None,
+                branch: None,
+                domain: None,
+                review_count: 0,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            };
             let planner_agent = crate::agent::AgentSpawner::spawn(
                 &state,
                 &run_id,
                 "planner",
                 crate::types::AgentRole::Planner,
                 None,
-                &goal_str,
+                &planner_task,
             )?;
 
             // Wait up to 5 minutes for planner to finish
@@ -175,7 +193,12 @@ fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
     // Write coordinator CLAUDE.local.md to the base repo
     let codebase_summary = crate::agent::AgentSpawner::generate_codebase_summary(state.repo_root());
     let memory = state.load_memory_for_prompt(&crate::types::AgentRole::Coordinator);
-    let coordinator_prompt = crate::agent::AgentSpawner::coordinator_prompt(&run_id, &spec_content, &codebase_summary, &memory);
+    let coordinator_prompt = crate::agent::AgentSpawner::coordinator_prompt(
+        &run_id,
+        &spec_content,
+        &codebase_summary,
+        &memory,
+    );
     let repo_root = state.repo_root();
     fs::write(repo_root.join("CLAUDE.local.md"), &coordinator_prompt).map_err(|e| e.to_string())?;
 
@@ -262,9 +285,7 @@ fn cmd_status() -> Result<(), String> {
     let secs = total_seconds % 60;
     let status_str = format!("{:?}", meta.status).to_lowercase();
 
-    println!(
-        "{BOLD}Run:{RESET} {CYAN}{run_id}{RESET} ({status_str}, {minutes}m {secs}s)"
-    );
+    println!("{BOLD}Run:{RESET} {CYAN}{run_id}{RESET} ({status_str}, {minutes}m {secs}s)");
 
     // Agent counts by status
     let agent_count = |s: types::AgentStatus| agents.iter().filter(|a| a.status == s).count();
@@ -667,7 +688,12 @@ fn cmd_summary(run: Option<String>) -> Result<(), String> {
         .iter()
         .filter(|a| a.status == types::AgentStatus::Failed)
         .count();
-    println!("\nAgents: {} spawned, {} completed, {} failed", agents.len(), done, failed);
+    println!(
+        "\nAgents: {} spawned, {} completed, {} failed",
+        agents.len(),
+        done,
+        failed
+    );
     if running > 0 {
         println!("        {} still running", running);
     }
@@ -700,7 +726,12 @@ fn cmd_summary(run: Option<String>) -> Result<(), String> {
     // Merged commits
     let since_date = metadata.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
     if let Ok(output) = std::process::Command::new("git")
-        .args(["log", "--oneline", &format!("--since={}", since_date), "main"])
+        .args([
+            "log",
+            "--oneline",
+            &format!("--since={}", since_date),
+            "main",
+        ])
         .current_dir(state.repo_root())
         .output()
     {
@@ -835,8 +866,7 @@ fn cmd_watch(interval: u64) -> Result<(), String> {
         println!("Run: {} ({:?}, {}m {}s)", run_id, meta.status, mins, secs);
 
         // Agent counts by status
-        let count_agents =
-            |s: types::AgentStatus| agents.iter().filter(|a| a.status == s).count();
+        let count_agents = |s: types::AgentStatus| agents.iter().filter(|a| a.status == s).count();
         let mut agent_parts = vec![];
         for (status, label) in [
             (types::AgentStatus::Running, "running"),
@@ -860,8 +890,7 @@ fn cmd_watch(interval: u64) -> Result<(), String> {
         );
 
         // Task counts by status
-        let count_tasks =
-            |s: types::TaskStatus| tasks.iter().filter(|t| t.status == s).count();
+        let count_tasks = |s: types::TaskStatus| tasks.iter().filter(|t| t.status == s).count();
         let mut task_parts = vec![];
         for (status, label) in [
             (types::TaskStatus::Active, "active"),
@@ -1000,13 +1029,31 @@ fn cmd_stop() -> Result<(), String> {
 
     // Spawn post-mortem analysis agent
     println!("Spawning post-mortem analysis agent...");
+    // TODO(lead-mcp): Replace with proper task-based postmortem spawning
+    let postmortem_task = crate::types::Task {
+        id: "postmortem".to_string(),
+        title: "Post-mortem analysis".to_string(),
+        description: "Analyze the completed run and extract learnings".to_string(),
+        status: crate::types::TaskStatus::Active,
+        urgency: crate::types::Urgency::Normal,
+        blocking: vec![],
+        blocked_by: vec![],
+        assigned_to: Some("postmortem".to_string()),
+        created_by: "system".to_string(),
+        parent_task: None,
+        branch: None,
+        domain: None,
+        review_count: 0,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
     match crate::agent::AgentSpawner::spawn(
         &state,
         &run_id,
         "postmortem",
         crate::types::AgentRole::Postmortem,
         None,
-        "Analyze the completed run and extract learnings",
+        &postmortem_task,
     ) {
         Ok(pm_agent) => {
             let timeout = std::time::Duration::from_secs(180);

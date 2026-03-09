@@ -206,9 +206,7 @@ pub async fn wait_for_activity(
             match rx.recv_timeout(remaining) {
                 Ok(paths) => {
                     for path in &paths {
-                        if let Some(desc) =
-                            describe_event(&run_dir_owned, path, &agent_snapshots)
-                        {
+                        if let Some(desc) = describe_event(&run_dir_owned, path, &agent_snapshots) {
                             return Ok(desc);
                         }
                     }

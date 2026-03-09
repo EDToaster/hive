@@ -435,9 +435,9 @@ fn run_tui_loop(
                 render_stats_bar(frame, outer[1], &agents, &tasks, state);
 
                 // -- Main content: planning view or normal swarm+tasks --
-                let planner_agent = agents.iter().find(|a| {
-                    a.role == AgentRole::Planner && a.status == AgentStatus::Running
-                });
+                let planner_agent = agents
+                    .iter()
+                    .find(|a| a.role == AgentRole::Planner && a.status == AgentStatus::Running);
 
                 if let Some(planner) = planner_agent {
                     render_planning_view(frame, outer[2], planner);
@@ -465,10 +465,7 @@ fn run_tui_loop(
                     if let Some(ref spec) = spec_content {
                         let tasks_and_spec = Layout::default()
                             .direction(Direction::Vertical)
-                            .constraints([
-                                Constraint::Percentage(60),
-                                Constraint::Percentage(40),
-                            ])
+                            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
                             .split(main_content[1]);
                         render_tasks_pane(frame, tasks_and_spec[0], &tasks, &ui);
                         render_spec_viewer(frame, tasks_and_spec[1], spec);
@@ -652,10 +649,7 @@ fn render_stats_bar(
         let count = agents.iter().filter(|a| a.status == status).count();
         if count > 0 {
             if !first {
-                spans.push(Span::styled(
-                    " \u{00B7} ",
-                    Style::default().fg(Color::Gray),
-                ));
+                spans.push(Span::styled(" \u{00B7} ", Style::default().fg(Color::Gray)));
             }
             spans.push(Span::styled(
                 format!("{count} {}", format!("{status:?}").to_lowercase()),
@@ -682,10 +676,7 @@ fn render_stats_bar(
         let count = tasks.iter().filter(|t| t.status == status).count();
         if count > 0 {
             if !first {
-                spans.push(Span::styled(
-                    " \u{00B7} ",
-                    Style::default().fg(Color::Gray),
-                ));
+                spans.push(Span::styled(" \u{00B7} ", Style::default().fg(Color::Gray)));
             }
             spans.push(Span::styled(
                 format!("{count} {}", format!("{status:?}").to_lowercase()),
@@ -744,11 +735,7 @@ fn render_swarm_pane(
             if let Some(ref tid) = node.task_id {
                 spans.push(Span::styled(
                     format!(" {tid}"),
-                    Style::default().fg(if dimmed {
-                        Color::Gray
-                    } else {
-                        Color::White
-                    }),
+                    Style::default().fg(if dimmed { Color::Gray } else { Color::White }),
                 ));
             }
 
