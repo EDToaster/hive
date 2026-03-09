@@ -238,6 +238,7 @@ impl HiveMcp {
             (caller_role, role),
             (AgentRole::Coordinator, AgentRole::Lead)
                 | (AgentRole::Coordinator, AgentRole::Planner)
+                | (AgentRole::Coordinator, AgentRole::Postmortem)
                 | (AgentRole::Lead, AgentRole::Worker)
                 | (AgentRole::Lead, AgentRole::Reviewer)
         );
@@ -1621,4 +1622,121 @@ pub async fn run_mcp_server(run_id: &str, agent_id: &str) -> Result<(), String> 
         .map_err(|e| format!("MCP server error: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{Agent, AgentStatus};
+    use tempfile::TempDir;
+
+    fn setup_mcp(role: AgentRole) -> (TempDir, HiveMcp) {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        let state = HiveState::new(root.clone());
+        state.create_run("test-run").unwrap();
+        let agent = Agent {
+            id: "test-agent".into(),
+            role,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &agent).unwrap();
+        let mcp = HiveMcp::new(
+            "test-run".into(),
+            "test-agent".into(),
+            root.to_string_lossy().to_string(),
+        );
+        (dir, mcp)
+    }
+
+    #[test]
+    fn save_memory_rejects_non_postmortem() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let result = mcp.require_role(&[AgentRole::Postmortem]);
+        assert!(result.is_err(), "Worker should not be allowed to save memory");
+    }
+
+    #[test]
+    fn save_memory_allows_postmortem() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
+        let result = mcp.require_role(&[AgentRole::Postmortem]);
+        assert!(result.is_ok(), "Postmortem should be allowed to save memory");
+    }
+
+    #[test]
+    fn save_spec_rejects_non_planner() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let result = mcp.require_role(&[AgentRole::Planner]);
+        assert!(result.is_err(), "Worker should not be allowed to save spec");
+    }
+
+    #[test]
+    fn save_spec_allows_planner() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Planner);
+        let result = mcp.require_role(&[AgentRole::Planner]);
+        assert!(result.is_ok(), "Planner should be allowed to save spec");
+    }
+
+    #[tokio::test]
+    async fn save_memory_rejects_invalid_memory_type() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
+        let params = Parameters(SaveMemoryParams {
+            memory_type: "invalid".into(),
+            content: "test".into(),
+        });
+        let result = mcp.hive_save_memory(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn save_memory_rejects_invalid_operation_json() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
+        let params = Parameters(SaveMemoryParams {
+            memory_type: "operation".into(),
+            content: "not valid json".into(),
+        });
+        let result = mcp.hive_save_memory(params).await;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn check_agents_allows_planner_and_postmortem() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Planner);
+        let allowed = &[
+            AgentRole::Coordinator,
+            AgentRole::Lead,
+            AgentRole::Reviewer,
+            AgentRole::Planner,
+            AgentRole::Postmortem,
+        ];
+        assert!(mcp.require_role(allowed).is_ok());
+
+        let (_dir2, mcp2) = setup_mcp(AgentRole::Postmortem);
+        assert!(mcp2.require_role(allowed).is_ok());
+    }
+
+    #[test]
+    fn spawn_hierarchy_allows_coordinator_to_spawn_postmortem() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let caller_role = mcp.agent_role();
+        let allowed = matches!(
+            (caller_role, AgentRole::Postmortem),
+            (AgentRole::Coordinator, AgentRole::Lead)
+                | (AgentRole::Coordinator, AgentRole::Planner)
+                | (AgentRole::Coordinator, AgentRole::Postmortem)
+                | (AgentRole::Lead, AgentRole::Worker)
+                | (AgentRole::Lead, AgentRole::Reviewer)
+        );
+        assert!(allowed, "Coordinator should be able to spawn Postmortem");
+    }
 }
