@@ -1,7 +1,8 @@
 use crate::logging::LogDb;
 use crate::state::HiveState;
 use crate::types::{
-    AgentRole, AgentStatus, MergeQueueEntry, Message, MessageType, Task, TaskStatus, Urgency,
+    AgentRole, AgentStatus, MergeQueue, MergeQueueEntry, Message, MessageType, Task, TaskStatus,
+    Urgency,
 };
 use chrono::Utc;
 use rmcp::handler::server::ServerHandler;
@@ -151,6 +152,16 @@ pub struct RetryAgentParams {
     pub feedback: Option<String>,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct ReviewVerdictParams {
+    /// Task ID being reviewed
+    pub task_id: String,
+    /// Verdict: "approve", "request-changes", or "reject"
+    pub verdict: String,
+    /// Feedback message (required for request-changes and reject)
+    pub feedback: Option<String>,
+}
+
 #[tool_router]
 impl HiveMcp {
     pub fn new(run_id: String, agent_id: String, repo_root: String) -> Self {
@@ -197,9 +208,10 @@ impl HiveMcp {
         let role = match p.role.as_str() {
             "lead" => AgentRole::Lead,
             "worker" => AgentRole::Worker,
+            "reviewer" => AgentRole::Reviewer,
             _ => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Invalid role. Use 'lead' or 'worker'.",
+                    "Invalid role. Use 'lead', 'worker', or 'reviewer'.",
                 )]));
             }
         };
@@ -208,7 +220,9 @@ impl HiveMcp {
         let caller_role = self.agent_role();
         let allowed = matches!(
             (caller_role, role),
-            (AgentRole::Coordinator, AgentRole::Lead) | (AgentRole::Lead, AgentRole::Worker)
+            (AgentRole::Coordinator, AgentRole::Lead)
+                | (AgentRole::Lead, AgentRole::Worker)
+                | (AgentRole::Lead, AgentRole::Reviewer)
         );
         if !allowed {
             return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -279,6 +293,7 @@ impl HiveMcp {
             parent_task: p.parent_task.clone(),
             branch: None,
             domain: p.domain.clone(),
+            review_count: 0,
             created_at: now,
             updated_at: now,
             review_count: 0,
@@ -449,9 +464,12 @@ impl HiveMcp {
                 }
             }
             AgentRole::Reviewer => {
-                return Ok(CallToolResult::error(vec![Content::text(
-                    "Reviewers cannot send messages.",
-                )]));
+                // Reviewers can only message the coordinator
+                if p.to != "coordinator" {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Reviewers can only send messages to the coordinator.",
+                    )]));
+                }
             }
         }
 
@@ -511,7 +529,157 @@ impl HiveMcp {
         ))]))
     }
 
-    #[tool(description = "Submit an approved branch to the merge queue")]
+    #[tool(description = "Submit a review verdict for a task. Reviewer-only.")]
+    async fn hive_review_verdict(
+        &self,
+        params: Parameters<ReviewVerdictParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Reviewer]) {
+            return Ok(result);
+        }
+        let p = &params.0;
+        let state = self.state();
+
+        let _task_lock = state
+            .lock_file(&format!("task-{}", p.task_id))
+            .map_err(|e| McpError::internal_error(e, None))?;
+        let mut task = match state.load_task(&self.run_id, &p.task_id) {
+            Ok(t) => t,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
+        };
+
+        match p.verdict.as_str() {
+            "approve" => {
+                task.status = TaskStatus::Queued;
+                task.updated_at = Utc::now();
+                state
+                    .save_task(&self.run_id, &task)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+
+                // Add to merge queue
+                let branch = task.branch.clone().unwrap_or_default();
+                let submitted_by = task.assigned_to.clone().unwrap_or_default();
+                let _lock = state
+                    .lock_file("merge-queue")
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                let mut queue = state
+                    .load_merge_queue(&self.run_id)
+                    .unwrap_or(MergeQueue {
+                        entries: vec![],
+                    });
+                queue.entries.push(MergeQueueEntry {
+                    task_id: p.task_id.clone(),
+                    branch: branch.clone(),
+                    submitted_by: submitted_by.clone(),
+                    submitted_at: Utc::now(),
+                });
+                state
+                    .save_merge_queue(&self.run_id, &queue)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+
+                // Notify coordinator
+                let msg = format!(
+                    "Review approved for task '{}'. Branch '{}' added to merge queue.",
+                    p.task_id, branch
+                );
+                let _ = state.save_message(
+                    &self.run_id,
+                    &Message {
+                        id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                        from: self.agent_id.clone(),
+                        to: "coordinator".to_string(),
+                        timestamp: Utc::now(),
+                        message_type: MessageType::Status,
+                        body: msg.clone(),
+                        refs: vec![p.task_id.clone()],
+                    },
+                );
+
+                Ok(CallToolResult::success(vec![Content::text(msg)]))
+            }
+            "request-changes" => {
+                let feedback = p
+                    .feedback
+                    .as_deref()
+                    .unwrap_or("Changes requested (no details provided)");
+                task.review_count += 1;
+                task.status = TaskStatus::Active;
+                task.updated_at = Utc::now();
+                state
+                    .save_task(&self.run_id, &task)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+
+                // Send feedback to the agent that worked on this task
+                if let Some(ref assigned) = task.assigned_to {
+                    let _ = state.save_message(
+                        &self.run_id,
+                        &Message {
+                            id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                            from: self.agent_id.clone(),
+                            to: assigned.clone(),
+                            timestamp: Utc::now(),
+                            message_type: MessageType::Request,
+                            body: format!(
+                                "Review feedback for task '{}' (review cycle {}):\n{}",
+                                p.task_id, task.review_count, feedback
+                            ),
+                            refs: vec![p.task_id.clone()],
+                        },
+                    );
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Requested changes for task '{}' (review cycle {}). Feedback sent to {}.",
+                    p.task_id,
+                    task.review_count,
+                    task.assigned_to.as_deref().unwrap_or("unknown")
+                ))]))
+            }
+            "reject" => {
+                let feedback = p
+                    .feedback
+                    .as_deref()
+                    .unwrap_or("Rejected (no details provided)");
+                task.status = TaskStatus::Failed;
+                task.updated_at = Utc::now();
+                state
+                    .save_task(&self.run_id, &task)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+
+                // Notify the lead (parent of the assigned agent)
+                if let Some(ref assigned) = task.assigned_to
+                    && let Ok(agent) = state.load_agent(&self.run_id, assigned)
+                    && let Some(ref parent) = agent.parent
+                {
+                    let _ = state.save_message(
+                        &self.run_id,
+                        &Message {
+                            id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                            from: self.agent_id.clone(),
+                            to: parent.clone(),
+                            timestamp: Utc::now(),
+                            message_type: MessageType::Status,
+                            body: format!(
+                                "Task '{}' rejected by reviewer:\n{}",
+                                p.task_id, feedback
+                            ),
+                            refs: vec![p.task_id.clone()],
+                        },
+                    );
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Task '{}' rejected: {}",
+                    p.task_id, feedback
+                ))]))
+            }
+            _ => Ok(CallToolResult::error(vec![Content::text(
+                "Invalid verdict. Use 'approve', 'request-changes', or 'reject'.",
+            )])),
+        }
+    }
+
+    #[tool(description = "Submit a branch for review before merging. Spawns a reviewer agent to evaluate the changes.")]
     async fn hive_submit_to_queue(
         &self,
         params: Parameters<SubmitToQueueParams>,
@@ -521,27 +689,87 @@ impl HiveMcp {
         }
         let p = &params.0;
         let state = self.state();
-        let _lock = state.lock_file("merge-queue").map_err(|e| McpError::internal_error(e, None))?;
-        let mut queue = match state.load_merge_queue(&self.run_id) {
-            Ok(q) => q,
+
+        // Load and lock the task
+        let _task_lock = state
+            .lock_file(&format!("task-{}", p.task_id))
+            .map_err(|e| McpError::internal_error(e, None))?;
+        let mut task = match state.load_task(&self.run_id, &p.task_id) {
+            Ok(t) => t,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
 
-        queue.entries.push(MergeQueueEntry {
-            task_id: p.task_id.clone(),
-            branch: p.branch.clone(),
-            submitted_by: self.agent_id.clone(),
-            submitted_at: Utc::now(),
-        });
+        // Check review cycle limit (max 3)
+        if task.review_count >= 3 {
+            task.status = TaskStatus::Failed;
+            task.updated_at = Utc::now();
+            let _ = state.save_task(&self.run_id, &task);
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Task '{}' has exceeded the maximum review cycles (3). Marked as failed.",
+                p.task_id
+            ))]));
+        }
 
-        match state.save_merge_queue(&self.run_id, &queue) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Submitted branch '{}' for task '{}' to merge queue (position: {})",
-                p.branch,
-                p.task_id,
-                queue.entries.len()
-            ))])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        task.status = TaskStatus::Review;
+        task.branch = Some(p.branch.clone());
+        task.updated_at = Utc::now();
+        state
+            .save_task(&self.run_id, &task)
+            .map_err(|e| McpError::internal_error(e, None))?;
+
+        // Spawn reviewer agent
+        let reviewer_id = format!("reviewer-{}", &p.task_id[..8.min(p.task_id.len())]);
+        let review_description = format!(
+            "Review task '{}': {}\n\nBranch: {}\nTask description: {}\n\nExamine the diff on this branch against main. Run `git log main..HEAD --oneline` and `git diff main...HEAD --stat` to see what changed. Then read the changed files and evaluate.",
+            p.task_id, task.title, p.branch, task.description
+        );
+
+        match crate::agent::AgentSpawner::spawn(
+            &state,
+            &self.run_id,
+            &reviewer_id,
+            AgentRole::Reviewer,
+            Some(&self.agent_id),
+            &review_description,
+        ) {
+            Ok(_) => {
+                // Set task_id on the reviewer agent
+                if let Ok(mut reviewer_agent) = state.load_agent(&self.run_id, &reviewer_id) {
+                    reviewer_agent.task_id = Some(p.task_id.clone());
+                    let _ = state.save_agent(&self.run_id, &reviewer_agent);
+                }
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Spawned reviewer '{}' for task '{}'. Awaiting review verdict.",
+                    reviewer_id, p.task_id
+                ))]))
+            }
+            Err(e) => {
+                // Fallback: submit directly to merge queue
+                task.status = TaskStatus::Queued;
+                task.updated_at = Utc::now();
+                let _ = state.save_task(&self.run_id, &task);
+
+                let _lock = state
+                    .lock_file("merge-queue")
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                let mut queue = state
+                    .load_merge_queue(&self.run_id)
+                    .unwrap_or(MergeQueue {
+                        entries: vec![],
+                    });
+                queue.entries.push(MergeQueueEntry {
+                    task_id: p.task_id.clone(),
+                    branch: p.branch.clone(),
+                    submitted_by: self.agent_id.clone(),
+                    submitted_at: Utc::now(),
+                });
+                let _ = state.save_merge_queue(&self.run_id, &queue);
+
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Warning: Failed to spawn reviewer ({e}). Branch submitted directly to merge queue as fallback."
+                ))]))
+            }
         }
     }
 
@@ -719,7 +947,9 @@ impl HiveMcp {
         description = "Check agent health by comparing heartbeats and verifying processes are alive. Returns structured JSON with agent_id, role, status, last_heartbeat_age_secs, and process_alive."
     )]
     async fn hive_check_agents(&self) -> Result<CallToolResult, McpError> {
-        if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
+        if let Err(result) =
+            self.require_role(&[AgentRole::Coordinator, AgentRole::Lead, AgentRole::Reviewer])
+        {
             return Ok(result);
         }
         let state = self.state();
