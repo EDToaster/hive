@@ -29,36 +29,82 @@ impl AgentSpawner {
         let claude_dir = worktree_path.join(".claude");
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
 
-        let settings_json = serde_json::json!({
-            "hooks": {
-                "PostToolUse": [{
-                    "matcher": "*",
-                    "hooks": [
-                        {
+        let settings_json = if role == AgentRole::Reviewer {
+            serde_json::json!({
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Edit|Write|NotebookEdit",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "echo 'BLOCKED: Reviewer agents are read-only. Do not modify files.' >&2 && exit 2"
+                        }]
+                    }, {
+                        "matcher": "Bash",
+                        "hooks": [{
+                            "type": "command",
+                            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE '(>|>>|tee |rm |mv |cp |chmod |sed -i|mkdir|touch|git add|git commit|git push|cargo fmt)'; then echo 'BLOCKED: Reviewer agents are read-only.' >&2 && exit 2; fi"
+                        }]
+                    }],
+                    "PostToolUse": [{
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": format!(
+                                    "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
+                                )
+                            },
+                            {
+                                "type": "command",
+                                "command": format!(
+                                    "hive heartbeat --run {run_id} --agent {agent_id}"
+                                )
+                            }
+                        ]
+                    }],
+                    "Stop": [{
+                        "matcher": "*",
+                        "hooks": [{
                             "type": "command",
                             "command": format!(
-                                "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
+                                "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
                             )
-                        },
-                        {
-                            "type": "command",
-                            "command": format!(
-                                "hive heartbeat --run {run_id} --agent {agent_id}"
-                            )
-                        }
-                    ]
-                }],
-                "Stop": [{
-                    "matcher": "*",
-                    "hooks": [{
-                        "type": "command",
-                        "command": format!(
-                            "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
-                        )
+                        }]
                     }]
-                }]
-            }
-        });
+                }
+            })
+        } else {
+            serde_json::json!({
+                "hooks": {
+                    "PostToolUse": [{
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "type": "command",
+                                "command": format!(
+                                    "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
+                                )
+                            },
+                            {
+                                "type": "command",
+                                "command": format!(
+                                    "hive heartbeat --run {run_id} --agent {agent_id}"
+                                )
+                            }
+                        ]
+                    }],
+                    "Stop": [{
+                        "matcher": "*",
+                        "hooks": [{
+                            "type": "command",
+                            "command": format!(
+                                "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
+                            )
+                        }]
+                    }]
+                }
+            })
+        };
         fs::write(
             claude_dir.join("settings.local.json"),
             serde_json::to_string_pretty(&settings_json).unwrap(),
@@ -374,6 +420,37 @@ Parent: {}
 "#,
                 parent.unwrap_or("unknown")
             ),
+            AgentRole::Reviewer => format!(
+                r#"You are a reviewer agent in a hive swarm.
+Agent ID: {agent_id}
+Role: reviewer
+Parent: {}
+
+## Your Review Task
+{task_description}
+
+## Responsibilities
+- Review the code changes on this branch against the task description.
+- Evaluate: correctness, completeness, code quality, scope discipline.
+- Check that tests were added/updated and pass.
+- Check that no unrelated files were modified.
+- Submit your verdict via hive_review_verdict.
+
+## Verdict Options
+- **approve**: Code correctly implements the task, tests pass, no issues.
+- **request-changes**: Code has specific issues that need fixing. Provide clear, actionable feedback.
+- **reject**: Fundamentally wrong approach or task cannot be completed this way.
+
+## Constraints
+- You are READ-ONLY. Do NOT modify any files. Do NOT use Edit, Write, or Bash to change files.
+- Only use Read, Glob, Grep to examine code.
+- Use hive MCP tools only: hive_review_verdict, hive_read_messages, hive_list_tasks.
+- Review the diff by reading the changed files and comparing to the task intent.
+- Be thorough but concise. Focus on correctness over style.
+- After submitting your verdict, stop immediately.
+"#,
+                parent.unwrap_or("coordinator")
+            ),
         }
     }
 
@@ -484,6 +561,21 @@ mod tests {
     fn context_management_prompt_not_in_coordinator() {
         let prompt = AgentSpawner::generate_prompt("coord-1", AgentRole::Coordinator, None, "task");
         assert!(!prompt.contains("## Context Management"));
+    }
+
+    #[test]
+    fn reviewer_prompt_contains_readonly_constraints() {
+        let prompt = AgentSpawner::generate_prompt(
+            "reviewer-1",
+            AgentRole::Reviewer,
+            Some("lead-1"),
+            "Review the changes for task-123",
+        );
+        assert!(prompt.contains("Agent ID: reviewer-1"));
+        assert!(prompt.contains("Role: reviewer"));
+        assert!(prompt.contains("READ-ONLY"));
+        assert!(prompt.contains("hive_review_verdict"));
+        assert!(prompt.contains("Do NOT modify any files"));
     }
 
     #[test]

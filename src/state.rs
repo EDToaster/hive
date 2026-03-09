@@ -451,6 +451,7 @@ mod tests {
             parent_task: None,
             branch: None,
             domain: None,
+            review_count: 0,
             created_at: now,
             updated_at: now,
         }
