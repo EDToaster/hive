@@ -422,8 +422,7 @@ impl HiveMcp {
 
                 // Auto-close subtasks when parent is merged or skipped
                 if matches!(task.status, TaskStatus::Merged | TaskStatus::Skipped)
-                    && let Ok(closed) =
-                        state.close_subtasks(&self.run_id, &task.id, task.status)
+                    && let Ok(closed) = state.close_subtasks(&self.run_id, &task.id, task.status)
                 {
                     for sub in &closed {
                         eprintln!(
