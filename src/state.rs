@@ -619,11 +619,11 @@ impl HiveState {
         let mut sections = Vec::new();
 
         let include_operations = matches!(role, AgentRole::Coordinator | AgentRole::Planner);
-        let include_conventions = !matches!(role, AgentRole::Coordinator);
-        let include_failures = matches!(
+        let include_conventions = matches!(
             role,
-            AgentRole::Lead | AgentRole::Worker | AgentRole::Reviewer
+            AgentRole::Worker | AgentRole::Planner | AgentRole::Reviewer
         );
+        let include_failures = matches!(role, AgentRole::Worker);
 
         if include_operations {
             let ops = self.load_operations();
@@ -1588,6 +1588,17 @@ mod tests {
         assert!(prompt.contains("### Known Failure Patterns"));
         assert!(prompt.contains("timeout"));
         assert!(!prompt.contains("### Recent Operations"));
+    }
+
+    #[test]
+    fn test_load_memory_for_prompt_lead_gets_no_conventions_or_failures() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_conventions("Use snake_case.").unwrap();
+        state.save_failure(&make_failure("timeout")).unwrap();
+        let prompt = state.load_memory_for_prompt(&AgentRole::Lead);
+        assert!(!prompt.contains("### Conventions"), "Leads should not get conventions");
+        assert!(!prompt.contains("### Known Failure Patterns"), "Leads should not get failure patterns");
     }
 
     #[test]

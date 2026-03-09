@@ -61,7 +61,7 @@ impl AgentSpawner {
 
         let settings_json = if matches!(
             role,
-            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem | AgentRole::Evaluator
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem
         ) {
             // Read-only agents: block Edit/Write/destructive Bash
             serde_json::json!({
@@ -84,16 +84,25 @@ impl AgentSpawner {
                 }
             })
         } else if matches!(role, AgentRole::Lead) {
-            // Lead agents: block Edit/Write to enforce delegation to workers
+            // Lead agents: block Edit/Write and file-writing Bash to enforce delegation
             serde_json::json!({
                 "hooks": {
-                    "PreToolUse": [{
-                        "matcher": "Edit|Write|NotebookEdit",
-                        "hooks": [{
-                            "type": "command",
-                            "command": "echo 'BLOCKED: Lead agents must delegate implementation to workers via hive_spawn_agent. Do not modify files yourself.' >&2 && exit 2"
-                        }]
-                    }],
+                    "PreToolUse": [
+                        {
+                            "matcher": "Edit|Write|NotebookEdit",
+                            "hooks": [{
+                                "type": "command",
+                                "command": "echo 'BLOCKED: Lead agents must delegate implementation to workers via hive_spawn_agent.' >&2 && exit 2"
+                            }]
+                        },
+                        {
+                            "matcher": "Bash",
+                            "hooks": [{
+                                "type": "command",
+                                "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE '(>|>>|tee |sed -i|perl -.*-i|awk .*-i|cat >|cat >>|printf .*>|echo .*>)'; then echo 'BLOCKED: Lead agents must delegate implementation to workers via hive_spawn_agent.' >&2 && exit 2; fi"
+                            }]
+                        }
+                    ],
                     "PostToolUse": post_tool_hooks,
                     "Stop": stop_hooks
                 }
@@ -132,7 +141,7 @@ impl AgentSpawner {
         let memory = state.load_memory_for_prompt(&role);
         let task_description = if matches!(role, AgentRole::Lead) {
             format!(
-                "You are managing task `{}`: `{}`.\n\n{}\n\nYour job is to decompose this into subtasks, spawn workers for each, review their output, and submit the final branch to the merge queue. Do NOT implement this yourself.",
+                "You are managing task `{}`: `{}`.\n\n{}",
                 task.id, task.title, task.description
             )
         } else {
@@ -360,11 +369,9 @@ Parent: {}
   You will be resumed when workers complete or the coordinator sends a message.
 
 ## Delegation Protocol
-- You are a MANAGER, not an implementer. You are FORBIDDEN from writing or editing code.
-- Your Edit and Write tools are blocked by hooks — any attempt to modify files will fail.
-- Read the relevant source files to understand the codebase.
-- Create subtasks via hive_create_task, then spawn one worker per task via hive_spawn_agent.
-- Spawn one worker per logical unit of work (usually one file or one feature).
+- ALWAYS spawn workers for implementation. You are a manager, not an implementer.
+- Read the relevant source files to understand the codebase, then write a detailed implementation plan.
+- Spawn one worker per logical unit of work via hive_spawn_agent with an inline `task` description.
 - After spawning workers, use hive_wait_for_activity and hive_check_agents to monitor.
 - When workers finish, review their work with hive_review_agent before submitting.
 
@@ -385,7 +392,6 @@ Parent: {}
 - If you're running low on context, commit your work, update the task status to "review" with a note about remaining work, and stop.
 
 ## Constraints
-- You MUST NOT implement code yourself. All implementation is delegated to workers.
 - You may only spawn workers, not other leads.
 - You may only send messages to your workers and the coordinator.
 - Do not process the merge queue — the coordinator handles that.
@@ -554,33 +560,6 @@ Use `hive_save_memory` for each entry type:
 - Be concise and actionable in your analysis — future agents will read this.
 - After saving all memory entries, stop immediately.
 "#
-            ),
-            // Explorer and Evaluator use Worker prompt as placeholder until their prompts are implemented
-            AgentRole::Explorer | AgentRole::Evaluator => format!(
-                r#"You are a {} agent in a hive swarm.
-Agent ID: {agent_id}
-Role: {:?}
-Parent: {}
-
-## Your Task
-{task_description}
-
-## Responsibilities
-- Implement the task in your worktree.
-- Run relevant tests and linters to verify your work.
-- When done, call hive_update_task to set status to "review".
-- Commit your work with descriptive messages as you go.
-- Always commit before finishing — uncommitted work may be lost.
-
-## Constraints
-- Do not spawn other agents.
-- Do not submit to the merge queue directly.
-- Stay focused on your assigned task.
-- When done, stop and wait.
-"#,
-                if role == AgentRole::Explorer { "explorer" } else { "evaluator" },
-                role,
-                parent.unwrap_or("coordinator")
             ),
         };
         if memory.is_empty() {
@@ -785,7 +764,10 @@ mod tests {
             "",
         );
         assert!(prompt.contains("## Delegation Protocol"));
-        assert!(prompt.contains("FORBIDDEN from writing or editing code"));
+        assert!(prompt.contains("ALWAYS spawn workers for implementation"));
+        assert!(prompt.contains("write a detailed implementation plan"));
+        assert!(!prompt.contains("FORBIDDEN"));
+        assert!(!prompt.contains("blocked by hooks"));
         assert!(prompt.contains("## Code Review Protocol"));
         assert!(prompt.contains("hive_review_agent"));
         assert!(prompt.contains("## Health Monitoring"));

@@ -32,8 +32,10 @@ pub struct SpawnAgentParams {
     pub agent_id: String,
     /// Role: "lead" or "worker"
     pub role: String,
-    /// Task ID to assign to this agent
-    pub task_id: String,
+    /// Task ID to assign (mutually exclusive with `task`)
+    pub task_id: Option<String>,
+    /// Inline task description — auto-creates a task (mutually exclusive with `task_id`)
+    pub task: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -264,24 +266,59 @@ impl HiveMcp {
             }
         }
 
-        // Load and validate task
-        let mut task = match state.load_task(&self.run_id, &p.task_id) {
-            Ok(t) => t,
-            Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Failed to load task '{}': {e}",
-                    p.task_id
-                ))]));
+        // Resolve task: either load existing or auto-create from inline description
+        let mut task = match (&p.task_id, &p.task) {
+            (Some(_), Some(_)) => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Provide either 'task_id' or 'task', not both.",
+                )]));
+            }
+            (None, None) => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Provide either 'task_id' (existing task) or 'task' (auto-create).",
+                )]));
+            }
+            (Some(tid), None) => {
+                let t = match state.load_task(&self.run_id, tid) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        return Ok(CallToolResult::error(vec![Content::text(format!(
+                            "Failed to load task '{tid}': {e}"
+                        ))]));
+                    }
+                };
+                if let Some(ref assigned) = t.assigned_to
+                    && assigned != &p.agent_id
+                {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Task '{}' is already assigned to '{assigned}'.",
+                        tid
+                    ))]));
+                }
+                t
+            }
+            (None, Some(desc)) => {
+                let task_id = format!("task-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                let now = Utc::now();
+                Task {
+                    id: task_id,
+                    title: desc.clone(),
+                    description: desc.clone(),
+                    status: TaskStatus::Pending,
+                    urgency: Urgency::Normal,
+                    blocking: vec![],
+                    blocked_by: vec![],
+                    assigned_to: None,
+                    created_by: self.agent_id.clone(),
+                    parent_task: None,
+                    branch: None,
+                    domain: None,
+                    review_count: 0,
+                    created_at: now,
+                    updated_at: now,
+                }
             }
         };
-        if let Some(ref assigned) = task.assigned_to
-            && assigned != &p.agent_id
-        {
-            return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Task '{}' is already assigned to '{assigned}'.",
-                p.task_id
-            ))]));
-        }
         task.assigned_to = Some(p.agent_id.clone());
         task.status = TaskStatus::Active;
         task.updated_at = Utc::now();
@@ -544,7 +581,7 @@ impl HiveMcp {
                     )]));
                 }
             }
-            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem | AgentRole::Explorer | AgentRole::Evaluator => {
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem => {
                 // These roles can only message the coordinator
                 if p.to != "coordinator" {
                     return Ok(CallToolResult::error(vec![Content::text(
@@ -1347,9 +1384,7 @@ impl HiveMcp {
             AgentRole::Worker
             | AgentRole::Reviewer
             | AgentRole::Planner
-            | AgentRole::Postmortem
-            | AgentRole::Explorer
-            | AgentRole::Evaluator => {
+            | AgentRole::Postmortem => {
                 return Ok(CallToolResult::error(vec![Content::text(
                     "Only coordinators and leads can retry agents.",
                 )]));
@@ -1934,7 +1969,8 @@ mod tests {
         let params = Parameters(SpawnAgentParams {
             agent_id: "reviewer-1".into(),
             role: "reviewer".into(),
-            task_id: "task-1".into(),
+            task_id: Some("task-1".into()),
+            task: None,
         });
         let result = mcp.hive_spawn_agent(params).await.unwrap();
         assert!(result.is_error.unwrap_or(false));
@@ -1946,10 +1982,57 @@ mod tests {
         let params = Parameters(SpawnAgentParams {
             agent_id: "planner-1".into(),
             role: "planner".into(),
-            task_id: "task-1".into(),
+            task_id: Some("task-1".into()),
+            task: None,
         });
         let result = mcp.hive_spawn_agent(params).await.unwrap();
         assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_both_task_id_and_task() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "lead-test".into(),
+            role: "lead".into(),
+            task_id: Some("task-123".into()),
+            task: Some("Some text".into()),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_neither_task_id_nor_task() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "lead-test".into(),
+            role: "lead".into(),
+            task_id: None,
+            task: None,
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn spawn_with_inline_task_creates_task() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "lead-inline".into(),
+            role: "lead".into(),
+            task_id: None,
+            task: Some("Implement the widget feature".into()),
+        });
+        // Spawn will fail (no git repo in test) but task should be created
+        let _ = mcp.hive_spawn_agent(params).await.unwrap();
+        let tasks = mcp.state().list_tasks(&mcp.run_id).unwrap_or_default();
+        assert!(
+            tasks
+                .iter()
+                .any(|t| t.title == "Implement the widget feature"),
+            "Inline task should have been created"
+        );
     }
 
     #[test]
