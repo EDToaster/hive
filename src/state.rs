@@ -202,6 +202,32 @@ impl HiveState {
         Ok(tasks)
     }
 
+    /// Find tasks that become unblocked when a task is merged.
+    /// Removes the merged task from blocked_by lists and saves updated tasks.
+    /// Returns only tasks that are now fully unblocked AND have an assigned agent.
+    pub fn find_newly_unblocked_tasks(
+        &self,
+        run_id: &str,
+        merged_task_id: &str,
+    ) -> Result<Vec<Task>, String> {
+        let tasks = self.list_tasks(run_id)?;
+        let mut unblocked = Vec::new();
+
+        for mut task in tasks {
+            if task.blocked_by.contains(&merged_task_id.to_string()) {
+                task.blocked_by.retain(|id| id != merged_task_id);
+                task.updated_at = chrono::Utc::now();
+                self.save_task(run_id, &task)?;
+
+                if task.blocked_by.is_empty() && task.assigned_to.is_some() {
+                    unblocked.push(task);
+                }
+            }
+        }
+
+        Ok(unblocked)
+    }
+
     // --- Agent CRUD ---
 
     pub fn agents_dir(&self, run_id: &str) -> PathBuf {
@@ -378,10 +404,7 @@ impl HiveState {
     }
 
     pub fn load_agent_cost(&self, run_id: &str, agent_id: &str) -> Option<AgentCost> {
-        let output_path = self
-            .agents_dir(run_id)
-            .join(agent_id)
-            .join("output.json");
+        let output_path = self.agents_dir(run_id).join(agent_id).join("output.json");
         let data = fs::read_to_string(&output_path).ok()?;
         let json: serde_json::Value = serde_json::from_str(&data).ok()?;
 
@@ -393,8 +416,8 @@ impl HiveState {
             .unwrap_or(0);
 
         // Claude Opus pricing: $15/M input, $75/M output
-        let cost_usd =
-            (input_tokens as f64 * 15.0 / 1_000_000.0) + (output_tokens as f64 * 75.0 / 1_000_000.0);
+        let cost_usd = (input_tokens as f64 * 15.0 / 1_000_000.0)
+            + (output_tokens as f64 * 75.0 / 1_000_000.0);
 
         Some(AgentCost {
             input_tokens,
@@ -506,7 +529,10 @@ impl HiveState {
                 .iter()
                 .map(|e| serde_json::to_string(e).unwrap())
                 .collect();
-            atomic_write(&dir.join("operations.jsonl"), &format!("{}\n", lines.join("\n")))?;
+            atomic_write(
+                &dir.join("operations.jsonl"),
+                &format!("{}\n", lines.join("\n")),
+            )?;
         }
 
         // Prune failures to last 30
@@ -519,7 +545,10 @@ impl HiveState {
                 .iter()
                 .map(|e| serde_json::to_string(e).unwrap())
                 .collect();
-            atomic_write(&dir.join("failures.jsonl"), &format!("{}\n", lines.join("\n")))?;
+            atomic_write(
+                &dir.join("failures.jsonl"),
+                &format!("{}\n", lines.join("\n")),
+            )?;
         }
 
         Ok(())
@@ -546,7 +575,11 @@ impl HiveState {
                 for op in &ops {
                     s.push_str(&format!(
                         "- Run {}: {} tasks, {} failed, {} agents, ${:.2}\n",
-                        op.run_id, op.tasks_total, op.tasks_failed, op.agents_spawned, op.total_cost_usd
+                        op.run_id,
+                        op.tasks_total,
+                        op.tasks_failed,
+                        op.agents_spawned,
+                        op.total_cost_usd
                     ));
                     if !op.learnings.is_empty() {
                         s.push_str(&format!("  Learnings: {}\n", op.learnings.join(", ")));
@@ -568,7 +601,10 @@ impl HiveState {
             if !fails.is_empty() {
                 let mut s = String::from("### Known Failure Patterns\n");
                 for f in &fails {
-                    s.push_str(&format!("- Pattern: {} — Context: {}\n", f.pattern, f.context));
+                    s.push_str(&format!(
+                        "- Pattern: {} — Context: {}\n",
+                        f.pattern, f.context
+                    ));
                 }
                 sections.push(s);
             }
@@ -1185,11 +1221,7 @@ mod tests {
     fn load_config_reads_max_retries() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "max_retries: 3\n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "max_retries: 3\n").unwrap();
         let config = state.load_config();
         assert_eq!(config.max_retries, 3);
     }
@@ -1325,11 +1357,7 @@ mod tests {
     fn load_config_reads_budget_usd() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "budget_usd: 25.0\n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "budget_usd: 25.0\n").unwrap();
         let config = state.load_config();
         assert_eq!(config.budget_usd, Some(25.0));
     }
@@ -1559,7 +1587,10 @@ mod tests {
         // Write output.json for agent-1: 1000 input, 500 output
         let output1 = r#"{"num_input_tokens": 1000, "num_output_tokens": 500, "session_duration_seconds": 60}"#;
         std::fs::write(
-            state.agents_dir("run-1").join("agent-1").join("output.json"),
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.json"),
             output1,
         )
         .unwrap();
@@ -1567,7 +1598,10 @@ mod tests {
         // Write output.json for agent-2: 2000 input, 1000 output
         let output2 = r#"{"num_input_tokens": 2000, "num_output_tokens": 1000, "session_duration_seconds": 120}"#;
         std::fs::write(
-            state.agents_dir("run-1").join("agent-2").join("output.json"),
+            state
+                .agents_dir("run-1")
+                .join("agent-2")
+                .join("output.json"),
             output2,
         )
         .unwrap();
@@ -1582,5 +1616,84 @@ mod tests {
             (total - expected).abs() < 1e-10,
             "Expected {expected}, got {total}"
         );
+    }
+
+    // --- find_newly_unblocked_tasks ---
+
+    #[test]
+    fn find_newly_unblocked_tasks_removes_blocker() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let task1 = make_task("task-1", TaskStatus::Merged);
+        state.save_task("run-1", &task1).unwrap();
+
+        let mut task2 = make_task("task-2", TaskStatus::Pending);
+        task2.blocked_by = vec!["task-1".into()];
+        task2.assigned_to = Some("worker-1".into());
+        state.save_task("run-1", &task2).unwrap();
+
+        let unblocked = state.find_newly_unblocked_tasks("run-1", "task-1").unwrap();
+        assert_eq!(unblocked.len(), 1);
+        assert_eq!(unblocked[0].id, "task-2");
+        assert!(unblocked[0].blocked_by.is_empty());
+
+        // Verify persisted to disk
+        let reloaded = state.load_task("run-1", "task-2").unwrap();
+        assert!(reloaded.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn find_newly_unblocked_tasks_only_returns_assigned() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let mut task2 = make_task("task-2", TaskStatus::Pending);
+        task2.blocked_by = vec!["task-1".into()];
+        // assigned_to is None by default
+        state.save_task("run-1", &task2).unwrap();
+
+        let unblocked = state.find_newly_unblocked_tasks("run-1", "task-1").unwrap();
+        assert!(unblocked.is_empty());
+
+        // Blocker should still be removed on disk
+        let reloaded = state.load_task("run-1", "task-2").unwrap();
+        assert!(reloaded.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn find_newly_unblocked_tasks_partial_unblock() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let mut task2 = make_task("task-2", TaskStatus::Pending);
+        task2.blocked_by = vec!["task-1".into(), "task-3".into()];
+        task2.assigned_to = Some("worker-1".into());
+        state.save_task("run-1", &task2).unwrap();
+
+        let unblocked = state.find_newly_unblocked_tasks("run-1", "task-1").unwrap();
+        assert!(unblocked.is_empty());
+
+        // Verify on disk: only task-3 remains
+        let reloaded = state.load_task("run-1", "task-2").unwrap();
+        assert_eq!(reloaded.blocked_by, vec!["task-3".to_string()]);
+    }
+
+    #[test]
+    fn find_newly_unblocked_tasks_no_matching_blockers() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let mut task2 = make_task("task-2", TaskStatus::Pending);
+        task2.blocked_by = vec!["task-99".into()];
+        task2.assigned_to = Some("worker-1".into());
+        state.save_task("run-1", &task2).unwrap();
+
+        let unblocked = state.find_newly_unblocked_tasks("run-1", "task-1").unwrap();
+        assert!(unblocked.is_empty());
     }
 }
