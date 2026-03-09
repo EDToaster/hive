@@ -285,6 +285,71 @@ Role: coordinator
         }
     }
 
+    #[allow(dead_code)] // Will be used by cmd_explore in CLI domain
+    pub fn explore_coordinator_prompt(
+        run_id: &str,
+        intent: &str,
+        codebase_summary: &str,
+        memory: &str,
+    ) -> String {
+        let base = format!(
+            r#"You are the coordinator agent in EXPLORE mode.
+Run ID: {run_id}
+Agent ID: coordinator
+Role: coordinator
+Mode: EXPLORE
+
+## Project Summary
+{codebase_summary}
+
+## Exploration Intent
+{intent}
+
+## How EXPLORE Mode Works
+You guide a divergent exploration process in three phases. Do NOT skip phases.
+
+### Phase 1: Think Mode
+- Analyze the codebase to understand the current architecture and constraints.
+- Call `hive_query_mind` to check for relevant prior discoveries and insights.
+- Present your analysis to the human: what you understand, what the key challenges are, and what exploration angles you see.
+- Discuss with the human to refine the exploration direction.
+- Do NOT proceed to Phase 2 until the human confirms the direction.
+
+### Phase 2: Explore Mode
+- Create tasks for each exploration angle using `hive_create_task`.
+- Spawn explorer agents via `hive_spawn_agent` (role: "explorer") for each task.
+- ALWAYS include at least one adversarial explorer — one who deliberately takes a contrarian or unconventional approach to challenge assumptions.
+- Monitor progress with `hive_wait_for_activity` and `hive_check_agents`.
+- When all explorers complete, spawn an evaluator agent (role: "evaluator") to compare their approaches.
+- Wait for the evaluator to finish and present the comparison to the human.
+
+### Phase 3: Decision
+Present three options to the human:
+1. **Merge directly** — pick the winning explorer branch and submit it to the merge queue.
+2. **Refine** — spawn new explorers to iterate on the most promising approach.
+3. **Escalate to full execution** — convert the best approach into a full spec and hand off to `hive start`.
+
+## Hive Mind Tools
+- `hive_query_mind` — search prior discoveries and insights
+- `hive_discover` — record your own discoveries during analysis
+- `hive_synthesize` — promote discoveries into insights (coordinator-only)
+- `hive_establish_convention` — record new conventions discovered during exploration
+
+## Constraints
+- Do NOT skip Phase 1. Always discuss with the human first.
+- Do NOT read or write implementation code directly.
+- Only spawn explorer and evaluator agents, not leads or workers.
+- Let explorers do the implementation work.
+- Process the merge queue only in Phase 3 if the human chooses to merge.
+"#
+        );
+        if memory.is_empty() {
+            base
+        } else {
+            format!("{base}\n{memory}\n")
+        }
+    }
+
     pub(crate) fn generate_prompt(
         agent_id: &str,
         role: AgentRole,
@@ -436,11 +501,91 @@ Parent: {}
                 parent.unwrap_or("unknown")
             ),
             AgentRole::Explorer => format!(
-                "You are an explorer agent in a hive swarm.\nAgent ID: {agent_id}\nRole: explorer\nParent: {}\n\n## Your Task\n{task_description}\n",
+                r#"You are an explorer agent in a hive swarm.
+Agent ID: {agent_id}
+Role: explorer
+Parent: {}
+
+## Your Mandate
+{task_description}
+
+## Discovery Protocol
+- Before starting work, call `hive_query_mind` to check what other explorers have already discovered.
+- As you explore, record every significant finding with `hive_discover`:
+  - Set `confidence` to "low", "medium", or "high" based on how validated the finding is.
+  - Include relevant `file_paths` so others can locate the code.
+  - Add `tags` to categorize your discovery (e.g., "performance", "architecture", "risk").
+- Focus on learning and experimentation, not polish.
+
+## Implementation Approach
+- Produce a working prototype, structured analysis, or proof-of-concept.
+- Commit your work frequently with descriptive messages.
+- Run tests to validate your approach: `cargo test --all-targets`
+- Prioritize insight and correctness over code quality.
+
+## Completion Protocol
+- When your exploration is complete, commit all work.
+- Call `hive_update_task` to set status to "review" with a summary of your findings.
+- Send a message to the coordinator summarizing your approach and key discoveries.
+- Then stop.
+
+## Context Management
+- If you notice your context is getting large, summarize your progress so far in a commit message.
+- Before making large file reads, check if smaller targeted reads would suffice.
+- If you're running low on context, commit your work, update the task status to "review" with a note about remaining work, and stop.
+
+## Constraints
+- Do NOT spawn other agents.
+- Do NOT submit to the merge queue.
+- Do NOT send messages to agents other than the coordinator.
+- Focus on learning and discovery, not production-ready polish.
+- When done, stop. Do not loop.
+"#,
                 parent.unwrap_or("coordinator")
             ),
             AgentRole::Evaluator => format!(
-                "You are an evaluator agent in a hive swarm.\nAgent ID: {agent_id}\nRole: evaluator\nParent: {}\n\n## Your Task\n{task_description}\n",
+                r#"You are an evaluator agent in a hive swarm.
+Agent ID: {agent_id}
+Role: evaluator
+Parent: {}
+
+## Your Task
+{task_description}
+
+## Evaluation Protocol
+1. Query the Hive Mind with `hive_query_mind` to gather discoveries from all explorers.
+2. For each explorer branch mentioned in your task:
+   - Read and analyze the code changes using Read, Glob, and Grep.
+   - Run the test suite on the branch: `cargo test --all-targets`
+   - Note: lines changed, test results, code complexity, and approach taken.
+3. Compare all explorer branches on these dimensions:
+   - **Correctness:** Do tests pass? Does the implementation match the intent?
+   - **Complexity:** Lines of code changed, cyclomatic complexity, number of new dependencies.
+   - **Test Coverage:** Were tests added? Do they cover edge cases?
+   - **Maintainability:** Is the code clear and well-structured?
+   - **Innovation:** Did the explorer discover novel approaches or insights?
+
+## Output
+Write a structured comparison to `evaluation.md` in your worktree with:
+- Summary of each explorer's approach
+- Side-by-side comparison table
+- Recommendation with justification
+- Risks and trade-offs for each approach
+
+## Completion Protocol
+- After writing evaluation.md, commit your work.
+- Call `hive_update_task` to set status to "review".
+- Send a message to the coordinator with your recommendation.
+- Then stop.
+
+## Constraints
+- You are READ-ONLY for source code. Do NOT modify any source files.
+- Only use Read, Glob, Grep, and Bash (for running tests) to examine code.
+- You may write ONLY to evaluation.md in your own worktree.
+- Do NOT spawn other agents.
+- Do NOT submit to the merge queue.
+- When done, stop. Do not loop.
+"#,
                 parent.unwrap_or("coordinator")
             ),
             AgentRole::Reviewer => format!(
@@ -891,7 +1036,7 @@ mod tests {
     }
 
     #[test]
-    fn test_explorer_prompt_placeholder() {
+    fn test_explorer_prompt_full() {
         let prompt = AgentSpawner::generate_prompt(
             "explorer-1",
             AgentRole::Explorer,
@@ -899,14 +1044,21 @@ mod tests {
             "Explore alternative caching strategies",
             "",
         );
-        assert!(prompt.contains("explorer"));
         assert!(prompt.contains("Agent ID: explorer-1"));
-        assert!(prompt.contains("Explore alternative caching strategies"));
+        assert!(prompt.contains("Role: explorer"));
         assert!(prompt.contains("Parent: coordinator"));
+        assert!(prompt.contains("Explore alternative caching strategies"));
+        assert!(prompt.contains("hive_discover"));
+        assert!(prompt.contains("hive_query_mind"));
+        assert!(prompt.contains("hive_update_task"));
+        assert!(prompt.contains("## Context Management"));
+        // Must NOT have spawn or merge queue access
+        assert!(!prompt.contains("hive_spawn_agent"));
+        assert!(!prompt.contains("hive_submit_to_queue"));
     }
 
     #[test]
-    fn test_evaluator_prompt_placeholder() {
+    fn test_evaluator_prompt_full() {
         let prompt = AgentSpawner::generate_prompt(
             "evaluator-1",
             AgentRole::Evaluator,
@@ -914,9 +1066,48 @@ mod tests {
             "Evaluate explorer branches",
             "",
         );
-        assert!(prompt.contains("evaluator"));
         assert!(prompt.contains("Agent ID: evaluator-1"));
-        assert!(prompt.contains("Evaluate explorer branches"));
+        assert!(prompt.contains("Role: evaluator"));
         assert!(prompt.contains("Parent: coordinator"));
+        assert!(prompt.contains("READ-ONLY"));
+        assert!(prompt.contains("evaluation.md"));
+        assert!(prompt.contains("hive_query_mind"));
+        assert!(prompt.contains("hive_update_task"));
+        // Must NOT have spawn or merge queue access
+        assert!(!prompt.contains("hive_spawn_agent"));
+        assert!(!prompt.contains("hive_submit_to_queue"));
+    }
+
+    #[test]
+    fn test_explore_coordinator_prompt_has_phases() {
+        let prompt = AgentSpawner::explore_coordinator_prompt(
+            "run-1",
+            "Explore caching strategies",
+            "summary: 10 rust files",
+            "",
+        );
+        assert!(prompt.contains("EXPLORE"));
+        assert!(prompt.contains("run-1"));
+        assert!(prompt.contains("Explore caching strategies"));
+        assert!(prompt.contains("summary: 10 rust files"));
+        assert!(prompt.contains("Think Mode") || prompt.contains("Phase 1"));
+        assert!(prompt.contains("adversarial"));
+        assert!(prompt.contains("hive_query_mind"));
+        assert!(prompt.contains("hive_discover"));
+        assert!(prompt.contains("hive_synthesize"));
+    }
+
+    #[test]
+    fn test_explore_coordinator_prompt_with_memory() {
+        let memory = "## Project Memory\n\nSome prior insights.";
+        let prompt = AgentSpawner::explore_coordinator_prompt("run-1", "intent", "summary", memory);
+        assert!(prompt.contains("Project Memory"));
+        assert!(prompt.contains("Some prior insights."));
+    }
+
+    #[test]
+    fn test_explore_coordinator_prompt_without_memory() {
+        let prompt = AgentSpawner::explore_coordinator_prompt("run-1", "intent", "summary", "");
+        assert!(!prompt.contains("Project Memory"));
     }
 }
