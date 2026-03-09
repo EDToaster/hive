@@ -1,8 +1,8 @@
 use crate::logging::LogDb;
 use crate::state::HiveState;
 use crate::types::{
-    AgentRole, AgentStatus, FailureEntry, MergeQueue, MergeQueueEntry, Message, MessageType,
-    OperationalEntry, Task, TaskStatus, Urgency,
+    AgentRole, AgentStatus, Confidence, Discovery, FailureEntry, Insight, MergeQueue,
+    MergeQueueEntry, Message, MessageType, OperationalEntry, Task, TaskStatus, Urgency,
 };
 use chrono::Utc;
 use rmcp::handler::server::ServerHandler;
@@ -176,6 +176,48 @@ pub struct SaveSpecParams {
     pub spec: String,
 }
 
+#[derive(Deserialize, JsonSchema)]
+pub struct DiscoverParams {
+    /// Content of the discovery
+    pub content: String,
+    /// Confidence level: "low", "medium", or "high"
+    #[serde(default = "default_confidence")]
+    pub confidence: String,
+    /// File paths related to this discovery
+    #[serde(default)]
+    pub file_paths: Vec<String>,
+    /// Tags for categorization
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+fn default_confidence() -> String {
+    "medium".to_string()
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct QueryMindParams {
+    /// Search query (keywords)
+    pub query: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SynthesizeParams {
+    /// Insight content synthesized from discoveries
+    pub content: String,
+    /// IDs of discoveries being synthesized
+    pub discovery_ids: Vec<String>,
+    /// Tags for categorization
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct EstablishConventionParams {
+    /// Convention to add
+    pub content: String,
+}
+
 #[tool_router]
 impl HiveMcp {
     pub fn new(run_id: String, agent_id: String, repo_root: String) -> Self {
@@ -225,9 +267,11 @@ impl HiveMcp {
             "reviewer" => AgentRole::Reviewer,
             "planner" => AgentRole::Planner,
             "postmortem" => AgentRole::Postmortem,
+            "explorer" => AgentRole::Explorer,
+            "evaluator" => AgentRole::Evaluator,
             _ => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Invalid role. Use 'lead', 'worker', 'reviewer', 'planner', or 'postmortem'.",
+                    "Invalid role. Use 'lead', 'worker', 'reviewer', 'planner', 'postmortem', 'explorer', or 'evaluator'.",
                 )]));
             }
         };
@@ -239,6 +283,8 @@ impl HiveMcp {
             (AgentRole::Coordinator, AgentRole::Lead)
                 | (AgentRole::Coordinator, AgentRole::Planner)
                 | (AgentRole::Coordinator, AgentRole::Postmortem)
+                | (AgentRole::Coordinator, AgentRole::Explorer)
+                | (AgentRole::Coordinator, AgentRole::Evaluator)
                 | (AgentRole::Lead, AgentRole::Worker)
                 | (AgentRole::Lead, AgentRole::Reviewer)
         );
@@ -1574,6 +1620,142 @@ impl HiveMcp {
             .map_err(|e| McpError::internal_error(e, None))?;
         Ok(CallToolResult::success(vec![Content::text("Spec saved.")]))
     }
+
+    #[tool(
+        description = "Record a discovery to the Hive Mind knowledge space. Any agent can call this."
+    )]
+    async fn hive_discover(
+        &self,
+        params: Parameters<DiscoverParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let p = &params.0;
+        let id = format!("disc-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let confidence = match p.confidence.as_str() {
+            "low" => Confidence::Low,
+            "high" => Confidence::High,
+            _ => Confidence::Medium,
+        };
+        let discovery = Discovery {
+            id: id.clone(),
+            run_id: self.run_id.clone(),
+            agent_id: self.agent_id.clone(),
+            timestamp: Utc::now(),
+            content: p.content.clone(),
+            file_paths: p.file_paths.clone(),
+            confidence,
+            tags: p.tags.clone(),
+        };
+        match self.state().save_discovery(&self.run_id, &discovery) {
+            Ok(()) => {
+                let preview = if p.content.len() > 80 {
+                    format!("{}...", &p.content[..80])
+                } else {
+                    p.content.clone()
+                };
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Recorded discovery '{id}': {preview}"
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    #[tool(
+        description = "Search the Hive Mind knowledge space by keyword. Any agent can call this."
+    )]
+    async fn hive_query_mind(
+        &self,
+        params: Parameters<QueryMindParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self.state().query_mind(&self.run_id, &params.0.query);
+        if result.discoveries.is_empty() && result.insights.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "No matching discoveries or insights found.",
+            )]));
+        }
+
+        let mut output = String::new();
+        if !result.discoveries.is_empty() {
+            output.push_str("## Discoveries\n\n");
+            for d in &result.discoveries {
+                output.push_str(&format!("### {}\n", d.id));
+                output.push_str(&format!("- **Agent:** {}\n", d.agent_id));
+                output.push_str(&format!("- **Confidence:** {:?}\n", d.confidence));
+                if !d.tags.is_empty() {
+                    output.push_str(&format!("- **Tags:** {}\n", d.tags.join(", ")));
+                }
+                if !d.file_paths.is_empty() {
+                    output.push_str(&format!("- **Files:** {}\n", d.file_paths.join(", ")));
+                }
+                output.push_str(&format!("\n{}\n\n", d.content));
+            }
+        }
+        if !result.insights.is_empty() {
+            output.push_str("## Insights\n\n");
+            for i in &result.insights {
+                output.push_str(&format!("### {}\n", i.id));
+                if !i.tags.is_empty() {
+                    output.push_str(&format!("- **Tags:** {}\n", i.tags.join(", ")));
+                }
+                output.push_str(&format!(
+                    "- **Discovery IDs:** {}\n",
+                    i.discovery_ids.join(", ")
+                ));
+                output.push_str(&format!("\n{}\n\n", i.content));
+            }
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(output)]))
+    }
+
+    #[tool(description = "Synthesize discoveries into an insight. Coordinator-only.")]
+    async fn hive_synthesize(
+        &self,
+        params: Parameters<SynthesizeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator]) {
+            return Ok(result);
+        }
+        let p = &params.0;
+        let id = format!("ins-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let insight = Insight {
+            id: id.clone(),
+            run_id: self.run_id.clone(),
+            timestamp: Utc::now(),
+            content: p.content.clone(),
+            discovery_ids: p.discovery_ids.clone(),
+            tags: p.tags.clone(),
+        };
+        match self.state().save_insight(&self.run_id, &insight) {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Synthesized insight '{id}'"
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
+
+    #[tool(description = "Add a convention to the shared conventions memory. Coordinator-only.")]
+    async fn hive_establish_convention(
+        &self,
+        params: Parameters<EstablishConventionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Coordinator]) {
+            return Ok(result);
+        }
+        let existing = self.state().load_conventions();
+        let updated = if existing.is_empty() {
+            format!("- {}\n", params.0.content)
+        } else {
+            format!("{}\n- {}\n", existing, params.0.content)
+        };
+        match self.state().save_conventions(&updated) {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "Convention added: {}",
+                params.0.content
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
+        }
+    }
 }
 
 #[rmcp::tool_handler]
@@ -1777,5 +1959,155 @@ mod tests {
                 | (AgentRole::Lead, AgentRole::Reviewer)
         );
         assert!(allowed, "Coordinator should be able to spawn Postmortem");
+    }
+
+    #[test]
+    fn synthesize_rejects_non_coordinator() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let result = mcp.require_role(&[AgentRole::Coordinator]);
+        assert!(
+            result.is_err(),
+            "Worker should not be allowed to synthesize"
+        );
+    }
+
+    #[test]
+    fn synthesize_allows_coordinator() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let result = mcp.require_role(&[AgentRole::Coordinator]);
+        assert!(
+            result.is_ok(),
+            "Coordinator should be allowed to synthesize"
+        );
+    }
+
+    #[test]
+    fn establish_convention_rejects_non_coordinator() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let result = mcp.require_role(&[AgentRole::Coordinator]);
+        assert!(
+            result.is_err(),
+            "Worker should not be allowed to establish conventions"
+        );
+    }
+
+    #[test]
+    fn establish_convention_allows_coordinator() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let result = mcp.require_role(&[AgentRole::Coordinator]);
+        assert!(
+            result.is_ok(),
+            "Coordinator should be allowed to establish conventions"
+        );
+    }
+
+    #[test]
+    fn spawn_hierarchy_coordinator_can_spawn_explorer() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let caller_role = mcp.agent_role();
+        let allowed = matches!(
+            (caller_role, AgentRole::Explorer),
+            (AgentRole::Coordinator, AgentRole::Lead)
+                | (AgentRole::Coordinator, AgentRole::Planner)
+                | (AgentRole::Coordinator, AgentRole::Postmortem)
+                | (AgentRole::Coordinator, AgentRole::Explorer)
+                | (AgentRole::Coordinator, AgentRole::Evaluator)
+                | (AgentRole::Lead, AgentRole::Worker)
+                | (AgentRole::Lead, AgentRole::Reviewer)
+        );
+        assert!(allowed, "Coordinator should be able to spawn Explorer");
+    }
+
+    #[test]
+    fn spawn_hierarchy_coordinator_can_spawn_evaluator() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let caller_role = mcp.agent_role();
+        let allowed = matches!(
+            (caller_role, AgentRole::Evaluator),
+            (AgentRole::Coordinator, AgentRole::Lead)
+                | (AgentRole::Coordinator, AgentRole::Planner)
+                | (AgentRole::Coordinator, AgentRole::Postmortem)
+                | (AgentRole::Coordinator, AgentRole::Explorer)
+                | (AgentRole::Coordinator, AgentRole::Evaluator)
+                | (AgentRole::Lead, AgentRole::Worker)
+                | (AgentRole::Lead, AgentRole::Reviewer)
+        );
+        assert!(allowed, "Coordinator should be able to spawn Evaluator");
+    }
+
+    #[test]
+    fn spawn_hierarchy_explorer_cannot_spawn() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let result = mcp.require_role(&[AgentRole::Coordinator, AgentRole::Lead]);
+        assert!(
+            result.is_err(),
+            "Explorer should not be allowed to spawn agents"
+        );
+    }
+
+    #[test]
+    fn spawn_hierarchy_evaluator_cannot_spawn() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Evaluator);
+        let result = mcp.require_role(&[AgentRole::Coordinator, AgentRole::Lead]);
+        assert!(
+            result.is_err(),
+            "Evaluator should not be allowed to spawn agents"
+        );
+    }
+
+    #[tokio::test]
+    async fn discover_creates_discovery() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let params = Parameters(DiscoverParams {
+            content: "Found a caching pattern in the API layer".into(),
+            confidence: "high".into(),
+            file_paths: vec!["src/api.rs".into()],
+            tags: vec!["caching".into(), "performance".into()],
+        });
+        let result = mcp.hive_discover(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "discover should succeed for any agent"
+        );
+
+        // Verify the discovery was saved
+        let discoveries = mcp.state().load_discoveries("test-run");
+        assert_eq!(discoveries.len(), 1);
+        assert!(discoveries[0].id.starts_with("disc-"));
+        assert_eq!(
+            discoveries[0].content,
+            "Found a caching pattern in the API layer"
+        );
+        assert_eq!(discoveries[0].agent_id, "test-agent");
+    }
+
+    #[tokio::test]
+    async fn query_mind_returns_results() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let state = mcp.state();
+        let discovery = Discovery {
+            id: "disc-test1".into(),
+            run_id: "test-run".into(),
+            agent_id: "test-agent".into(),
+            timestamp: Utc::now(),
+            content: "Discovered caching optimization opportunity".into(),
+            file_paths: vec![],
+            confidence: Confidence::High,
+            tags: vec!["performance".into()],
+        };
+        state.save_discovery("test-run", &discovery).unwrap();
+
+        let params = Parameters(QueryMindParams {
+            query: "caching".into(),
+        });
+        let result = mcp.hive_query_mind(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "query_mind should succeed"
+        );
+        // Verify the result contains discovery info
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("disc-test1"));
+        assert!(text.contains("caching"));
     }
 }
