@@ -281,7 +281,6 @@ impl HiveMcp {
             domain: p.domain.clone(),
             created_at: now,
             updated_at: now,
-            review_count: 0,
         };
 
         match self.state().save_task(&self.run_id, &task) {
@@ -447,11 +446,6 @@ impl HiveMcp {
                         "Coordinator can only send messages to leads.",
                     )]));
                 }
-            }
-            AgentRole::Reviewer => {
-                return Ok(CallToolResult::error(vec![Content::text(
-                    "Reviewers cannot send messages.",
-                )]));
             }
         }
 
@@ -1012,9 +1006,9 @@ impl HiveMcp {
                     )]));
                 }
             }
-            AgentRole::Worker | AgentRole::Reviewer => {
+            AgentRole::Worker => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Workers and reviewers cannot retry agents.",
+                    "Workers cannot retry agents.",
                 )]));
             }
         }
