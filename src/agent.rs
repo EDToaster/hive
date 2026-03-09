@@ -127,7 +127,8 @@ impl AgentSpawner {
         .map_err(|e| e.to_string())?;
 
         // Step 4: Write CLAUDE.local.md
-        let prompt = Self::generate_prompt(agent_id, role, parent, task_description);
+        let memory = state.load_memory_for_prompt(&role);
+        let prompt = Self::generate_prompt(agent_id, role, parent, task_description, &memory);
         fs::write(worktree_path.join("CLAUDE.local.md"), &prompt).map_err(|e| e.to_string())?;
 
         // Step 5: Launch claude code process
@@ -231,8 +232,8 @@ impl AgentSpawner {
         lines.join("\n")
     }
 
-    pub fn coordinator_prompt(run_id: &str, spec_content: &str, codebase_summary: &str) -> String {
-        format!(
+    pub fn coordinator_prompt(run_id: &str, spec_content: &str, codebase_summary: &str, memory: &str) -> String {
+        let base = format!(
             r#"You are the coordinator agent in a hive swarm.
 Run ID: {run_id}
 Agent ID: coordinator
@@ -268,7 +269,12 @@ Role: coordinator
 - If merge fails, notify the lead and consider using hive_retry_agent.
 - After each merge, rebuild if needed and check for regressions.
 "#
-        )
+        );
+        if memory.is_empty() {
+            base
+        } else {
+            format!("{base}\n{memory}\n")
+        }
     }
 
     pub(crate) fn generate_prompt(
@@ -276,8 +282,9 @@ Role: coordinator
         role: AgentRole,
         parent: Option<&str>,
         task_description: &str,
+        memory: &str,
     ) -> String {
-        match role {
+        let base = match role {
             AgentRole::Coordinator => format!(
                 r#"You are the coordinator agent in a hive swarm.
 Agent ID: {agent_id}
@@ -456,28 +463,82 @@ Parent: {}
 Agent ID: {agent_id}
 Role: planner
 
-## Your Task
+## Goal
 {task_description}
 
+## Instructions
+You are a READ-ONLY agent. Your job is to analyze the codebase and write a detailed implementation spec.
+
+### Codebase Analysis
+1. Read `Cargo.toml` to understand dependencies and project metadata.
+2. Read `src/` to understand module structure — list every module and its responsibility.
+3. Identify public APIs, key data types, and important traits.
+4. Read existing tests to understand test patterns and conventions.
+5. Check for any existing CLAUDE.md or documentation for project conventions.
+6. If `.hive/memory/` exists, read run memory for patterns from previous runs.
+
+### Spec Format
+Write a spec in this exact format:
+- **Goal:** One paragraph describing what to build.
+- **Implementation Details:** Detailed technical description of changes needed.
+- **Lead Decomposition:** Break the work into domain-level chunks, one per lead agent. Each chunk should specify:
+  - Domain name
+  - Files to modify (with clear boundaries — no file should appear in two domains)
+  - Specific changes needed in each file
+  - Dependencies on other chunks (merge ordering)
+- **File Boundaries:** A table showing which files belong to which lead.
+- **Merge Ordering:** Which leads must merge first due to type/API dependencies.
+
+### Completion
+When your spec is complete, call `hive_save_spec` with the full spec content.
+Then stop immediately.
+
 ## Constraints
-- You are READ-ONLY. Do NOT modify any files.
-- Analyze the codebase and write a spec.
+- You are READ-ONLY. Do NOT modify any files. Do NOT use Edit, Write, or Bash to change files.
+- Only use Read, Glob, Grep to examine code.
 - Use hive_save_spec to save your spec when done.
+- After saving the spec, stop immediately.
 "#
             ),
             AgentRole::Postmortem => format!(
-                r#"You are a post-mortem agent in a hive swarm.
+                r#"You are a post-mortem analysis agent in a hive swarm.
 Agent ID: {agent_id}
 Role: postmortem
 
 ## Your Task
-{task_description}
+Analyze the completed run and extract learnings for future runs.
+
+## Analysis Steps
+1. Call `hive_list_tasks` to get all tasks — note which succeeded, failed, and why.
+2. Call `hive_list_agents` to see all agents — note retry counts, stalls, and failures.
+3. Call `hive_run_cost` to get token usage and cost data.
+4. Read any available agent output files for error details.
+
+## What to Analyze
+- **Failure patterns:** What went wrong? Were there recurring issues (merge conflicts, test failures, scope creep)?
+- **Token efficiency:** Which agents used the most tokens? Were any wasteful?
+- **Spec quality:** Was the spec clear enough? Did leads need to ask for clarification?
+- **Team sizing:** Were there too many or too few leads/workers? Did any domain need more parallelism?
+
+## Memory Entries to Write
+Use `hive_save_memory` for each entry type:
+
+1. **operational** entry: Summary of the run with task counts, agent counts, costs, and key learnings.
+2. **conventions** entry: Any codebase conventions discovered (naming, patterns, testing approaches).
+3. **failure** entries: One per distinct failure pattern observed.
 
 ## Constraints
-- Analyze the completed run and extract learnings.
-- Use hive_save_memory to save memory entries.
+- You are READ-ONLY for code files. Do NOT modify source files.
+- Use `hive_save_memory` to write memory entries.
+- Be concise and actionable in your analysis — future agents will read this.
+- After saving all memory entries, stop immediately.
 "#
             ),
+        };
+        if memory.is_empty() {
+            base
+        } else {
+            format!("{base}\n{memory}\n")
         }
     }
 
@@ -512,6 +573,7 @@ mod tests {
             AgentRole::Coordinator,
             None,
             "Build a REST API",
+            "",
         );
         assert!(prompt.contains("Agent ID: coord-1"));
         assert!(prompt.contains("Role: coordinator"));
@@ -527,6 +589,7 @@ mod tests {
             AgentRole::Lead,
             Some("coord-1"),
             "Handle backend domain",
+            "",
         );
         assert!(prompt.contains("Agent ID: lead-1"));
         assert!(prompt.contains("Role: lead"));
@@ -540,7 +603,7 @@ mod tests {
 
     #[test]
     fn lead_prompt_defaults_parent_to_coordinator() {
-        let prompt = AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, None, "task");
+        let prompt = AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, None, "task", "");
         assert!(prompt.contains("Parent: coordinator"));
     }
 
@@ -551,6 +614,7 @@ mod tests {
             AgentRole::Worker,
             Some("lead-1"),
             "Implement login endpoint",
+            "",
         );
         assert!(prompt.contains("Agent ID: worker-1"));
         assert!(prompt.contains("Role: worker"));
@@ -564,14 +628,14 @@ mod tests {
 
     #[test]
     fn worker_prompt_defaults_parent_to_unknown() {
-        let prompt = AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, None, "task");
+        let prompt = AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, None, "task", "");
         assert!(prompt.contains("Parent: unknown"));
     }
 
     #[test]
     fn context_management_prompt_in_lead() {
         let prompt =
-            AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, Some("coord-1"), "task");
+            AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, Some("coord-1"), "task", "");
         assert!(prompt.contains("## Context Management"));
         assert!(prompt.contains("commit your work, update the task status"));
     }
@@ -579,14 +643,14 @@ mod tests {
     #[test]
     fn context_management_prompt_in_worker() {
         let prompt =
-            AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, Some("lead-1"), "task");
+            AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, Some("lead-1"), "task", "");
         assert!(prompt.contains("## Context Management"));
         assert!(prompt.contains("commit your work, update the task status"));
     }
 
     #[test]
     fn context_management_prompt_not_in_coordinator() {
-        let prompt = AgentSpawner::generate_prompt("coord-1", AgentRole::Coordinator, None, "task");
+        let prompt = AgentSpawner::generate_prompt("coord-1", AgentRole::Coordinator, None, "task", "");
         assert!(!prompt.contains("## Context Management"));
     }
 
@@ -597,6 +661,7 @@ mod tests {
             AgentRole::Reviewer,
             Some("lead-1"),
             "Review the changes for task-123",
+            "",
         );
         assert!(prompt.contains("Agent ID: reviewer-1"));
         assert!(prompt.contains("Role: reviewer"));
@@ -638,6 +703,7 @@ mod tests {
             AgentRole::Coordinator,
             None,
             "Build something",
+            "",
         );
         assert!(prompt.contains("## Task Creation Protocol"));
         assert!(prompt.contains("blocked_by relationships"));
@@ -648,7 +714,7 @@ mod tests {
     #[test]
     fn coordinator_prompt_fn_has_protocols_and_summary() {
         let prompt =
-            AgentSpawner::coordinator_prompt("run-1", "spec here", "summary: 10 rust files");
+            AgentSpawner::coordinator_prompt("run-1", "spec here", "summary: 10 rust files", "");
         assert!(prompt.contains("## Project Summary"));
         assert!(prompt.contains("summary: 10 rust files"));
         assert!(prompt.contains("## Task Creation Protocol"));
@@ -662,6 +728,7 @@ mod tests {
             AgentRole::Lead,
             Some("coord-1"),
             "Handle backend",
+            "",
         );
         assert!(prompt.contains("## Delegation Protocol"));
         assert!(prompt.contains("ALWAYS spawn workers"));
@@ -678,6 +745,7 @@ mod tests {
             AgentRole::Worker,
             Some("lead-1"),
             "Implement feature",
+            "",
         );
         assert!(prompt.contains("## Implementation Protocol"));
         assert!(prompt.contains("Write tests BEFORE implementation"));
@@ -709,5 +777,94 @@ mod tests {
         assert!(summary.contains("lib"));
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_memory_injection_appended_to_prompt() {
+        let memory = "## Project Memory\n\n### Conventions\nUse snake_case everywhere.";
+        let prompt = AgentSpawner::generate_prompt(
+            "worker-1",
+            AgentRole::Worker,
+            Some("lead-1"),
+            "Implement feature",
+            memory,
+        );
+        assert!(prompt.contains("## Project Memory"));
+        assert!(prompt.contains("Use snake_case everywhere."));
+    }
+
+    #[test]
+    fn test_memory_injection_skipped_when_empty() {
+        let prompt = AgentSpawner::generate_prompt(
+            "worker-1",
+            AgentRole::Worker,
+            Some("lead-1"),
+            "Implement feature",
+            "",
+        );
+        assert!(!prompt.contains("Project Memory"));
+    }
+
+    #[test]
+    fn test_coordinator_prompt_with_memory() {
+        let memory = "## Project Memory\n\n### Recent Operations\nLast run had 5 tasks.";
+        let prompt = AgentSpawner::coordinator_prompt(
+            "run-1",
+            "spec here",
+            "summary: 10 rust files",
+            memory,
+        );
+        assert!(prompt.contains("## Project Memory"));
+        assert!(prompt.contains("Last run had 5 tasks."));
+    }
+
+    #[test]
+    fn test_planner_prompt_has_detailed_instructions() {
+        let prompt = AgentSpawner::generate_prompt(
+            "planner-1",
+            AgentRole::Planner,
+            None,
+            "Add WebSocket support",
+            "",
+        );
+        assert!(prompt.contains("Role: planner"));
+        assert!(prompt.contains("## Goal"));
+        assert!(prompt.contains("Add WebSocket support"));
+        assert!(prompt.contains("Codebase Analysis"));
+        assert!(prompt.contains("Spec Format"));
+        assert!(prompt.contains("hive_save_spec"));
+        assert!(prompt.contains("READ-ONLY"));
+    }
+
+    #[test]
+    fn test_postmortem_prompt_has_detailed_instructions() {
+        let prompt = AgentSpawner::generate_prompt(
+            "postmortem-1",
+            AgentRole::Postmortem,
+            None,
+            "Analyze run",
+            "",
+        );
+        assert!(prompt.contains("Role: postmortem"));
+        assert!(prompt.contains("Analysis Steps"));
+        assert!(prompt.contains("hive_list_tasks"));
+        assert!(prompt.contains("hive_save_memory"));
+        assert!(prompt.contains("Failure patterns"));
+        assert!(prompt.contains("Token efficiency"));
+    }
+
+    #[test]
+    fn test_postmortem_prompt_ignores_memory() {
+        let memory = "## Project Memory\n\nSome memory content.";
+        let prompt = AgentSpawner::generate_prompt(
+            "postmortem-1",
+            AgentRole::Postmortem,
+            None,
+            "Analyze run",
+            memory,
+        );
+        // Postmortem still gets memory appended (memory filtering is done by load_memory_for_prompt
+        // which returns empty for Postmortem), but if passed directly it should still append
+        assert!(prompt.contains("Project Memory"));
     }
 }

@@ -109,7 +109,8 @@ fn cmd_start(spec_path: &str) -> Result<(), String> {
 
     // Write coordinator CLAUDE.local.md to the base repo
     let codebase_summary = crate::agent::AgentSpawner::generate_codebase_summary(state.repo_root());
-    let coordinator_prompt = crate::agent::AgentSpawner::coordinator_prompt(&run_id, &spec_content, &codebase_summary);
+    let memory = state.load_memory_for_prompt(&crate::types::AgentRole::Coordinator);
+    let coordinator_prompt = crate::agent::AgentSpawner::coordinator_prompt(&run_id, &spec_content, &codebase_summary, &memory);
     let repo_root = state.repo_root();
     fs::write(repo_root.join("CLAUDE.local.md"), &coordinator_prompt).map_err(|e| e.to_string())?;
 
