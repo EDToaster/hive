@@ -17,7 +17,7 @@ impl AgentSpawner {
         agent_id: &str,
         role: AgentRole,
         parent: Option<&str>,
-        task_description: &str,
+        task: &Task,
     ) -> Result<Agent, String> {
         let worktree_path = state.worktree_path(run_id, agent_id);
         let branch = format!("hive/{run_id}/{agent_id}");
@@ -29,7 +29,10 @@ impl AgentSpawner {
         let claude_dir = worktree_path.join(".claude");
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
 
-        let settings_json = if matches!(role, AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem) {
+        let settings_json = if matches!(
+            role,
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem
+        ) {
             serde_json::json!({
                 "hooks": {
                     "PreToolUse": [{
@@ -52,12 +55,6 @@ impl AgentSpawner {
                                 "type": "command",
                                 "command": format!(
                                     "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
-                                )
-                            },
-                            {
-                                "type": "command",
-                                "command": format!(
-                                    "hive heartbeat --run {run_id} --agent {agent_id}"
                                 )
                             }
                         ]
@@ -83,12 +80,6 @@ impl AgentSpawner {
                                 "type": "command",
                                 "command": format!(
                                     "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
-                                )
-                            },
-                            {
-                                "type": "command",
-                                "command": format!(
-                                    "hive heartbeat --run {run_id} --agent {agent_id}"
                                 )
                             }
                         ]
@@ -116,7 +107,7 @@ impl AgentSpawner {
             "mcpServers": {
                 "hive": {
                     "command": "hive",
-                    "args": ["mcp", "--run", run_id, "--agent", agent_id]
+                    "args": ["mcp", "--run", run_id, "--agent", agent_id, "--task", &task.id]
                 }
             }
         });
@@ -128,7 +119,11 @@ impl AgentSpawner {
 
         // Step 4: Write CLAUDE.local.md
         let memory = state.load_memory_for_prompt(&role);
-        let prompt = Self::generate_prompt(agent_id, role, parent, task_description, &memory);
+        let task_description = format!(
+            "Your task is `{}`: `{}`.\n\n{}\n\nWhen done, call `hive_update_task(status=review)`.",
+            task.id, task.title, task.description
+        );
+        let prompt = Self::generate_prompt(agent_id, role, parent, &task_description, &memory);
         fs::write(worktree_path.join("CLAUDE.local.md"), &prompt).map_err(|e| e.to_string())?;
 
         // Step 5: Launch claude code process
@@ -166,7 +161,7 @@ impl AgentSpawner {
             session_id: None,
             last_completed_at: None,
             messages_read_at: None,
-            task_id: None,
+            task_id: Some(task.id.clone()),
             retry_count: 0,
         };
         state.save_agent(run_id, &agent)?;
@@ -232,7 +227,12 @@ impl AgentSpawner {
         lines.join("\n")
     }
 
-    pub fn coordinator_prompt(run_id: &str, spec_content: &str, codebase_summary: &str, memory: &str) -> String {
+    pub fn coordinator_prompt(
+        run_id: &str,
+        spec_content: &str,
+        codebase_summary: &str,
+        memory: &str,
+    ) -> String {
         let base = format!(
             r#"You are the coordinator agent in a hive swarm.
 Run ID: {run_id}
@@ -642,15 +642,21 @@ mod tests {
 
     #[test]
     fn context_management_prompt_in_worker() {
-        let prompt =
-            AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, Some("lead-1"), "task", "");
+        let prompt = AgentSpawner::generate_prompt(
+            "worker-1",
+            AgentRole::Worker,
+            Some("lead-1"),
+            "task",
+            "",
+        );
         assert!(prompt.contains("## Context Management"));
         assert!(prompt.contains("commit your work, update the task status"));
     }
 
     #[test]
     fn context_management_prompt_not_in_coordinator() {
-        let prompt = AgentSpawner::generate_prompt("coord-1", AgentRole::Coordinator, None, "task", "");
+        let prompt =
+            AgentSpawner::generate_prompt("coord-1", AgentRole::Coordinator, None, "task", "");
         assert!(!prompt.contains("## Context Management"));
     }
 
@@ -866,5 +872,19 @@ mod tests {
         // Postmortem still gets memory appended (memory filtering is done by load_memory_for_prompt
         // which returns empty for Postmortem), but if passed directly it should still append
         assert!(prompt.contains("Project Memory"));
+    }
+
+    #[test]
+    fn task_prompt_includes_task_id_and_completion_instruction() {
+        let prompt = AgentSpawner::generate_prompt(
+            "worker-1",
+            AgentRole::Worker,
+            Some("lead-1"),
+            "Your task is `task-abc`: `Fix the bug`.\n\nDetailed description here.\n\nWhen done, call `hive_update_task(status=review)`.",
+            "",
+        );
+        assert!(prompt.contains("task-abc"));
+        assert!(prompt.contains("Fix the bug"));
+        assert!(prompt.contains("hive_update_task(status=review)"));
     }
 }
