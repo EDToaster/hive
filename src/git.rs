@@ -161,7 +161,17 @@ mod tests {
     fn init_test_repo() -> TempDir {
         let dir = TempDir::new().unwrap();
         Command::new("git")
-            .args(["init"])
+            .args(["init", "-b", "main"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
             .current_dir(dir.path())
             .output()
             .unwrap();
