@@ -296,7 +296,6 @@ impl HiveMcp {
             review_count: 0,
             created_at: now,
             updated_at: now,
-            review_count: 0,
         };
 
         match self.state().save_task(&self.run_id, &task) {

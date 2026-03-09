@@ -454,7 +454,6 @@ mod tests {
             review_count: 0,
             created_at: now,
             updated_at: now,
-            review_count: 0,
         }
     }
 
