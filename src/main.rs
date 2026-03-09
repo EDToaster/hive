@@ -21,7 +21,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init => cmd_init(),
-        Commands::Start { spec } => cmd_start(&spec),
+        Commands::Start { spec, goal } => cmd_start(spec, goal),
         Commands::Status => cmd_status(),
         Commands::Agents => cmd_agents(),
         Commands::Tasks { status, assignee } => cmd_tasks(status, assignee),
@@ -48,6 +48,7 @@ fn main() {
         Commands::Summary { run } => cmd_summary(run),
         Commands::Cost { run } => cmd_cost(run),
         Commands::History => cmd_history(),
+        Commands::Memory { command } => cmd_memory(command),
         Commands::Stop => cmd_stop(),
         Commands::Watch { interval } => cmd_watch(interval),
     };
@@ -92,20 +93,84 @@ fn cmd_init() -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_start(spec_path: &str) -> Result<(), String> {
+fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
     let state = HiveState::discover()?;
-    let spec_content = fs::read_to_string(spec_path)
-        .map_err(|e| format!("Cannot read spec file '{spec_path}': {e}"))?;
+
+    // Determine whether this is a file-path or a goal-string start
+    enum StartMode {
+        SpecFile(String),
+        Goal(String),
+    }
+
+    let mode = if let Some(goal_str) = goal {
+        StartMode::Goal(goal_str)
+    } else if let Some(spec_str) = spec {
+        if spec_str.contains('/') || spec_str.ends_with(".md") {
+            StartMode::SpecFile(spec_str)
+        } else {
+            StartMode::Goal(spec_str)
+        }
+    } else {
+        return Err("Provide a spec file path or a goal string".into());
+    };
 
     let run_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
     state.create_run(&run_id)?;
-    state.save_spec(&run_id, &spec_content)?;
 
     // Initialize log.db
     let log_path = state.run_dir(&run_id).join("log.db");
     LogDb::open(&log_path)?;
 
-    println!("Created run: {run_id}");
+    let spec_content = match mode {
+        StartMode::SpecFile(spec_path) => {
+            let content = fs::read_to_string(&spec_path)
+                .map_err(|e| format!("Cannot read spec file '{spec_path}': {e}"))?;
+            state.save_spec(&run_id, &content)?;
+            println!("Created run: {run_id}");
+            content
+        }
+        StartMode::Goal(goal_str) => {
+            println!("Created run: {run_id}");
+            println!("Planning phase: analyzing codebase and generating spec...");
+
+            let memory = state.load_memory_for_prompt(&crate::types::AgentRole::Planner);
+            let planner_agent = crate::agent::AgentSpawner::spawn(
+                &state,
+                &run_id,
+                "planner",
+                crate::types::AgentRole::Planner,
+                None,
+                &goal_str,
+            )?;
+
+            // Wait up to 5 minutes for planner to finish
+            let timeout = std::time::Duration::from_secs(300);
+            let start = std::time::Instant::now();
+            let _ = memory; // memory is injected by spawn via generate_prompt
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(pid) = planner_agent.pid {
+                    if !crate::agent::AgentSpawner::is_alive(pid) {
+                        break;
+                    }
+                } else {
+                    break;
+                }
+                if start.elapsed() > timeout {
+                    return Err("Planner agent timed out after 5 minutes".into());
+                }
+            }
+
+            // Check if planner produced a spec
+            match state.load_planner_spec(&run_id) {
+                Some(content) => {
+                    println!("Spec generated successfully.");
+                    content
+                }
+                None => return Err("Planner agent did not produce a spec".into()),
+            }
+        }
+    };
 
     // Write coordinator CLAUDE.local.md to the base repo
     let codebase_summary = crate::agent::AgentSpawner::generate_codebase_summary(state.repo_root());
@@ -849,6 +914,51 @@ fn cmd_watch(interval: u64) -> Result<(), String> {
     }
 }
 
+fn cmd_memory(command: Option<cli::MemoryCommands>) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    match command {
+        None => {
+            let ops = state.load_operations();
+            let conventions = state.load_conventions();
+            let failures = state.load_failures();
+            let conv_lines = conventions.lines().filter(|l| !l.trim().is_empty()).count();
+            println!("Memory:");
+            println!("  Operations: {} entries", ops.len());
+            println!("  Conventions: {} lines", conv_lines);
+            println!("  Failures: {} entries", failures.len());
+            Ok(())
+        }
+        Some(cli::MemoryCommands::Show) => {
+            let ops = state.load_operations();
+            let conventions = state.load_conventions();
+            let failures = state.load_failures();
+
+            println!("=== Operations ({}) ===", ops.len());
+            for op in &ops {
+                println!("{}", serde_json::to_string_pretty(op).unwrap_or_default());
+            }
+
+            println!("\n=== Conventions ===");
+            if conventions.is_empty() {
+                println!("(none)");
+            } else {
+                println!("{}", conventions);
+            }
+
+            println!("\n=== Failures ({}) ===", failures.len());
+            for f in &failures {
+                println!("{}", serde_json::to_string_pretty(f).unwrap_or_default());
+            }
+            Ok(())
+        }
+        Some(cli::MemoryCommands::Prune) => {
+            state.prune_memory()?;
+            println!("Memory pruned.");
+            Ok(())
+        }
+    }
+}
+
 fn cmd_stop() -> Result<(), String> {
     let state = HiveState::discover()?;
     let run_id = state.active_run_id()?;
@@ -887,6 +997,48 @@ fn cmd_stop() -> Result<(), String> {
     }
 
     crate::git::Git::worktree_prune(state.repo_root()).ok();
+
+    // Spawn post-mortem analysis agent
+    println!("Spawning post-mortem analysis agent...");
+    match crate::agent::AgentSpawner::spawn(
+        &state,
+        &run_id,
+        "postmortem",
+        crate::types::AgentRole::Postmortem,
+        None,
+        "Analyze the completed run and extract learnings",
+    ) {
+        Ok(pm_agent) => {
+            let timeout = std::time::Duration::from_secs(180);
+            let start = std::time::Instant::now();
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if let Some(pid) = pm_agent.pid {
+                    if !crate::agent::AgentSpawner::is_alive(pid) {
+                        println!("Post-mortem analysis complete.");
+                        break;
+                    }
+                } else {
+                    break;
+                }
+                if start.elapsed() > timeout {
+                    eprintln!("Warning: post-mortem agent timed out after 3 minutes.");
+                    break;
+                }
+            }
+            // Clean up postmortem worktree
+            if let Some(ref wt) = pm_agent.worktree {
+                let wt_path = std::path::Path::new(wt.as_str());
+                if wt_path.exists() {
+                    let _ = crate::git::Git::worktree_remove(state.repo_root(), wt_path);
+                }
+            }
+            crate::git::Git::worktree_prune(state.repo_root()).ok();
+        }
+        Err(e) => {
+            eprintln!("Warning: failed to spawn post-mortem agent: {e}");
+        }
+    }
 
     // Clean up coordinator files
     let repo_root = state.repo_root();

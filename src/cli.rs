@@ -12,10 +12,13 @@ pub enum Commands {
     /// Initialize .hive/ in the current repo
     Init,
 
-    /// Start a new run with a spec file
+    /// Start a new run with a spec file or goal string
     Start {
-        /// Path to the spec file
-        spec: String,
+        /// Path to spec file, or goal string (use --goal for explicit goal mode)
+        spec: Option<String>,
+        /// Provide a goal string directly (alternative to positional arg)
+        #[arg(long)]
+        goal: Option<String>,
     },
 
     /// Show current run status
@@ -132,6 +135,12 @@ pub enum Commands {
     /// List all past runs
     History,
 
+    /// View and manage run memory
+    Memory {
+        #[command(subcommand)]
+        command: Option<MemoryCommands>,
+    },
+
     /// Stop the current run and clean up worktrees
     Stop,
 
@@ -141,4 +150,12 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         interval: u64,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MemoryCommands {
+    /// Display full memory contents
+    Show,
+    /// Remove stale entries (prune operations to 10, failures to 30)
+    Prune,
 }
