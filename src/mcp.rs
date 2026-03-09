@@ -387,7 +387,7 @@ impl HiveMcp {
         };
 
         if let Some(ref status_str) = p.status {
-            task.status = match status_str.as_str() {
+            let new_status = match status_str.as_str() {
                 "pending" => TaskStatus::Pending,
                 "active" => TaskStatus::Active,
                 "blocked" => TaskStatus::Blocked,
@@ -396,12 +396,30 @@ impl HiveMcp {
                 "queued" => TaskStatus::Queued,
                 "merged" => TaskStatus::Merged,
                 "failed" => TaskStatus::Failed,
+                "absorbed" => TaskStatus::Absorbed,
+                "cancelled" => TaskStatus::Cancelled,
                 _ => {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
                         "Invalid status: {status_str}"
                     ))]));
                 }
             };
+
+            // Permission check for terminal administrative statuses
+            if matches!(new_status, TaskStatus::Absorbed | TaskStatus::Cancelled) {
+                let is_coordinator = self.agent_role() == AgentRole::Coordinator;
+                let is_task_creator = task.created_by == self.agent_id;
+                let is_assigned_cancelling = task.assigned_to.as_deref() == Some(self.agent_id.as_str())
+                    && new_status == TaskStatus::Cancelled;
+
+                if !is_coordinator && !is_task_creator && !is_assigned_cancelling {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Permission denied: only coordinator, task creator, or assigned agent (cancel only) can set absorbed/cancelled status"
+                    )]));
+                }
+            }
+
+            task.status = new_status;
         }
 
         if let Some(ref assignee) = p.assigned_to {

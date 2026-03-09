@@ -56,6 +56,28 @@ pub enum TaskStatus {
     Queued,
     Merged,
     Failed,
+    Absorbed,
+    Cancelled,
+}
+
+impl TaskStatus {
+    /// A task is "resolved" if it's in a terminal state — no further action needed.
+    #[allow(dead_code)]
+    pub fn is_resolved(&self) -> bool {
+        matches!(
+            self,
+            TaskStatus::Merged
+                | TaskStatus::Failed
+                | TaskStatus::Absorbed
+                | TaskStatus::Cancelled
+        )
+    }
+
+    /// A task completed its purpose (successfully or by absorption).
+    #[allow(dead_code)]
+    pub fn is_success(&self) -> bool {
+        matches!(self, TaskStatus::Merged | TaskStatus::Absorbed)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -283,6 +305,8 @@ mod tests {
             TaskStatus::Queued,
             TaskStatus::Merged,
             TaskStatus::Failed,
+            TaskStatus::Absorbed,
+            TaskStatus::Cancelled,
         ];
         for variant in variants {
             let json = serde_json::to_string(&variant).unwrap();
@@ -600,5 +624,40 @@ mod tests {
         assert_eq!(back.insights.len(), 1);
         assert_eq!(back.discoveries[0].id, "disc-1");
         assert_eq!(back.insights[0].id, "ins-1");
+    }
+
+    #[test]
+    fn absorbed_cancelled_roundtrip() {
+        for (variant, expected) in [
+            (TaskStatus::Absorbed, "\"absorbed\""),
+            (TaskStatus::Cancelled, "\"cancelled\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+            let back: TaskStatus = serde_json::from_str(expected).unwrap();
+            assert_eq!(variant, back);
+        }
+    }
+
+    #[test]
+    fn is_resolved_returns_true_for_terminal_statuses() {
+        assert!(TaskStatus::Merged.is_resolved());
+        assert!(TaskStatus::Failed.is_resolved());
+        assert!(TaskStatus::Absorbed.is_resolved());
+        assert!(TaskStatus::Cancelled.is_resolved());
+
+        assert!(!TaskStatus::Pending.is_resolved());
+        assert!(!TaskStatus::Active.is_resolved());
+        assert!(!TaskStatus::Review.is_resolved());
+        assert!(!TaskStatus::Queued.is_resolved());
+    }
+
+    #[test]
+    fn is_success_returns_true_for_successful_statuses() {
+        assert!(TaskStatus::Merged.is_success());
+        assert!(TaskStatus::Absorbed.is_success());
+
+        assert!(!TaskStatus::Failed.is_success());
+        assert!(!TaskStatus::Cancelled.is_success());
+        assert!(!TaskStatus::Active.is_success());
     }
 }

@@ -306,7 +306,9 @@ fn cmd_status() -> Result<(), String> {
         (types::TaskStatus::Approved, "approved", GREEN),
         (types::TaskStatus::Queued, "queued", YELLOW),
         (types::TaskStatus::Merged, "merged", RESET),
+        (types::TaskStatus::Absorbed, "absorbed", RESET),
         (types::TaskStatus::Failed, "failed", RED),
+        (types::TaskStatus::Cancelled, "cancelled", RESET),
     ] {
         let count = task_count(status);
         if count > 0 {
@@ -881,7 +883,9 @@ fn cmd_watch(interval: u64) -> Result<(), String> {
             (types::TaskStatus::Pending, "pending"),
             (types::TaskStatus::Review, "review"),
             (types::TaskStatus::Merged, "merged"),
+            (types::TaskStatus::Absorbed, "absorbed"),
             (types::TaskStatus::Failed, "failed"),
+            (types::TaskStatus::Cancelled, "cancelled"),
         ] {
             let c = count_tasks(status);
             if c > 0 {

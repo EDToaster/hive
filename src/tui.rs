@@ -217,9 +217,11 @@ fn aggregate_child_status(children: &[&Task]) -> String {
         (TaskStatus::Queued, "queued"),
         (TaskStatus::Approved, "approved"),
         (TaskStatus::Merged, "merged"),
+        (TaskStatus::Absorbed, "absorbed"),
         (TaskStatus::Pending, "pending"),
         (TaskStatus::Blocked, "blocked"),
         (TaskStatus::Failed, "failed"),
+        (TaskStatus::Cancelled, "cancelled"),
     ];
 
     let mut parts = Vec::new();
@@ -352,6 +354,8 @@ fn task_status_color(s: TaskStatus) -> Color {
         TaskStatus::Queued | TaskStatus::Review | TaskStatus::Blocked => Color::Yellow,
         TaskStatus::Pending => Color::Gray,
         TaskStatus::Failed => Color::Red,
+        TaskStatus::Absorbed => Color::Cyan,
+        TaskStatus::Cancelled => Color::DarkGray,
     }
 }
 
@@ -365,6 +369,8 @@ fn task_status_bullet(s: TaskStatus) -> &'static str {
         TaskStatus::Blocked => "\u{25CB} blocked",
         TaskStatus::Approved => "\u{25CF} approved",
         TaskStatus::Failed => "\u{2717} failed",
+        TaskStatus::Absorbed => "\u{25C8} absorbed",
+        TaskStatus::Cancelled => "\u{2205} cancelled",
     }
 }
 
@@ -809,12 +815,14 @@ fn render_stats_bar(
     let task_statuses = [
         TaskStatus::Active,
         TaskStatus::Merged,
+        TaskStatus::Absorbed,
         TaskStatus::Queued,
         TaskStatus::Review,
         TaskStatus::Pending,
         TaskStatus::Blocked,
         TaskStatus::Approved,
         TaskStatus::Failed,
+        TaskStatus::Cancelled,
     ];
     first = true;
     for &status in &task_statuses {
