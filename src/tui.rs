@@ -99,7 +99,7 @@ struct TreeNode {
     status: AgentStatus,
     task_id: Option<String>,
     heartbeat: Option<DateTime<Utc>>,
-    _role: AgentRole,
+    role: AgentRole,
 }
 
 fn build_tree(agents: &[Agent]) -> Vec<TreeNode> {
@@ -132,7 +132,7 @@ fn add_children(nodes: &mut Vec<TreeNode>, agents: &[Agent], agent: &Agent, pref
         status: agent.status,
         task_id: agent.task_id.clone(),
         heartbeat: agent.heartbeat,
-        _role: agent.role,
+        role: agent.role,
     });
 
     let mut children: Vec<&Agent> = agents
@@ -168,7 +168,7 @@ fn add_subtree(
         status: agent.status,
         task_id: agent.task_id.clone(),
         heartbeat: agent.heartbeat,
-        _role: agent.role,
+        role: agent.role,
     });
 
     let mut children: Vec<&Agent> = agents
@@ -428,32 +428,54 @@ fn run_tui_loop(
                     ])
                     .split(frame.area());
 
-                let main_content = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([
-                        Constraint::Percentage(35), // Swarm
-                        Constraint::Percentage(65), // Tasks
-                    ])
-                    .split(outer[2]);
-
                 // -- Title bar --
                 render_title_bar(frame, outer[0], run_id, &run_meta);
 
                 // -- Stats bar --
-                render_stats_bar(frame, outer[1], &agents, &tasks);
+                render_stats_bar(frame, outer[1], &agents, &tasks, state);
 
-                // -- Swarm pane --
-                render_swarm_pane(
-                    frame,
-                    main_content[0],
-                    &tree_nodes,
-                    &queue,
-                    &ui,
-                    stall_timeout,
-                );
+                // -- Main content: planning view or normal swarm+tasks --
+                let planner_agent = agents.iter().find(|a| {
+                    a.role == AgentRole::Planner && a.status == AgentStatus::Running
+                });
 
-                // -- Tasks pane --
-                render_tasks_pane(frame, main_content[1], &tasks, &ui);
+                if let Some(planner) = planner_agent {
+                    render_planning_view(frame, outer[2], planner);
+                } else {
+                    let main_content = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Percentage(35), // Swarm
+                            Constraint::Percentage(65), // Tasks
+                        ])
+                        .split(outer[2]);
+
+                    // -- Swarm pane --
+                    render_swarm_pane(
+                        frame,
+                        main_content[0],
+                        &tree_nodes,
+                        &queue,
+                        &ui,
+                        stall_timeout,
+                    );
+
+                    // -- Tasks pane with optional spec viewer --
+                    let spec_content = state.load_planner_spec(run_id);
+                    if let Some(ref spec) = spec_content {
+                        let tasks_and_spec = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Percentage(60),
+                                Constraint::Percentage(40),
+                            ])
+                            .split(main_content[1]);
+                        render_tasks_pane(frame, tasks_and_spec[0], &tasks, &ui);
+                        render_spec_viewer(frame, tasks_and_spec[1], spec);
+                    } else {
+                        render_tasks_pane(frame, main_content[1], &tasks, &ui);
+                    }
+                }
 
                 // -- Activity stream --
                 render_activity_stream(frame, outer[3], &activity, &ui);
@@ -601,7 +623,21 @@ fn render_title_bar(frame: &mut Frame, area: Rect, run_id: &str, run_meta: &Opti
 // Render: Stats bar
 // ---------------------------------------------------------------------------
 
-fn render_stats_bar(frame: &mut Frame, area: Rect, agents: &[Agent], tasks: &[Task]) {
+fn render_stats_bar(
+    frame: &mut Frame,
+    area: Rect,
+    agents: &[Agent],
+    tasks: &[Task],
+    state: &HiveState,
+) {
+    let ops_count = state.load_operations().len();
+    let conventions_count = state
+        .load_conventions()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    let failures_count = state.load_failures().len();
+
     let mut spans: Vec<Span> = vec![Span::raw(" Agents: ")];
 
     let agent_statuses = [
@@ -659,6 +695,12 @@ fn render_stats_bar(frame: &mut Frame, area: Rect, agents: &[Agent], tasks: &[Ta
         }
     }
 
+    spans.push(Span::raw("    Memory: "));
+    spans.push(Span::styled(
+        format!("{ops_count} ops | {conventions_count} conventions | {failures_count} failures"),
+        Style::default().fg(Color::Magenta),
+    ));
+
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -684,10 +726,15 @@ fn render_swarm_pane(
             } else {
                 agent_status_color(node.status)
             };
+            let name_color = match node.role {
+                AgentRole::Planner => Color::Cyan,
+                AgentRole::Postmortem => Color::DarkGray,
+                _ => base_color,
+            };
 
             let mut spans = vec![
                 Span::raw(&node.prefix),
-                Span::styled(&node.agent_id, Style::default().fg(base_color)),
+                Span::styled(&node.agent_id, Style::default().fg(name_color)),
                 Span::styled(
                     format!(" [{}]", status_abbrev(node.status)),
                     Style::default().fg(base_color),
@@ -898,6 +945,62 @@ fn render_activity_stream(
     let list = List::new(items).block(block);
 
     frame.render_stateful_widget(list, area, &mut list_state);
+}
+
+// ---------------------------------------------------------------------------
+// Render: Planning view
+// ---------------------------------------------------------------------------
+
+fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agent) {
+    let elapsed = planner
+        .heartbeat
+        .map(|hb| {
+            let age = (Utc::now() - hb).num_seconds().max(0);
+            format_duration_short(age)
+        })
+        .unwrap_or_else(|| "??".to_string());
+
+    let lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "\u{27C1} Planning...",
+            Style::default().fg(Color::Cyan).bold(),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Planner agent is analyzing the codebase and writing a spec",
+            Style::default().fg(Color::Gray),
+        )),
+        Line::from(Span::styled(
+            format!("Elapsed: {elapsed}"),
+            Style::default().fg(Color::White),
+        )),
+    ];
+
+    let block = Block::default()
+        .title(" Planning Phase ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .alignment(Alignment::Center);
+    frame.render_widget(paragraph, area);
+}
+
+// ---------------------------------------------------------------------------
+// Render: Spec viewer
+// ---------------------------------------------------------------------------
+
+fn render_spec_viewer(frame: &mut Frame, area: Rect, spec: &str) {
+    let lines: Vec<Line> = spec.lines().map(|l| Line::from(l.to_string())).collect();
+    let block = Block::default()
+        .title(" Spec ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }
 
 // ---------------------------------------------------------------------------
