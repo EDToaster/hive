@@ -274,13 +274,13 @@ impl HiveMcp {
                 ))]));
             }
         };
-        if let Some(ref assigned) = task.assigned_to {
-            if assigned != &p.agent_id {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "Task '{}' is already assigned to '{assigned}'.",
-                    p.task_id
-                ))]));
-            }
+        if let Some(ref assigned) = task.assigned_to
+            && assigned != &p.agent_id
+        {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Task '{}' is already assigned to '{assigned}'.",
+                p.task_id
+            ))]));
         }
         task.assigned_to = Some(p.agent_id.clone());
         task.status = TaskStatus::Active;
