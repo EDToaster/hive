@@ -9,6 +9,7 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 use rusqlite::Connection;
+use std::collections::HashSet;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,7 @@ struct TuiState {
     activity_auto_scroll: bool,
     overlay: Option<Overlay>,
     selected_agent_filter: Option<String>,
+    collapsed_tasks: HashSet<String>,
 }
 
 impl Default for TuiState {
@@ -49,6 +51,7 @@ impl Default for TuiState {
             activity_auto_scroll: true,
             overlay: None,
             selected_agent_filter: None,
+            collapsed_tasks: HashSet::new(),
         }
     }
 }
@@ -100,6 +103,133 @@ struct TreeNode {
     task_id: Option<String>,
     heartbeat: Option<DateTime<Utc>>,
     role: AgentRole,
+}
+
+// ---------------------------------------------------------------------------
+// Flattened tree node (for tasks pane)
+// ---------------------------------------------------------------------------
+
+struct TaskTreeNode {
+    task_id: String,
+    prefix: String,    // box-drawing connector prefix
+    indicator: String, // "▼ " / "▶ " / "  " (collapse indicator)
+    title: String,     // task title, with aggregate suffix when collapsed
+    status: TaskStatus,
+    assigned_to: Option<String>,
+    #[allow(dead_code)] // read in tests; will be used by Space-toggle (Task 4)
+    review_count: u32,
+    has_children: bool,
+}
+
+fn build_task_tree(tasks: &[Task], collapsed: &HashSet<String>) -> Vec<TaskTreeNode> {
+    let mut nodes = Vec::new();
+
+    // Partition into roots and children
+    let roots: Vec<&Task> = tasks.iter().filter(|t| t.parent_task.is_none()).collect();
+    let mut children_map: std::collections::HashMap<&str, Vec<&Task>> =
+        std::collections::HashMap::new();
+    for task in tasks {
+        if let Some(ref parent_id) = task.parent_task {
+            children_map
+                .entry(parent_id.as_str())
+                .or_default()
+                .push(task);
+        }
+    }
+
+    // Sort children by created_at within each group
+    for children in children_map.values_mut() {
+        children.sort_by_key(|t| t.created_at);
+    }
+
+    // Roots are already sorted by created_at from state.list_tasks
+    for root in &roots {
+        let children = children_map.get(root.id.as_str());
+        let has_children = children.is_some_and(|c| !c.is_empty());
+        let is_collapsed = collapsed.contains(&root.id);
+
+        let indicator = if !has_children {
+            "  ".to_string()
+        } else if is_collapsed {
+            "\u{25B6} ".to_string() // ▶
+        } else {
+            "\u{25BC} ".to_string() // ▼
+        };
+
+        let title = if is_collapsed && has_children {
+            let aggregate = aggregate_child_status(children.unwrap());
+            format!("{} [{}]", root.title, aggregate)
+        } else if root.review_count > 0 {
+            format!("{} (review cycle {})", root.title, root.review_count)
+        } else {
+            root.title.clone()
+        };
+
+        nodes.push(TaskTreeNode {
+            task_id: root.id.clone(),
+            prefix: String::new(),
+            indicator,
+            title,
+            status: root.status,
+            assigned_to: root.assigned_to.clone(),
+            review_count: root.review_count,
+            has_children,
+        });
+
+        // Add children if expanded
+        if has_children && !is_collapsed {
+            let kids = children.unwrap();
+            for (i, child) in kids.iter().enumerate() {
+                let is_last = i == kids.len() - 1;
+                let connector = if is_last {
+                    "  \u{2514}\u{2500} " // └─
+                } else {
+                    "  \u{251C}\u{2500} " // ├─
+                };
+
+                let child_title = if child.review_count > 0 {
+                    format!("{} (review cycle {})", child.title, child.review_count)
+                } else {
+                    child.title.clone()
+                };
+
+                nodes.push(TaskTreeNode {
+                    task_id: child.id.clone(),
+                    prefix: connector.to_string(),
+                    indicator: String::new(),
+                    title: child_title,
+                    status: child.status,
+                    assigned_to: child.assigned_to.clone(),
+                    review_count: child.review_count,
+                    has_children: false,
+                });
+            }
+        }
+    }
+
+    nodes
+}
+
+fn aggregate_child_status(children: &[&Task]) -> String {
+    let counts: Vec<(TaskStatus, &str)> = vec![
+        (TaskStatus::Active, "active"),
+        (TaskStatus::Review, "review"),
+        (TaskStatus::Queued, "queued"),
+        (TaskStatus::Approved, "approved"),
+        (TaskStatus::Merged, "merged"),
+        (TaskStatus::Pending, "pending"),
+        (TaskStatus::Blocked, "blocked"),
+        (TaskStatus::Failed, "failed"),
+    ];
+
+    let mut parts = Vec::new();
+    for (status, label) in &counts {
+        let n = children.iter().filter(|t| t.status == *status).count();
+        if n > 0 {
+            parts.push(format!("{n} {label}"));
+        }
+    }
+    parts.join(", ")
 }
 
 fn build_tree(agents: &[Agent]) -> Vec<TreeNode> {
@@ -399,6 +529,8 @@ fn run_tui_loop(
         let messages = state.list_messages(run_id).unwrap_or_default();
         let run_meta = load_run_metadata(state, run_id);
         let tree_nodes = build_tree(&agents);
+        let task_tree_nodes = build_task_tree(&tasks, &ui.collapsed_tasks);
+        let task_tree_len = task_tree_nodes.len();
 
         // Build activity entries
         let mut activity: Vec<ActivityEntry> = messages
@@ -518,7 +650,7 @@ fn run_tui_loop(
                         ui.selected_agent_filter = tree_nodes.get(next).map(|n| n.agent_id.clone());
                     }
                     Pane::Tasks => {
-                        let max = tasks.len().saturating_sub(1);
+                        let max = task_tree_len.saturating_sub(1);
                         let next = ui.tasks_selected.map_or(0, |i| (i + 1).min(max));
                         ui.tasks_selected = Some(next);
                     }
@@ -549,6 +681,19 @@ fn run_tui_loop(
                 KeyCode::Char('G') => {
                     ui.activity_auto_scroll = true;
                 }
+                KeyCode::Char(' ') => {
+                    if ui.focused_pane == Pane::Tasks
+                        && let Some(i) = ui.tasks_selected
+                        && let Some(node) = task_tree_nodes.get(i)
+                        && node.has_children
+                    {
+                        if ui.collapsed_tasks.contains(&node.task_id) {
+                            ui.collapsed_tasks.remove(&node.task_id);
+                        } else {
+                            ui.collapsed_tasks.insert(node.task_id.clone());
+                        }
+                    }
+                }
                 KeyCode::Enter => match ui.focused_pane {
                     Pane::Swarm => {
                         if let Some(i) = ui.swarm_selected
@@ -559,9 +704,9 @@ fn run_tui_loop(
                     }
                     Pane::Tasks => {
                         if let Some(i) = ui.tasks_selected
-                            && let Some(task) = tasks.get(i)
+                            && let Some(node) = task_tree_nodes.get(i)
                         {
-                            ui.overlay = Some(Overlay::Task(task.id.clone()));
+                            ui.overlay = Some(Overlay::Task(node.task_id.clone()));
                         }
                     }
                     Pane::Activity => {}
@@ -792,35 +937,36 @@ fn render_swarm_pane(
 // ---------------------------------------------------------------------------
 
 fn render_tasks_pane(frame: &mut Frame, area: Rect, tasks: &[Task], ui: &TuiState) {
-    let rows: Vec<Row> = tasks
+    let tree_nodes = build_task_tree(tasks, &ui.collapsed_tasks);
+
+    let rows: Vec<Row> = tree_nodes
         .iter()
         .enumerate()
-        .map(|(i, t)| {
+        .map(|(i, node)| {
             let stripe = if i % 2 == 0 {
                 Style::default().bg(Color::Rgb(45, 45, 55))
             } else {
                 Style::default()
             };
-            let assigned = t.assigned_to.as_deref().unwrap_or("--");
+
+            let id_cell = format!("{}{}{}", node.indicator, node.prefix, node.task_id);
+            let assigned = node.assigned_to.as_deref().unwrap_or("--");
+
             Row::new(vec![
-                Cell::from(t.id.clone()),
+                Cell::from(id_cell),
                 Cell::from(Span::styled(
-                    task_status_bullet(t.status),
-                    Style::default().fg(task_status_color(t.status)),
+                    task_status_bullet(node.status),
+                    Style::default().fg(task_status_color(node.status)),
                 )),
                 Cell::from(assigned.to_string()),
-                Cell::from(if t.review_count > 0 {
-                    format!("{} (review cycle {})", t.title, t.review_count)
-                } else {
-                    t.title.clone()
-                }),
+                Cell::from(node.title.clone()),
             ])
             .style(stripe)
         })
         .collect();
 
     let widths = [
-        Constraint::Min(12),
+        Constraint::Min(18), // wider to fit indicator + prefix + ID
         Constraint::Min(12),
         Constraint::Min(10),
         Constraint::Min(20),
@@ -1138,4 +1284,208 @@ fn render_task_overlay(frame: &mut Frame, area: Rect, task: &Task) {
         .block(block)
         .wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Utc;
+    use std::collections::HashSet;
+
+    fn make_task(id: &str, title: &str, parent: Option<&str>, status: TaskStatus) -> Task {
+        Task {
+            id: id.into(),
+            title: title.into(),
+            description: String::new(),
+            status,
+            urgency: Urgency::Normal,
+            blocking: vec![],
+            blocked_by: vec![],
+            assigned_to: None,
+            created_by: "test".into(),
+            parent_task: parent.map(|s| s.into()),
+            branch: None,
+            domain: None,
+            review_count: 0,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn task_tree_roots_sorted_by_creation() {
+        let tasks = vec![
+            make_task("t-2", "Second", None, TaskStatus::Pending),
+            make_task("t-1", "First", None, TaskStatus::Active),
+        ];
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].task_id, "t-2");
+        assert_eq!(nodes[1].task_id, "t-1");
+    }
+
+    #[test]
+    fn task_tree_children_nested_under_parent() {
+        let tasks = vec![
+            make_task("parent", "Parent Task", None, TaskStatus::Merged),
+            make_task("child-1", "First Child", Some("parent"), TaskStatus::Merged),
+            make_task(
+                "child-2",
+                "Second Child",
+                Some("parent"),
+                TaskStatus::Pending,
+            ),
+        ];
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].task_id, "parent");
+        assert!(nodes[0].has_children);
+        assert!(nodes[0].indicator.contains('\u{25BC}')); // ▼
+        assert_eq!(nodes[1].task_id, "child-1");
+        assert!(nodes[1].prefix.contains('\u{251C}')); // ├
+        assert_eq!(nodes[2].task_id, "child-2");
+        assert!(nodes[2].prefix.contains('\u{2514}')); // └
+    }
+
+    #[test]
+    fn task_tree_collapsed_hides_children() {
+        let tasks = vec![
+            make_task("parent", "Parent Task", None, TaskStatus::Merged),
+            make_task("child-1", "First Child", Some("parent"), TaskStatus::Merged),
+            make_task(
+                "child-2",
+                "Second Child",
+                Some("parent"),
+                TaskStatus::Pending,
+            ),
+        ];
+        let mut collapsed = HashSet::new();
+        collapsed.insert("parent".to_string());
+        let nodes = build_task_tree(&tasks, &collapsed);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].task_id, "parent");
+        assert!(nodes[0].indicator.contains('\u{25B6}')); // ▶
+        assert!(nodes[0].title.contains("[1 merged, 1 pending]"));
+    }
+
+    #[test]
+    fn task_tree_childless_root_has_no_indicator() {
+        let tasks = vec![make_task("lone", "Lone Task", None, TaskStatus::Active)];
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(nodes.len(), 1);
+        assert!(!nodes[0].has_children);
+        assert_eq!(nodes[0].indicator, "  ");
+    }
+
+    #[test]
+    fn task_tree_aggregate_status_only_nonzero() {
+        let tasks = vec![
+            make_task("p", "Parent", None, TaskStatus::Merged),
+            make_task("c1", "C1", Some("p"), TaskStatus::Merged),
+            make_task("c2", "C2", Some("p"), TaskStatus::Merged),
+        ];
+        let mut collapsed = HashSet::new();
+        collapsed.insert("p".to_string());
+        let nodes = build_task_tree(&tasks, &collapsed);
+        assert_eq!(nodes[0].title, "Parent [2 merged]");
+    }
+
+    #[test]
+    fn task_tree_real_world_run_af5af78f() {
+        // Reproduce the actual task hierarchy from run af5af78f
+        let tasks = vec![
+            make_task("task-77cc4261", "D1: Types+State", None, TaskStatus::Merged),
+            make_task(
+                "task-d345f9c0",
+                "Add types to types.rs",
+                Some("task-77cc4261"),
+                TaskStatus::Pending,
+            ),
+            make_task(
+                "task-c2095213",
+                "Add state operations",
+                Some("task-77cc4261"),
+                TaskStatus::Pending,
+            ),
+            make_task(
+                "task-f55567b3",
+                "Combined impl",
+                Some("task-77cc4261"),
+                TaskStatus::Merged,
+            ),
+            make_task("task-59327398", "D2: MCP Tools", None, TaskStatus::Merged),
+            make_task(
+                "task-d1d70ac5",
+                "Add Hive Mind MCP tools",
+                Some("task-59327398"),
+                TaskStatus::Merged,
+            ),
+            make_task("task-d7b90b26", "D3: Prompts", None, TaskStatus::Merged),
+            make_task(
+                "task-bf3a761c",
+                "Implement prompts",
+                Some("task-d7b90b26"),
+                TaskStatus::Merged,
+            ),
+            make_task(
+                "task-0290d750",
+                "D4: CLI Commands",
+                None,
+                TaskStatus::Merged,
+            ),
+            make_task(
+                "task-104b2e65",
+                "Add explore + mind CLI",
+                Some("task-0290d750"),
+                TaskStatus::Merged,
+            ),
+        ];
+
+        // Expanded: 10 nodes total, 4 roots + 6 children
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(nodes.len(), 10);
+
+        // First root is D1 with ▼ indicator
+        assert_eq!(nodes[0].task_id, "task-77cc4261");
+        assert!(nodes[0].has_children);
+        assert!(nodes[0].indicator.contains('\u{25BC}'));
+
+        // Its 3 children follow
+        assert_eq!(nodes[1].task_id, "task-d345f9c0");
+        assert_eq!(nodes[2].task_id, "task-c2095213");
+        assert_eq!(nodes[3].task_id, "task-f55567b3");
+
+        // D2 is next root
+        assert_eq!(nodes[4].task_id, "task-59327398");
+
+        // Collapse D1: only 7 nodes visible
+        let mut collapsed = HashSet::new();
+        collapsed.insert("task-77cc4261".to_string());
+        let nodes = build_task_tree(&tasks, &collapsed);
+        assert_eq!(nodes.len(), 7);
+        assert!(nodes[0].title.contains("[1 merged, 2 pending]"));
+        assert_eq!(nodes[1].task_id, "task-59327398");
+    }
+
+    #[test]
+    fn task_tree_navigation_skips_collapsed_children() {
+        let tasks = vec![
+            make_task("p1", "Parent 1", None, TaskStatus::Active),
+            make_task("c1", "Child 1", Some("p1"), TaskStatus::Pending),
+            make_task("c2", "Child 2", Some("p1"), TaskStatus::Pending),
+            make_task("p2", "Parent 2", None, TaskStatus::Active),
+        ];
+
+        // Expanded: 4 visible nodes
+        let expanded = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(expanded.len(), 4);
+
+        // Collapsed p1: 2 visible nodes (p1, p2)
+        let mut collapsed = HashSet::new();
+        collapsed.insert("p1".to_string());
+        let collapsed_nodes = build_task_tree(&tasks, &collapsed);
+        assert_eq!(collapsed_nodes.len(), 2);
+        assert_eq!(collapsed_nodes[0].task_id, "p1");
+        assert_eq!(collapsed_nodes[1].task_id, "p2");
+    }
 }
