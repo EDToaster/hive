@@ -1097,6 +1097,9 @@ fn cmd_stop() -> Result<(), String> {
     let _ = std::fs::remove_file(repo_root.join(".mcp.json"));
     let _ = std::fs::remove_file(repo_root.join(".claude/settings.local.json"));
 
+    // Clean up stale lock files
+    let _ = state.cleanup_lock_files();
+
     // Mark run as completed
     if let Ok(mut metadata) = state.load_run_metadata(&run_id) {
         metadata.status = types::RunStatus::Completed;

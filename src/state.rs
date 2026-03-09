@@ -34,6 +34,18 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<(), String> {
 
 /// Root handle for all .hive/ state operations.
 /// All methods are stateless — they read/write the filesystem on every call.
+/// RAII guard that releases the file lock and deletes the lock file on drop.
+pub struct LockGuard {
+    _file: std::fs::File,
+    path: PathBuf,
+}
+
+impl Drop for LockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 pub struct HiveState {
     /// Path to the repo root (parent of .hive/)
     repo_root: PathBuf,
@@ -66,8 +78,8 @@ impl HiveState {
     }
 
     /// Acquire an exclusive lock for a state file operation.
-    /// Returns a guard that releases the lock on drop.
-    pub fn lock_file(&self, name: &str) -> Result<std::fs::File, String> {
+    /// Returns a guard that releases the lock and deletes the lock file on drop.
+    pub fn lock_file(&self, name: &str) -> Result<LockGuard, String> {
         let lock_path = self.hive_dir().join(format!("{name}.lock"));
         let file = std::fs::OpenOptions::new()
             .create(true)
@@ -77,7 +89,24 @@ impl HiveState {
             .map_err(|e| format!("Failed to open lock file: {e}"))?;
         file.lock_exclusive()
             .map_err(|e| format!("Failed to acquire lock: {e}"))?;
-        Ok(file)
+        Ok(LockGuard {
+            _file: file,
+            path: lock_path,
+        })
+    }
+
+    /// Remove any stale `.lock` files from the `.hive/` directory.
+    pub fn cleanup_lock_files(&self) -> Result<(), String> {
+        let hive_dir = self.hive_dir();
+        let entries = fs::read_dir(&hive_dir)
+            .map_err(|e| format!("Failed to read hive dir: {e}"))?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("lock") {
+                let _ = fs::remove_file(&path);
+            }
+        }
+        Ok(())
     }
 
     /// Load config from `.hive/config.yaml`. Returns defaults if file is missing or unparseable.
@@ -1275,8 +1304,10 @@ mod tests {
     fn lock_file_creates_lockfile() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        let _lock = state.lock_file("test-lock").unwrap();
+        let lock = state.lock_file("test-lock").unwrap();
         assert!(state.hive_dir().join("test-lock.lock").exists());
+        drop(lock);
+        assert!(!state.hive_dir().join("test-lock.lock").exists());
     }
 
     #[test]
