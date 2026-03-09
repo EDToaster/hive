@@ -332,7 +332,9 @@ impl HiveMcp {
     ) -> Result<CallToolResult, McpError> {
         let p = &params.0;
         let state = self.state();
-        let _lock = state.lock_file(&format!("task-{}", p.task_id)).map_err(|e| McpError::internal_error(e, None))?;
+        let _lock = state
+            .lock_file(&format!("task-{}", p.task_id))
+            .map_err(|e| McpError::internal_error(e, None))?;
         let mut task = match state.load_task(&self.run_id, &p.task_id) {
             Ok(t) => t,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
@@ -581,9 +583,7 @@ impl HiveMcp {
                     .map_err(|e| McpError::internal_error(e, None))?;
                 let mut queue = state
                     .load_merge_queue(&self.run_id)
-                    .unwrap_or(MergeQueue {
-                        entries: vec![],
-                    });
+                    .unwrap_or(MergeQueue { entries: vec![] });
                 queue.entries.push(MergeQueueEntry {
                     task_id: p.task_id.clone(),
                     branch: branch.clone(),
@@ -696,7 +696,9 @@ impl HiveMcp {
         }
     }
 
-    #[tool(description = "Submit a branch for review before merging. Spawns a reviewer agent to evaluate the changes.")]
+    #[tool(
+        description = "Submit a branch for review before merging. Spawns a reviewer agent to evaluate the changes."
+    )]
     async fn hive_submit_to_queue(
         &self,
         params: Parameters<SubmitToQueueParams>,
@@ -772,9 +774,7 @@ impl HiveMcp {
                     .map_err(|e| McpError::internal_error(e, None))?;
                 let mut queue = state
                     .load_merge_queue(&self.run_id)
-                    .unwrap_or(MergeQueue {
-                        entries: vec![],
-                    });
+                    .unwrap_or(MergeQueue { entries: vec![] });
                 queue.entries.push(MergeQueueEntry {
                     task_id: p.task_id.clone(),
                     branch: p.branch.clone(),
@@ -798,7 +798,9 @@ impl HiveMcp {
             return Ok(result);
         }
         let state = self.state();
-        let _lock = state.lock_file("merge-queue").map_err(|e| McpError::internal_error(e, None))?;
+        let _lock = state
+            .lock_file("merge-queue")
+            .map_err(|e| McpError::internal_error(e, None))?;
         let mut queue = match state.load_merge_queue(&self.run_id) {
             Ok(q) => q,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
@@ -964,9 +966,13 @@ impl HiveMcp {
         description = "Check agent health by comparing heartbeats and verifying processes are alive. Returns structured JSON with agent_id, role, status, last_heartbeat_age_secs, and process_alive."
     )]
     async fn hive_check_agents(&self) -> Result<CallToolResult, McpError> {
-        if let Err(result) =
-            self.require_role(&[AgentRole::Coordinator, AgentRole::Lead, AgentRole::Reviewer, AgentRole::Planner, AgentRole::Postmortem])
-        {
+        if let Err(result) = self.require_role(&[
+            AgentRole::Coordinator,
+            AgentRole::Lead,
+            AgentRole::Reviewer,
+            AgentRole::Planner,
+            AgentRole::Postmortem,
+        ]) {
             return Ok(result);
         }
         let state = self.state();
@@ -979,7 +985,9 @@ impl HiveMcp {
         let now = Utc::now();
         let mut reports = Vec::new();
         for mut agent in agents {
-            let _lock = state.lock_file(&format!("agent-{}", agent.id)).map_err(|e| McpError::internal_error(e, None))?;
+            let _lock = state
+                .lock_file(&format!("agent-{}", agent.id))
+                .map_err(|e| McpError::internal_error(e, None))?;
             let process_alive = agent.pid.map(crate::agent::AgentSpawner::is_alive);
             let heartbeat_age_secs = agent.heartbeat.map(|hb| (now - hb).num_seconds());
 
@@ -1259,7 +1267,10 @@ impl HiveMcp {
                     )]));
                 }
             }
-            AgentRole::Worker | AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem => {
+            AgentRole::Worker
+            | AgentRole::Reviewer
+            | AgentRole::Planner
+            | AgentRole::Postmortem => {
                 return Ok(CallToolResult::error(vec![Content::text(
                     "Workers, reviewers, planners, and postmortem agents cannot retry agents.",
                 )]));
@@ -1429,7 +1440,9 @@ impl HiveMcp {
         )]))
     }
 
-    #[tool(description = "Get cost summary for the current run — token usage and estimated cost per agent")]
+    #[tool(
+        description = "Get cost summary for the current run — token usage and estimated cost per agent"
+    )]
     async fn hive_run_cost(&self) -> Result<CallToolResult, McpError> {
         let state = self.state();
         let agents = match state.list_agents(&self.run_id) {
@@ -1492,7 +1505,9 @@ impl HiveMcp {
         )]))
     }
 
-    #[tool(description = "Save a memory entry (operation, convention, or failure). Postmortem-only.")]
+    #[tool(
+        description = "Save a memory entry (operation, convention, or failure). Postmortem-only."
+    )]
     async fn hive_save_memory(
         &self,
         params: Parameters<SaveMemoryParams>,
@@ -1504,23 +1519,34 @@ impl HiveMcp {
         let state = self.state();
         match p.memory_type.as_str() {
             "operation" => {
-                let entry: OperationalEntry = serde_json::from_str(&p.content)
-                    .map_err(|e| McpError::invalid_params(format!("Invalid operation JSON: {e}"), None))?;
-                state.save_operation(&entry)
+                let entry: OperationalEntry = serde_json::from_str(&p.content).map_err(|e| {
+                    McpError::invalid_params(format!("Invalid operation JSON: {e}"), None)
+                })?;
+                state
+                    .save_operation(&entry)
                     .map_err(|e| McpError::internal_error(e, None))?;
-                Ok(CallToolResult::success(vec![Content::text("Saved operation entry.")]))
+                Ok(CallToolResult::success(vec![Content::text(
+                    "Saved operation entry.",
+                )]))
             }
             "convention" => {
-                state.save_conventions(&p.content)
+                state
+                    .save_conventions(&p.content)
                     .map_err(|e| McpError::internal_error(e, None))?;
-                Ok(CallToolResult::success(vec![Content::text("Saved conventions.")]))
+                Ok(CallToolResult::success(vec![Content::text(
+                    "Saved conventions.",
+                )]))
             }
             "failure" => {
-                let entry: FailureEntry = serde_json::from_str(&p.content)
-                    .map_err(|e| McpError::invalid_params(format!("Invalid failure JSON: {e}"), None))?;
-                state.save_failure(&entry)
+                let entry: FailureEntry = serde_json::from_str(&p.content).map_err(|e| {
+                    McpError::invalid_params(format!("Invalid failure JSON: {e}"), None)
+                })?;
+                state
+                    .save_failure(&entry)
                     .map_err(|e| McpError::internal_error(e, None))?;
-                Ok(CallToolResult::success(vec![Content::text("Saved failure entry.")]))
+                Ok(CallToolResult::success(vec![Content::text(
+                    "Saved failure entry.",
+                )]))
             }
             _ => Ok(CallToolResult::error(vec![Content::text(
                 "Invalid memory_type. Use 'operation', 'convention', or 'failure'.",
@@ -1537,7 +1563,8 @@ impl HiveMcp {
             return Ok(result);
         }
         let state = self.state();
-        state.save_planner_spec(&self.run_id, &params.0.spec)
+        state
+            .save_planner_spec(&self.run_id, &params.0.spec)
             .map_err(|e| McpError::internal_error(e, None))?;
         Ok(CallToolResult::success(vec![Content::text("Spec saved.")]))
     }
@@ -1663,14 +1690,20 @@ mod tests {
     fn save_memory_rejects_non_postmortem() {
         let (_dir, mcp) = setup_mcp(AgentRole::Worker);
         let result = mcp.require_role(&[AgentRole::Postmortem]);
-        assert!(result.is_err(), "Worker should not be allowed to save memory");
+        assert!(
+            result.is_err(),
+            "Worker should not be allowed to save memory"
+        );
     }
 
     #[test]
     fn save_memory_allows_postmortem() {
         let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
         let result = mcp.require_role(&[AgentRole::Postmortem]);
-        assert!(result.is_ok(), "Postmortem should be allowed to save memory");
+        assert!(
+            result.is_ok(),
+            "Postmortem should be allowed to save memory"
+        );
     }
 
     #[test]

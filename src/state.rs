@@ -378,10 +378,7 @@ impl HiveState {
     }
 
     pub fn load_agent_cost(&self, run_id: &str, agent_id: &str) -> Option<AgentCost> {
-        let output_path = self
-            .agents_dir(run_id)
-            .join(agent_id)
-            .join("output.json");
+        let output_path = self.agents_dir(run_id).join(agent_id).join("output.json");
         let data = fs::read_to_string(&output_path).ok()?;
         let json: serde_json::Value = serde_json::from_str(&data).ok()?;
 
@@ -393,8 +390,8 @@ impl HiveState {
             .unwrap_or(0);
 
         // Claude Opus pricing: $15/M input, $75/M output
-        let cost_usd =
-            (input_tokens as f64 * 15.0 / 1_000_000.0) + (output_tokens as f64 * 75.0 / 1_000_000.0);
+        let cost_usd = (input_tokens as f64 * 15.0 / 1_000_000.0)
+            + (output_tokens as f64 * 75.0 / 1_000_000.0);
 
         Some(AgentCost {
             input_tokens,
@@ -506,7 +503,10 @@ impl HiveState {
                 .iter()
                 .map(|e| serde_json::to_string(e).unwrap())
                 .collect();
-            atomic_write(&dir.join("operations.jsonl"), &format!("{}\n", lines.join("\n")))?;
+            atomic_write(
+                &dir.join("operations.jsonl"),
+                &format!("{}\n", lines.join("\n")),
+            )?;
         }
 
         // Prune failures to last 30
@@ -519,7 +519,10 @@ impl HiveState {
                 .iter()
                 .map(|e| serde_json::to_string(e).unwrap())
                 .collect();
-            atomic_write(&dir.join("failures.jsonl"), &format!("{}\n", lines.join("\n")))?;
+            atomic_write(
+                &dir.join("failures.jsonl"),
+                &format!("{}\n", lines.join("\n")),
+            )?;
         }
 
         Ok(())
@@ -546,7 +549,11 @@ impl HiveState {
                 for op in &ops {
                     s.push_str(&format!(
                         "- Run {}: {} tasks, {} failed, {} agents, ${:.2}\n",
-                        op.run_id, op.tasks_total, op.tasks_failed, op.agents_spawned, op.total_cost_usd
+                        op.run_id,
+                        op.tasks_total,
+                        op.tasks_failed,
+                        op.agents_spawned,
+                        op.total_cost_usd
                     ));
                     if !op.learnings.is_empty() {
                         s.push_str(&format!("  Learnings: {}\n", op.learnings.join(", ")));
@@ -568,7 +575,10 @@ impl HiveState {
             if !fails.is_empty() {
                 let mut s = String::from("### Known Failure Patterns\n");
                 for f in &fails {
-                    s.push_str(&format!("- Pattern: {} — Context: {}\n", f.pattern, f.context));
+                    s.push_str(&format!(
+                        "- Pattern: {} — Context: {}\n",
+                        f.pattern, f.context
+                    ));
                 }
                 sections.push(s);
             }
@@ -1185,11 +1195,7 @@ mod tests {
     fn load_config_reads_max_retries() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "max_retries: 3\n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "max_retries: 3\n").unwrap();
         let config = state.load_config();
         assert_eq!(config.max_retries, 3);
     }
@@ -1325,11 +1331,7 @@ mod tests {
     fn load_config_reads_budget_usd() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "budget_usd: 25.0\n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "budget_usd: 25.0\n").unwrap();
         let config = state.load_config();
         assert_eq!(config.budget_usd, Some(25.0));
     }
@@ -1559,7 +1561,10 @@ mod tests {
         // Write output.json for agent-1: 1000 input, 500 output
         let output1 = r#"{"num_input_tokens": 1000, "num_output_tokens": 500, "session_duration_seconds": 60}"#;
         std::fs::write(
-            state.agents_dir("run-1").join("agent-1").join("output.json"),
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.json"),
             output1,
         )
         .unwrap();
@@ -1567,7 +1572,10 @@ mod tests {
         // Write output.json for agent-2: 2000 input, 1000 output
         let output2 = r#"{"num_input_tokens": 2000, "num_output_tokens": 1000, "session_duration_seconds": 120}"#;
         std::fs::write(
-            state.agents_dir("run-1").join("agent-2").join("output.json"),
+            state
+                .agents_dir("run-1")
+                .join("agent-2")
+                .join("output.json"),
             output2,
         )
         .unwrap();
