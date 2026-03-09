@@ -19,6 +19,8 @@ pub struct HiveMcp {
     run_id: String,
     agent_id: String,
     repo_root: String,
+    #[allow(dead_code)]
+    task_id: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -30,8 +32,8 @@ pub struct SpawnAgentParams {
     pub agent_id: String,
     /// Role: "lead" or "worker"
     pub role: String,
-    /// Task description for the agent
-    pub task_description: String,
+    /// Task ID to assign to this agent
+    pub task_id: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -178,11 +180,17 @@ pub struct SaveSpecParams {
 
 #[tool_router]
 impl HiveMcp {
-    pub fn new(run_id: String, agent_id: String, repo_root: String) -> Self {
+    pub fn new(
+        run_id: String,
+        agent_id: String,
+        repo_root: String,
+        task_id: Option<String>,
+    ) -> Self {
         Self {
             run_id,
             agent_id,
             repo_root,
+            task_id,
             tool_router: Self::tool_router(),
         }
     }
@@ -215,6 +223,7 @@ impl HiveMcp {
         &self,
         params: Parameters<SpawnAgentParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
             return Ok(result);
         }
@@ -222,12 +231,9 @@ impl HiveMcp {
         let role = match p.role.as_str() {
             "lead" => AgentRole::Lead,
             "worker" => AgentRole::Worker,
-            "reviewer" => AgentRole::Reviewer,
-            "planner" => AgentRole::Planner,
-            "postmortem" => AgentRole::Postmortem,
             _ => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Invalid role. Use 'lead', 'worker', 'reviewer', 'planner', or 'postmortem'.",
+                    "Invalid role. Use 'lead' or 'worker'.",
                 )]));
             }
         };
@@ -236,11 +242,7 @@ impl HiveMcp {
         let caller_role = self.agent_role();
         let allowed = matches!(
             (caller_role, role),
-            (AgentRole::Coordinator, AgentRole::Lead)
-                | (AgentRole::Coordinator, AgentRole::Planner)
-                | (AgentRole::Coordinator, AgentRole::Postmortem)
-                | (AgentRole::Lead, AgentRole::Worker)
-                | (AgentRole::Lead, AgentRole::Reviewer)
+            (AgentRole::Coordinator, AgentRole::Lead) | (AgentRole::Lead, AgentRole::Worker)
         );
         if !allowed {
             return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -262,31 +264,40 @@ impl HiveMcp {
             }
         }
 
-        // TODO(lead-mcp): Replace this temporary Task with proper task_id-based lookup
-        let temp_task = Task {
-            id: String::new(),
-            title: p.task_description.clone(),
-            description: p.task_description.clone(),
-            status: TaskStatus::Active,
-            urgency: Urgency::Normal,
-            blocking: vec![],
-            blocked_by: vec![],
-            assigned_to: Some(p.agent_id.clone()),
-            created_by: self.agent_id.clone(),
-            parent_task: None,
-            branch: None,
-            domain: None,
-            review_count: 0,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+        // Load and validate task
+        let mut task = match state.load_task(&self.run_id, &p.task_id) {
+            Ok(t) => t,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Failed to load task '{}': {e}",
+                    p.task_id
+                ))]));
+            }
         };
+        if let Some(ref assigned) = task.assigned_to
+            && assigned != &p.agent_id
+        {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Task '{}' is already assigned to '{assigned}'.",
+                p.task_id
+            ))]));
+        }
+        task.assigned_to = Some(p.agent_id.clone());
+        task.status = TaskStatus::Active;
+        task.updated_at = Utc::now();
+        if let Err(e) = state.save_task(&self.run_id, &task) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to save task: {e}"
+            ))]));
+        }
+
         match crate::agent::AgentSpawner::spawn(
             &state,
             &self.run_id,
             &p.agent_id,
             role,
             Some(&self.agent_id),
-            &temp_task,
+            &task,
         ) {
             Ok(agent) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "Spawned agent '{}' (role={:?}, worktree={})",
@@ -305,6 +316,7 @@ impl HiveMcp {
         &self,
         params: Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let p = &params.0;
         let urgency = match p.urgency.as_str() {
             "low" => Urgency::Low,
@@ -348,6 +360,7 @@ impl HiveMcp {
         &self,
         params: Parameters<UpdateTaskParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let p = &params.0;
         let state = self.state();
         let _lock = state
@@ -391,10 +404,25 @@ impl HiveMcp {
         task.updated_at = Utc::now();
 
         match state.save_task(&self.run_id, &task) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Updated task '{}': status={:?}",
-                task.id, task.status
-            ))])),
+            Ok(()) => {
+                // Notify parent when status becomes review
+                if task.status == TaskStatus::Review
+                    && let Ok(agent) = state.load_agent(&self.run_id, &self.agent_id)
+                    && let Some(ref parent) = agent.parent
+                {
+                    self.notify_agent(
+                        parent,
+                        &format!(
+                            "Worker {} completed task {} '{}'. Review the diff.",
+                            self.agent_id, task.id, task.title
+                        ),
+                    );
+                }
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Updated task '{}': status={:?}",
+                    task.id, task.status
+                ))]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
@@ -404,6 +432,7 @@ impl HiveMcp {
         &self,
         params: Parameters<ListTasksParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let p = &params.0;
         let tasks = match self.state().list_tasks(&self.run_id) {
             Ok(t) => t,
@@ -444,6 +473,7 @@ impl HiveMcp {
         &self,
         params: Parameters<SendMessageParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let p = &params.0;
         let msg_type = match p.message_type.as_str() {
             "info" => MessageType::Info,
@@ -516,50 +546,8 @@ impl HiveMcp {
         }
 
         // Auto-wake: if target agent is idle with a session_id, resume it
-        let mut wake_info = None;
-        if let Ok(mut target_agent) = state.load_agent(&self.run_id, &p.to)
-            && target_agent.status == AgentStatus::Idle
-            && let Some(ref session_id) = target_agent.session_id
-        {
-            // Spawn a --resume invocation
-            let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
-            let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
-                .map_err(|e| format!("Failed to create output file: {e}"));
-            if let Ok(output_file) = output_file {
-                let worktree = target_agent.worktree.clone().unwrap_or_default();
-                let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log")).ok();
-                let mut cmd = std::process::Command::new("claude");
-                cmd.arg("-p")
-                    .arg(&p.body)
-                    .arg("--resume")
-                    .arg(session_id)
-                    .arg("--output-format")
-                    .arg("json")
-                    .arg("--dangerously-skip-permissions")
-                    .env_remove("CLAUDECODE")
-                    .current_dir(&worktree)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(output_file);
-                if let Some(f) = stderr_file {
-                    cmd.stderr(std::process::Stdio::from(f));
-                }
-                let result = cmd.spawn();
-                match result {
-                    Ok(child) => {
-                        target_agent.status = AgentStatus::Running;
-                        target_agent.pid = Some(child.id());
-                        target_agent.heartbeat = Some(Utc::now());
-                        let _ = state.save_agent(&self.run_id, &target_agent);
-                        wake_info = Some(format!(" (woke agent '{}', pid {})", p.to, child.id()));
-                    }
-                    Err(e) => {
-                        wake_info = Some(format!(" (failed to wake agent '{}': {e})", p.to));
-                    }
-                }
-            }
-        }
-
-        let wake_suffix = wake_info.unwrap_or_default();
+        let wake_info = Self::wake_idle_agent(&state, &self.run_id, &p.to, &p.body);
+        let wake_suffix = wake_info.map(|w| format!(" {w}")).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Sent message '{msg_id}' to '{}'{wake_suffix}",
             p.to
@@ -571,6 +559,7 @@ impl HiveMcp {
         &self,
         params: Parameters<ReviewVerdictParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Reviewer]) {
             return Ok(result);
         }
@@ -612,23 +601,12 @@ impl HiveMcp {
                     .save_merge_queue(&self.run_id, &queue)
                     .map_err(|e| McpError::internal_error(e, None))?;
 
-                // Notify coordinator
+                // Notify coordinator (with wake)
                 let msg = format!(
                     "Review approved for task '{}'. Branch '{}' added to merge queue.",
                     p.task_id, branch
                 );
-                let _ = state.save_message(
-                    &self.run_id,
-                    &Message {
-                        id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
-                        from: self.agent_id.clone(),
-                        to: "coordinator".to_string(),
-                        timestamp: Utc::now(),
-                        message_type: MessageType::Status,
-                        body: msg.clone(),
-                        refs: vec![p.task_id.clone()],
-                    },
-                );
+                self.notify_agent("coordinator", &msg);
 
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
@@ -644,23 +622,28 @@ impl HiveMcp {
                     .save_task(&self.run_id, &task)
                     .map_err(|e| McpError::internal_error(e, None))?;
 
-                // Send feedback to the agent that worked on this task
+                // Send feedback to the agent that worked on this task (with wake)
                 if let Some(ref assigned) = task.assigned_to {
-                    let _ = state.save_message(
-                        &self.run_id,
-                        &Message {
-                            id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
-                            from: self.agent_id.clone(),
-                            to: assigned.clone(),
-                            timestamp: Utc::now(),
-                            message_type: MessageType::Request,
-                            body: format!(
-                                "Review feedback for task '{}' (review cycle {}):\n{}",
-                                p.task_id, task.review_count, feedback
-                            ),
-                            refs: vec![p.task_id.clone()],
-                        },
+                    self.notify_agent(
+                        assigned,
+                        &format!(
+                            "Review feedback for task '{}' (review cycle {}):\n{}",
+                            p.task_id, task.review_count, feedback
+                        ),
                     );
+
+                    // Also notify the parent lead
+                    if let Ok(agent) = state.load_agent(&self.run_id, assigned)
+                        && let Some(ref parent) = agent.parent
+                    {
+                        self.notify_agent(
+                            parent,
+                            &format!(
+                                "Reviewer requested changes on task {}: {}",
+                                p.task_id, feedback
+                            ),
+                        );
+                    }
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(format!(
@@ -721,6 +704,7 @@ impl HiveMcp {
         &self,
         params: Parameters<SubmitToQueueParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Lead]) {
             return Ok(result);
         }
@@ -760,7 +744,6 @@ impl HiveMcp {
             "Review task '{}': {}\n\nBranch: {}\nTask description: {}\n\nExamine the diff on this branch against main. Run `git log main..HEAD --oneline` and `git diff main...HEAD --stat` to see what changed. Then read the changed files and evaluate.",
             p.task_id, task.title, p.branch, task.description
         );
-        // TODO(lead-mcp): Replace with proper task-based reviewer spawning
         let review_task = Task {
             id: p.task_id.clone(),
             title: format!("Review: {}", task.title),
@@ -794,6 +777,15 @@ impl HiveMcp {
                     let _ = state.save_agent(&self.run_id, &reviewer_agent);
                 }
 
+                // Notify coordinator about submission
+                self.notify_agent(
+                    "coordinator",
+                    &format!(
+                        "Lead {} submitted task {} '{}' for review.",
+                        self.agent_id, p.task_id, task.title
+                    ),
+                );
+
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Spawned reviewer '{}' for task '{}'. Awaiting review verdict.",
                     reviewer_id, p.task_id
@@ -819,6 +811,15 @@ impl HiveMcp {
                 });
                 let _ = state.save_merge_queue(&self.run_id, &queue);
 
+                // Notify coordinator about direct submission
+                self.notify_agent(
+                    "coordinator",
+                    &format!(
+                        "Lead {} submitted task {} '{}' for merge (direct, reviewer spawn failed).",
+                        self.agent_id, p.task_id, task.title
+                    ),
+                );
+
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Warning: Failed to spawn reviewer ({e}). Branch submitted directly to merge queue as fallback."
                 ))]))
@@ -830,6 +831,7 @@ impl HiveMcp {
         description = "Process the next item in the merge queue. Merges the branch into main, runs verification, and handles conflicts with auto-rebase."
     )]
     async fn hive_merge_next(&self) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Coordinator]) {
             return Ok(result);
         }
@@ -971,6 +973,26 @@ impl HiveMcp {
 
                 Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &msg);
 
+                // Unblock detection: notify agents whose tasks are now unblocked
+                if let Ok(unblocked) =
+                    state.find_newly_unblocked_tasks(&self.run_id, &entry.task_id)
+                {
+                    for unblocked_task in unblocked {
+                        if let Some(ref agent_id) = unblocked_task.assigned_to {
+                            Self::notify_and_wake(
+                                &state,
+                                &self.run_id,
+                                "coordinator",
+                                agent_id,
+                                &format!(
+                                    "Task '{}' '{}' is now unblocked. Proceed.",
+                                    unblocked_task.id, unblocked_task.title
+                                ),
+                            );
+                        }
+                    }
+                }
+
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
             Err(e) => {
@@ -990,6 +1012,7 @@ impl HiveMcp {
 
     #[tool(description = "List all agents and their current status")]
     async fn hive_list_agents(&self) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let agents = match self.state().list_agents(&self.run_id) {
             Ok(a) => a,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
@@ -1002,6 +1025,7 @@ impl HiveMcp {
         description = "Check agent health by comparing heartbeats and verifying processes are alive. Returns structured JSON with agent_id, role, status, last_heartbeat_age_secs, and process_alive."
     )]
     async fn hive_check_agents(&self) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[
             AgentRole::Coordinator,
             AgentRole::Lead,
@@ -1135,17 +1159,6 @@ impl HiveMcp {
         Ok(CallToolResult::success(vec![Content::text(summary)]))
     }
 
-    #[tool(description = "Update this agent's heartbeat timestamp to signal liveness")]
-    async fn hive_heartbeat(&self) -> Result<CallToolResult, McpError> {
-        let state = self.state();
-        match state.update_agent_heartbeat(&self.run_id, &self.agent_id) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(
-                "Heartbeat updated.",
-            )])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
-        }
-    }
-
     #[tool(
         description = "Block until activity is detected in the hive run directory, or timeout. Returns a summary of what changed."
     )]
@@ -1153,6 +1166,7 @@ impl HiveMcp {
         &self,
         params: Parameters<WaitForActivityParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
             return Ok(result);
         }
@@ -1175,6 +1189,7 @@ impl HiveMcp {
         &self,
         params: Parameters<ReviewAgentParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
             return Ok(result);
         }
@@ -1236,6 +1251,7 @@ impl HiveMcp {
         &self,
         params: Parameters<LogToolParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let p = &params.0;
         let state = self.state();
         let log_path = state.run_dir(&self.run_id).join("log.db");
@@ -1272,6 +1288,7 @@ impl HiveMcp {
         &self,
         params: Parameters<RetryAgentParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         // Permission check: only coordinator and leads can retry
         if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
             return Ok(result);
@@ -1417,6 +1434,7 @@ impl HiveMcp {
         &self,
         params: Parameters<ReadMessagesParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let state = self.state();
         let mut agent = match state.load_agent(&self.run_id, &self.agent_id) {
             Ok(a) => a,
@@ -1480,6 +1498,7 @@ impl HiveMcp {
         description = "Get cost summary for the current run — token usage and estimated cost per agent"
     )]
     async fn hive_run_cost(&self) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         let state = self.state();
         let agents = match state.list_agents(&self.run_id) {
             Ok(a) => a,
@@ -1548,6 +1567,7 @@ impl HiveMcp {
         &self,
         params: Parameters<SaveMemoryParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Postmortem]) {
             return Ok(result);
         }
@@ -1595,6 +1615,7 @@ impl HiveMcp {
         &self,
         params: Parameters<SaveSpecParams>,
     ) -> Result<CallToolResult, McpError> {
+        self.touch_heartbeat();
         if let Err(result) = self.require_role(&[AgentRole::Planner]) {
             return Ok(result);
         }
@@ -1616,6 +1637,91 @@ impl ServerHandler for HiveMcp {
 }
 
 impl HiveMcp {
+    fn touch_heartbeat(&self) {
+        let _ = self
+            .state()
+            .update_agent_heartbeat(&self.run_id, &self.agent_id);
+    }
+
+    fn wake_idle_agent(
+        state: &HiveState,
+        run_id: &str,
+        agent_id: &str,
+        message: &str,
+    ) -> Option<String> {
+        if let Ok(mut target_agent) = state.load_agent(run_id, agent_id)
+            && target_agent.status == AgentStatus::Idle
+            && let Some(ref session_id) = target_agent.session_id
+        {
+            let agent_output_dir = state.agents_dir(run_id).join(&target_agent.id);
+            let output_file = std::fs::File::create(agent_output_dir.join("output.json")).ok()?;
+            let worktree = target_agent.worktree.clone().unwrap_or_default();
+            let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log")).ok();
+            let mut cmd = std::process::Command::new("claude");
+            cmd.arg("-p")
+                .arg(message)
+                .arg("--resume")
+                .arg(session_id)
+                .arg("--output-format")
+                .arg("json")
+                .arg("--dangerously-skip-permissions")
+                .env_remove("CLAUDECODE")
+                .current_dir(&worktree)
+                .stdin(std::process::Stdio::null())
+                .stdout(output_file);
+            if let Some(f) = stderr_file {
+                cmd.stderr(std::process::Stdio::from(f));
+            }
+            match cmd.spawn() {
+                Ok(child) => {
+                    target_agent.status = AgentStatus::Running;
+                    target_agent.pid = Some(child.id());
+                    target_agent.heartbeat = Some(Utc::now());
+                    let _ = state.save_agent(run_id, &target_agent);
+                    Some(format!("(woke agent '{}', pid {})", agent_id, child.id()))
+                }
+                Err(e) => Some(format!("(failed to wake agent '{}': {e})", agent_id)),
+            }
+        } else {
+            None
+        }
+    }
+
+    fn notify_agent(&self, target_agent_id: &str, message: &str) {
+        let state = self.state();
+        let msg = Message {
+            id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
+            from: self.agent_id.clone(),
+            to: target_agent_id.to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Info,
+            body: message.to_string(),
+            refs: vec![],
+        };
+        let _ = state.save_message(&self.run_id, &msg);
+        Self::wake_idle_agent(&state, &self.run_id, target_agent_id, message);
+    }
+
+    fn notify_and_wake(
+        state: &HiveState,
+        run_id: &str,
+        from: &str,
+        target_agent_id: &str,
+        message: &str,
+    ) {
+        let msg = Message {
+            id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
+            from: from.to_string(),
+            to: target_agent_id.to_string(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Info,
+            body: message.to_string(),
+            refs: vec![],
+        };
+        let _ = state.save_message(run_id, &msg);
+        Self::wake_idle_agent(state, run_id, target_agent_id, message);
+    }
+
     fn parse_session_id_from_output(output_path: &std::path::Path) -> Option<String> {
         let data = std::fs::read_to_string(output_path).ok()?;
         let json: serde_json::Value = serde_json::from_str(&data).ok()?;
@@ -1639,17 +1745,7 @@ impl HiveMcp {
     }
 
     fn notify_submitter(state: &HiveState, run_id: &str, to: &str, body: &str) {
-        let msg_id = format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
-        let message = Message {
-            id: msg_id,
-            from: "coordinator".to_string(),
-            to: to.to_string(),
-            timestamp: Utc::now(),
-            message_type: MessageType::Info,
-            body: body.to_string(),
-            refs: vec![],
-        };
-        let _ = state.save_message(run_id, &message);
+        Self::notify_and_wake(state, run_id, "coordinator", to, body);
     }
 
     fn worktree_status(worktree: &str) -> Option<String> {
@@ -1671,7 +1767,7 @@ pub async fn run_mcp_server(run_id: &str, agent_id: &str) -> Result<(), String> 
         .repo_root()
         .to_string_lossy()
         .to_string();
-    let server = HiveMcp::new(run_id.to_string(), agent_id.to_string(), repo_root);
+    let server = HiveMcp::new(run_id.to_string(), agent_id.to_string(), repo_root, None);
 
     let transport = rmcp::transport::io::stdio();
     let service = server
@@ -1718,6 +1814,7 @@ mod tests {
             "test-run".into(),
             "test-agent".into(),
             root.to_string_lossy().to_string(),
+            None,
         );
         (dir, mcp)
     }
@@ -1795,17 +1892,51 @@ mod tests {
     }
 
     #[test]
-    fn spawn_hierarchy_allows_coordinator_to_spawn_postmortem() {
+    fn spawn_hierarchy_coordinator_spawns_lead() {
         let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
         let caller_role = mcp.agent_role();
         let allowed = matches!(
-            (caller_role, AgentRole::Postmortem),
-            (AgentRole::Coordinator, AgentRole::Lead)
-                | (AgentRole::Coordinator, AgentRole::Planner)
-                | (AgentRole::Coordinator, AgentRole::Postmortem)
-                | (AgentRole::Lead, AgentRole::Worker)
-                | (AgentRole::Lead, AgentRole::Reviewer)
+            (caller_role, AgentRole::Lead),
+            (AgentRole::Coordinator, AgentRole::Lead) | (AgentRole::Lead, AgentRole::Worker)
         );
-        assert!(allowed, "Coordinator should be able to spawn Postmortem");
+        assert!(allowed, "Coordinator should be able to spawn Lead");
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_reviewer_role() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "reviewer-1".into(),
+            role: "reviewer".into(),
+            task_id: "task-1".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn spawn_rejects_planner_role() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "planner-1".into(),
+            role: "planner".into(),
+            task_id: "task-1".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[test]
+    fn touch_heartbeat_updates_timestamp() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        // Initial heartbeat should be None
+        let state = mcp.state();
+        let agent_before = state.load_agent("test-run", "test-agent").unwrap();
+        assert!(agent_before.heartbeat.is_none());
+
+        mcp.touch_heartbeat();
+
+        let agent_after = state.load_agent("test-run", "test-agent").unwrap();
+        assert!(agent_after.heartbeat.is_some());
     }
 }
