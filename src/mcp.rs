@@ -744,7 +744,6 @@ impl HiveMcp {
             "Review task '{}': {}\n\nBranch: {}\nTask description: {}\n\nExamine the diff on this branch against main. Run `git log main..HEAD --oneline` and `git diff main...HEAD --stat` to see what changed. Then read the changed files and evaluate.",
             p.task_id, task.title, p.branch, task.description
         );
-        // TODO(lead-mcp): Replace with proper task-based reviewer spawning
         let review_task = Task {
             id: p.task_id.clone(),
             title: format!("Review: {}", task.title),
