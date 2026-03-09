@@ -29,70 +29,81 @@ impl AgentSpawner {
         let claude_dir = worktree_path.join(".claude");
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
 
+        // Common PostToolUse hooks: heartbeat + tool logging
+        let post_tool_hooks = serde_json::json!([{
+            "matcher": "*",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": format!(
+                        "hive heartbeat --run {run_id} --agent {agent_id}"
+                    )
+                },
+                {
+                    "type": "command",
+                    "command": format!(
+                        "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
+                    )
+                }
+            ]
+        }]);
+
+        // Common Stop hook: check for unread messages
+        let stop_hooks = serde_json::json!([{
+            "matcher": "*",
+            "hooks": [{
+                "type": "command",
+                "command": format!(
+                    "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
+                )
+            }]
+        }]);
+
         let settings_json = if matches!(
             role,
             AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem
         ) {
+            // Read-only agents: block Edit/Write/destructive Bash
             serde_json::json!({
                 "hooks": {
                     "PreToolUse": [{
                         "matcher": "Edit|Write|NotebookEdit",
                         "hooks": [{
                             "type": "command",
-                            "command": "echo 'BLOCKED: Reviewer agents are read-only. Do not modify files.' >&2 && exit 2"
+                            "command": "echo 'BLOCKED: This agent is read-only. Do not modify files.' >&2 && exit 2"
                         }]
                     }, {
                         "matcher": "Bash",
                         "hooks": [{
                             "type": "command",
-                            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE '(>|>>|tee |rm |mv |cp |chmod |sed -i|mkdir|touch|git add|git commit|git push|cargo fmt)'; then echo 'BLOCKED: Reviewer agents are read-only.' >&2 && exit 2; fi"
+                            "command": "if echo \"$TOOL_INPUT\" | jq -r '.command' | grep -qE '(>|>>|tee |rm |mv |cp |chmod |sed -i|mkdir|touch|git add|git commit|git push|cargo fmt)'; then echo 'BLOCKED: This agent is read-only.' >&2 && exit 2; fi"
                         }]
                     }],
-                    "PostToolUse": [{
-                        "matcher": "*",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": format!(
-                                    "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
-                                )
-                            }
-                        ]
-                    }],
-                    "Stop": [{
-                        "matcher": "*",
+                    "PostToolUse": post_tool_hooks,
+                    "Stop": stop_hooks
+                }
+            })
+        } else if matches!(role, AgentRole::Lead) {
+            // Lead agents: block Edit/Write to enforce delegation to workers
+            serde_json::json!({
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "Edit|Write|NotebookEdit",
                         "hooks": [{
                             "type": "command",
-                            "command": format!(
-                                "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
-                            )
+                            "command": "echo 'BLOCKED: Lead agents must delegate implementation to workers via hive_spawn_agent. Do not modify files yourself.' >&2 && exit 2"
                         }]
-                    }]
+                    }],
+                    "PostToolUse": post_tool_hooks,
+                    "Stop": stop_hooks
                 }
             })
         } else {
+            // Worker agents: full read-write access
             serde_json::json!({
                 "hooks": {
-                    "PostToolUse": [{
-                        "matcher": "*",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": format!(
-                                    "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent {agent_id} --tool {{}} --status success"
-                                )
-                            }
-                        ]
-                    }],
-                    "Stop": [{
-                        "matcher": "*",
-                        "hooks": [{
-                            "type": "command",
-                            "command": format!(
-                                "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
-                            )
-                        }]
-                    }]
+                    "PostToolUse": post_tool_hooks,
+                    "Stop": stop_hooks
                 }
             })
         };
@@ -342,8 +353,10 @@ Parent: {}
   You will be resumed when workers complete or the coordinator sends a message.
 
 ## Delegation Protocol
-- ALWAYS spawn workers for implementation. You are a manager, not an implementer.
-- Read the relevant source files to understand the codebase, then write a detailed implementation plan.
+- You are a MANAGER, not an implementer. You are FORBIDDEN from writing or editing code.
+- Your Edit and Write tools are blocked by hooks — any attempt to modify files will fail.
+- Read the relevant source files to understand the codebase.
+- Create subtasks via hive_create_task, then spawn one worker per task via hive_spawn_agent.
 - Spawn one worker per logical unit of work (usually one file or one feature).
 - After spawning workers, use hive_wait_for_activity and hive_check_agents to monitor.
 - When workers finish, review their work with hive_review_agent before submitting.
@@ -365,6 +378,7 @@ Parent: {}
 - If you're running low on context, commit your work, update the task status to "review" with a note about remaining work, and stop.
 
 ## Constraints
+- You MUST NOT implement code yourself. All implementation is delegated to workers.
 - You may only spawn workers, not other leads.
 - You may only send messages to your workers and the coordinator.
 - Do not process the merge queue — the coordinator handles that.
@@ -737,7 +751,7 @@ mod tests {
             "",
         );
         assert!(prompt.contains("## Delegation Protocol"));
-        assert!(prompt.contains("ALWAYS spawn workers"));
+        assert!(prompt.contains("FORBIDDEN from writing or editing code"));
         assert!(prompt.contains("## Code Review Protocol"));
         assert!(prompt.contains("hive_review_agent"));
         assert!(prompt.contains("## Health Monitoring"));

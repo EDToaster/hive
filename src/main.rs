@@ -209,12 +209,20 @@ fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
         "hooks": {
             "PostToolUse": [{
                 "matcher": "*",
-                "hooks": [{
-                    "type": "command",
-                    "command": format!(
-                        "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent coordinator --tool {{}} --status success"
-                    )
-                }]
+                "hooks": [
+                    {
+                        "type": "command",
+                        "command": format!(
+                            "hive heartbeat --run {run_id} --agent coordinator"
+                        )
+                    },
+                    {
+                        "type": "command",
+                        "command": format!(
+                            "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent coordinator --tool {{}} --status success"
+                        )
+                    }
+                ]
             }]
         }
     });
