@@ -380,6 +380,7 @@ impl HiveMcp {
                 "approved" => TaskStatus::Approved,
                 "queued" => TaskStatus::Queued,
                 "merged" => TaskStatus::Merged,
+                "skipped" => TaskStatus::Skipped,
                 "failed" => TaskStatus::Failed,
                 _ => {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -418,6 +419,20 @@ impl HiveMcp {
                         ),
                     );
                 }
+
+                // Auto-close subtasks when parent is merged or skipped
+                if matches!(task.status, TaskStatus::Merged | TaskStatus::Skipped)
+                    && let Ok(closed) =
+                        state.close_subtasks(&self.run_id, &task.id, task.status)
+                {
+                    for sub in &closed {
+                        eprintln!(
+                            "Auto-closed subtask {} '{}' as {:?}",
+                            sub.id, sub.title, task.status
+                        );
+                    }
+                }
+
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Updated task '{}': status={:?}",
                     task.id, task.status
@@ -946,13 +961,23 @@ impl HiveMcp {
 
                 let mut warnings = Vec::new();
 
-                // Update task status
+                // Update task status and auto-close subtasks
                 match state.load_task(&self.run_id, &entry.task_id) {
                     Ok(mut task) => {
                         task.status = TaskStatus::Merged;
                         task.updated_at = Utc::now();
                         if let Err(e) = state.save_task(&self.run_id, &task) {
                             warnings.push(format!("Warning: failed to update task status: {e}"));
+                        }
+                        if let Ok(closed) =
+                            state.close_subtasks(&self.run_id, &entry.task_id, TaskStatus::Merged)
+                        {
+                            for sub in &closed {
+                                eprintln!(
+                                    "Auto-closed subtask {} '{}' as Merged",
+                                    sub.id, sub.title
+                                );
+                            }
                         }
                     }
                     Err(e) => warnings.push(format!("Warning: failed to load task: {e}")),

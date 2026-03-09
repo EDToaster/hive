@@ -228,6 +228,34 @@ impl HiveState {
         Ok(unblocked)
     }
 
+    pub fn close_subtasks(
+        &self,
+        run_id: &str,
+        parent_task_id: &str,
+        status: crate::types::TaskStatus,
+    ) -> Result<Vec<Task>, String> {
+        let tasks = self.list_tasks(run_id)?;
+        let mut closed = Vec::new();
+
+        for mut task in tasks {
+            if task.parent_task.as_deref() == Some(parent_task_id)
+                && !matches!(
+                    task.status,
+                    crate::types::TaskStatus::Merged
+                        | crate::types::TaskStatus::Skipped
+                        | crate::types::TaskStatus::Failed
+                )
+            {
+                task.status = status;
+                task.updated_at = chrono::Utc::now();
+                self.save_task(run_id, &task)?;
+                closed.push(task);
+            }
+        }
+
+        Ok(closed)
+    }
+
     // --- Agent CRUD ---
 
     pub fn agents_dir(&self, run_id: &str) -> PathBuf {
@@ -1695,5 +1723,79 @@ mod tests {
 
         let unblocked = state.find_newly_unblocked_tasks("run-1", "task-1").unwrap();
         assert!(unblocked.is_empty());
+    }
+
+    // --- close_subtasks ---
+
+    #[test]
+    fn close_subtasks_closes_active_children() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let parent = make_task("task-parent", TaskStatus::Merged);
+        state.save_task("run-1", &parent).unwrap();
+
+        let mut child1 = make_task("task-child-1", TaskStatus::Active);
+        child1.parent_task = Some("task-parent".into());
+        state.save_task("run-1", &child1).unwrap();
+
+        let mut child2 = make_task("task-child-2", TaskStatus::Review);
+        child2.parent_task = Some("task-parent".into());
+        state.save_task("run-1", &child2).unwrap();
+
+        let closed = state
+            .close_subtasks("run-1", "task-parent", TaskStatus::Merged)
+            .unwrap();
+        assert_eq!(closed.len(), 2);
+
+        let c1 = state.load_task("run-1", "task-child-1").unwrap();
+        assert_eq!(c1.status, TaskStatus::Merged);
+        let c2 = state.load_task("run-1", "task-child-2").unwrap();
+        assert_eq!(c2.status, TaskStatus::Merged);
+    }
+
+    #[test]
+    fn close_subtasks_skips_already_terminal() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let mut child_merged = make_task("task-child-merged", TaskStatus::Merged);
+        child_merged.parent_task = Some("task-parent".into());
+        state.save_task("run-1", &child_merged).unwrap();
+
+        let mut child_failed = make_task("task-child-failed", TaskStatus::Failed);
+        child_failed.parent_task = Some("task-parent".into());
+        state.save_task("run-1", &child_failed).unwrap();
+
+        let closed = state
+            .close_subtasks("run-1", "task-parent", TaskStatus::Merged)
+            .unwrap();
+        assert!(closed.is_empty());
+    }
+
+    #[test]
+    fn close_subtasks_only_affects_direct_children() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let mut child = make_task("task-child", TaskStatus::Active);
+        child.parent_task = Some("task-parent".into());
+        state.save_task("run-1", &child).unwrap();
+
+        let mut unrelated = make_task("task-unrelated", TaskStatus::Active);
+        unrelated.parent_task = Some("other-parent".into());
+        state.save_task("run-1", &unrelated).unwrap();
+
+        let closed = state
+            .close_subtasks("run-1", "task-parent", TaskStatus::Skipped)
+            .unwrap();
+        assert_eq!(closed.len(), 1);
+        assert_eq!(closed[0].id, "task-child");
+
+        let unrelated_reloaded = state.load_task("run-1", "task-unrelated").unwrap();
+        assert_eq!(unrelated_reloaded.status, TaskStatus::Active);
     }
 }

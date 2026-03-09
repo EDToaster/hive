@@ -322,6 +322,7 @@ fn cmd_status() -> Result<(), String> {
         (types::TaskStatus::Approved, "approved", GREEN),
         (types::TaskStatus::Queued, "queued", YELLOW),
         (types::TaskStatus::Merged, "merged", RESET),
+        (types::TaskStatus::Skipped, "skipped", RESET),
         (types::TaskStatus::Failed, "failed", RED),
     ] {
         let count = task_count(status);
@@ -701,11 +702,13 @@ fn cmd_summary(run: Option<String>) -> Result<(), String> {
     // Task counts
     let task_count = |s: types::TaskStatus| tasks.iter().filter(|t| t.status == s).count();
     let merged = task_count(types::TaskStatus::Merged);
+    let skipped = task_count(types::TaskStatus::Skipped);
     let task_failed = task_count(types::TaskStatus::Failed);
     println!(
-        "Tasks:  {} created, {} merged, {} failed",
+        "Tasks:  {} created, {} merged, {} skipped, {} failed",
         tasks.len(),
         merged,
+        skipped,
         task_failed,
     );
 
@@ -897,6 +900,7 @@ fn cmd_watch(interval: u64) -> Result<(), String> {
             (types::TaskStatus::Pending, "pending"),
             (types::TaskStatus::Review, "review"),
             (types::TaskStatus::Merged, "merged"),
+            (types::TaskStatus::Skipped, "skipped"),
             (types::TaskStatus::Failed, "failed"),
         ] {
             let c = count_tasks(status);

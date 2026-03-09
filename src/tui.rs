@@ -218,7 +218,7 @@ fn agent_status_color(s: AgentStatus) -> Color {
 fn task_status_color(s: TaskStatus) -> Color {
     match s {
         TaskStatus::Active | TaskStatus::Approved => Color::Green,
-        TaskStatus::Merged => Color::LightBlue,
+        TaskStatus::Merged | TaskStatus::Skipped => Color::LightBlue,
         TaskStatus::Queued | TaskStatus::Review | TaskStatus::Blocked => Color::Yellow,
         TaskStatus::Pending => Color::Gray,
         TaskStatus::Failed => Color::Red,
@@ -229,6 +229,7 @@ fn task_status_bullet(s: TaskStatus) -> &'static str {
     match s {
         TaskStatus::Active => "\u{25CF} active",
         TaskStatus::Merged => "\u{25CF} merged",
+        TaskStatus::Skipped => "\u{25CB} skipped",
         TaskStatus::Queued => "\u{25C9} queued",
         TaskStatus::Review => "\u{25C9} review",
         TaskStatus::Pending => "\u{25CB} pending",
@@ -664,6 +665,7 @@ fn render_stats_bar(
     let task_statuses = [
         TaskStatus::Active,
         TaskStatus::Merged,
+        TaskStatus::Skipped,
         TaskStatus::Queued,
         TaskStatus::Review,
         TaskStatus::Pending,

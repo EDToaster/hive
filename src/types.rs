@@ -53,6 +53,7 @@ pub enum TaskStatus {
     Approved,
     Queued,
     Merged,
+    Skipped,
     Failed,
 }
 
@@ -239,6 +240,7 @@ mod tests {
             TaskStatus::Approved,
             TaskStatus::Queued,
             TaskStatus::Merged,
+            TaskStatus::Skipped,
             TaskStatus::Failed,
         ];
         for variant in variants {
