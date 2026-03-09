@@ -453,6 +453,7 @@ mod tests {
             domain: None,
             created_at: now,
             updated_at: now,
+            review_count: 0,
         }
     }
 
