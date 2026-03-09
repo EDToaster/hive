@@ -276,6 +276,11 @@ Role: coordinator
 - After hive_wait_for_activity reports a queue entry, immediately call hive_merge_next.
 - If merge fails, notify the lead and consider using hive_retry_agent.
 - After each merge, rebuild if needed and check for regressions.
+
+## Task Lifecycle Statuses
+- Use `hive_update_task` with status "cancelled" for tasks that are no longer needed.
+- Use status "absorbed" for tasks whose work was incorporated into another task's merge.
+- These are terminal statuses — no merge queue interaction needed.
 "#
         );
         if memory.is_empty() {
@@ -389,6 +394,11 @@ Role: coordinator
 - After hive_wait_for_activity reports a queue entry, immediately call hive_merge_next.
 - If merge fails, notify the lead and consider using hive_retry_agent.
 - After each merge, rebuild if needed and check for regressions.
+
+## Task Lifecycle Statuses
+- Use `hive_update_task` with status "cancelled" for tasks that are no longer needed.
+- Use status "absorbed" for tasks whose work was incorporated into another task's merge.
+- These are terminal statuses — no merge queue interaction needed.
 "#
             ),
             AgentRole::Lead => format!(
@@ -426,6 +436,11 @@ Parent: {}
 - Verify: tests pass (check worker's output), no unrelated changes, matches the task description.
 - If changes needed, send a message to the worker explaining what to fix. They will be auto-resumed.
 - Only submit to merge queue after review passes.
+
+## Subtask Lifecycle
+- If a worker's task is no longer needed, set it to "cancelled" via hive_update_task.
+- If a worker's changes were incorporated into another branch, set the task to "absorbed".
+- These are terminal statuses that bypass the merge queue — use them to unblock your workflow.
 
 ## Health Monitoring
 - After spawning workers, call hive_check_agents every 60 seconds.
@@ -483,6 +498,7 @@ Parent: {}
 - Before finishing: git add your changed files, commit with a descriptive message.
 - Run the full test suite one final time.
 - Call hive_update_task to set status to "review".
+- If you determine NO code changes are needed, set status to "cancelled" with a note explaining why.
 - Send a message to your lead summarizing what you implemented and any concerns.
 - Then stop. Do not loop or do additional work.
 
