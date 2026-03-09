@@ -465,18 +465,13 @@ impl HiveMcp {
                     )]));
                 }
             }
-            AgentRole::Reviewer => {
-                // Reviewers can only message the coordinator
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem => {
+                // Reviewers/Planner/Postmortem can only message the coordinator
                 if p.to != "coordinator" {
                     return Ok(CallToolResult::error(vec![Content::text(
                         "Reviewers can only send messages to the coordinator.",
                     )]));
                 }
-            }
-            AgentRole::Planner | AgentRole::Postmortem => {
-                return Ok(CallToolResult::error(vec![Content::text(
-                    "Planner and postmortem agents cannot send messages.",
-                )]));
             }
         }
 

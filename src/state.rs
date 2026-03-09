@@ -2,6 +2,7 @@ use crate::types::*;
 use chrono::{DateTime, Utc};
 use fs2::FileExt;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 /// Configuration loaded from `.hive/config.yaml`.
@@ -423,6 +424,171 @@ impl HiveState {
 
     pub fn worktree_path(&self, run_id: &str, agent_id: &str) -> PathBuf {
         self.worktrees_dir(run_id).join(agent_id)
+    }
+
+    // --- Memory ---
+
+    pub fn memory_dir(&self) -> PathBuf {
+        self.hive_dir().join("memory")
+    }
+
+    pub fn load_operations(&self) -> Vec<OperationalEntry> {
+        let path = self.memory_dir().join("operations.jsonl");
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    pub fn save_operation(&self, entry: &OperationalEntry) -> Result<(), String> {
+        let dir = self.memory_dir();
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("operations.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+        writeln!(file, "{json}").map_err(|e| e.to_string())
+    }
+
+    pub fn load_conventions(&self) -> String {
+        let path = self.memory_dir().join("conventions.md");
+        fs::read_to_string(&path).unwrap_or_default()
+    }
+
+    pub fn save_conventions(&self, content: &str) -> Result<(), String> {
+        let dir = self.memory_dir();
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        atomic_write(&dir.join("conventions.md"), content)
+    }
+
+    pub fn load_failures(&self) -> Vec<FailureEntry> {
+        let path = self.memory_dir().join("failures.jsonl");
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    pub fn save_failure(&self, entry: &FailureEntry) -> Result<(), String> {
+        let dir = self.memory_dir();
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("failures.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(entry).map_err(|e| e.to_string())?;
+        writeln!(file, "{json}").map_err(|e| e.to_string())
+    }
+
+    pub fn prune_memory(&self) -> Result<(), String> {
+        // Prune operations to last 10
+        let ops = self.load_operations();
+        if ops.len() > 10 {
+            let kept = &ops[ops.len() - 10..];
+            let dir = self.memory_dir();
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let lines: Vec<String> = kept
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap())
+                .collect();
+            atomic_write(&dir.join("operations.jsonl"), &format!("{}\n", lines.join("\n")))?;
+        }
+
+        // Prune failures to last 30
+        let fails = self.load_failures();
+        if fails.len() > 30 {
+            let kept = &fails[fails.len() - 30..];
+            let dir = self.memory_dir();
+            fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let lines: Vec<String> = kept
+                .iter()
+                .map(|e| serde_json::to_string(e).unwrap())
+                .collect();
+            atomic_write(&dir.join("failures.jsonl"), &format!("{}\n", lines.join("\n")))?;
+        }
+
+        Ok(())
+    }
+
+    pub fn load_memory_for_prompt(&self, role: &AgentRole) -> String {
+        if matches!(role, AgentRole::Postmortem) {
+            return String::new();
+        }
+
+        let mut sections = Vec::new();
+
+        let include_operations = matches!(role, AgentRole::Coordinator | AgentRole::Planner);
+        let include_conventions = !matches!(role, AgentRole::Coordinator);
+        let include_failures = matches!(
+            role,
+            AgentRole::Lead | AgentRole::Worker | AgentRole::Reviewer
+        );
+
+        if include_operations {
+            let ops = self.load_operations();
+            if !ops.is_empty() {
+                let mut s = String::from("### Recent Operations\n");
+                for op in &ops {
+                    s.push_str(&format!(
+                        "- Run {}: {} tasks, {} failed, {} agents, ${:.2}\n",
+                        op.run_id, op.tasks_total, op.tasks_failed, op.agents_spawned, op.total_cost_usd
+                    ));
+                    if !op.learnings.is_empty() {
+                        s.push_str(&format!("  Learnings: {}\n", op.learnings.join(", ")));
+                    }
+                }
+                sections.push(s);
+            }
+        }
+
+        if include_conventions {
+            let conv = self.load_conventions();
+            if !conv.is_empty() {
+                sections.push(format!("### Conventions\n{conv}\n"));
+            }
+        }
+
+        if include_failures {
+            let fails = self.load_failures();
+            if !fails.is_empty() {
+                let mut s = String::from("### Known Failure Patterns\n");
+                for f in &fails {
+                    s.push_str(&format!("- Pattern: {} — Context: {}\n", f.pattern, f.context));
+                }
+                sections.push(s);
+            }
+        }
+
+        if sections.is_empty() {
+            return String::new();
+        }
+
+        format!("## Project Memory\n\n{}", sections.join("\n"))
+    }
+
+    // --- Planner Spec ---
+
+    pub fn save_planner_spec(&self, run_id: &str, spec: &str) -> Result<(), String> {
+        self.save_spec(run_id, spec)
+    }
+
+    pub fn load_planner_spec(&self, run_id: &str) -> Option<String> {
+        self.load_spec(run_id).ok()
     }
 }
 
@@ -1192,6 +1358,190 @@ mod tests {
         .unwrap();
         let config = state.load_config();
         assert!(config.budget_usd.is_none());
+    }
+
+    // --- Memory CRUD ---
+
+    fn make_operation(run_id: &str, tasks_total: u32) -> OperationalEntry {
+        OperationalEntry {
+            run_id: run_id.into(),
+            created_at: chrono::Utc::now(),
+            tasks_total,
+            tasks_failed: 0,
+            agents_spawned: 2,
+            total_cost_usd: 1.50,
+            learnings: vec!["test learning".into()],
+            spec_quality: "good".into(),
+            team_sizing: "appropriate".into(),
+        }
+    }
+
+    fn make_failure(pattern: &str) -> FailureEntry {
+        FailureEntry {
+            run_id: "run-test".into(),
+            created_at: chrono::Utc::now(),
+            pattern: pattern.into(),
+            context: "test context".into(),
+            run_number: 1,
+        }
+    }
+
+    #[test]
+    fn test_save_and_load_operations() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_operation(&make_operation("run-1", 5)).unwrap();
+        state.save_operation(&make_operation("run-2", 3)).unwrap();
+        let ops = state.load_operations();
+        assert_eq!(ops.len(), 2);
+        assert_eq!(ops[0].run_id, "run-1");
+        assert_eq!(ops[0].tasks_total, 5);
+        assert_eq!(ops[1].run_id, "run-2");
+    }
+
+    #[test]
+    fn test_save_and_load_failures() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_failure(&make_failure("timeout")).unwrap();
+        state.save_failure(&make_failure("oom")).unwrap();
+        let fails = state.load_failures();
+        assert_eq!(fails.len(), 2);
+        assert_eq!(fails[0].pattern, "timeout");
+        assert_eq!(fails[1].pattern, "oom");
+    }
+
+    #[test]
+    fn test_save_and_load_conventions() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_conventions("Use snake_case.").unwrap();
+        let conv = state.load_conventions();
+        assert_eq!(conv, "Use snake_case.");
+    }
+
+    #[test]
+    fn test_load_operations_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let ops = state.load_operations();
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn test_load_failures_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let fails = state.load_failures();
+        assert!(fails.is_empty());
+    }
+
+    #[test]
+    fn test_load_conventions_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let conv = state.load_conventions();
+        assert!(conv.is_empty());
+    }
+
+    #[test]
+    fn test_prune_operations() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        for i in 0..15 {
+            state
+                .save_operation(&make_operation(&format!("run-{i}"), i))
+                .unwrap();
+        }
+        assert_eq!(state.load_operations().len(), 15);
+        state.prune_memory().unwrap();
+        let ops = state.load_operations();
+        assert_eq!(ops.len(), 10);
+        assert_eq!(ops[0].run_id, "run-5");
+        assert_eq!(ops[9].run_id, "run-14");
+    }
+
+    #[test]
+    fn test_prune_failures() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        for i in 0..35 {
+            state
+                .save_failure(&make_failure(&format!("pattern-{i}")))
+                .unwrap();
+        }
+        assert_eq!(state.load_failures().len(), 35);
+        state.prune_memory().unwrap();
+        let fails = state.load_failures();
+        assert_eq!(fails.len(), 30);
+        assert_eq!(fails[0].pattern, "pattern-5");
+        assert_eq!(fails[29].pattern, "pattern-34");
+    }
+
+    #[test]
+    fn test_load_memory_for_prompt_coordinator() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_operation(&make_operation("run-1", 5)).unwrap();
+        let prompt = state.load_memory_for_prompt(&AgentRole::Coordinator);
+        assert!(prompt.contains("## Project Memory"));
+        assert!(prompt.contains("### Recent Operations"));
+        assert!(prompt.contains("run-1"));
+    }
+
+    #[test]
+    fn test_load_memory_for_prompt_worker() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_conventions("Use snake_case.").unwrap();
+        state.save_failure(&make_failure("timeout")).unwrap();
+        let prompt = state.load_memory_for_prompt(&AgentRole::Worker);
+        assert!(prompt.contains("### Conventions"));
+        assert!(prompt.contains("Use snake_case."));
+        assert!(prompt.contains("### Known Failure Patterns"));
+        assert!(prompt.contains("timeout"));
+        assert!(!prompt.contains("### Recent Operations"));
+    }
+
+    #[test]
+    fn test_load_memory_for_prompt_planner() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_operation(&make_operation("run-1", 5)).unwrap();
+        state.save_conventions("Use snake_case.").unwrap();
+        let prompt = state.load_memory_for_prompt(&AgentRole::Planner);
+        assert!(prompt.contains("### Recent Operations"));
+        assert!(prompt.contains("### Conventions"));
+        assert!(!prompt.contains("### Known Failure Patterns"));
+    }
+
+    #[test]
+    fn test_load_memory_for_prompt_postmortem() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_operation(&make_operation("run-1", 5)).unwrap();
+        let prompt = state.load_memory_for_prompt(&AgentRole::Postmortem);
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn test_load_memory_for_prompt_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let prompt = state.load_memory_for_prompt(&AgentRole::Coordinator);
+        assert!(prompt.is_empty());
+    }
+
+    #[test]
+    fn test_planner_spec_save_and_load() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        state
+            .save_planner_spec("run-1", "# My Spec\nDo stuff.")
+            .unwrap();
+        let loaded = state.load_planner_spec("run-1");
+        assert_eq!(loaded.as_deref(), Some("# My Spec\nDo stuff."));
     }
 
     #[test]
