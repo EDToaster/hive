@@ -29,7 +29,7 @@ impl AgentSpawner {
         let claude_dir = worktree_path.join(".claude");
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
 
-        let settings_json = if role == AgentRole::Reviewer {
+        let settings_json = if matches!(role, AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem) {
             serde_json::json!({
                 "hooks": {
                     "PreToolUse": [{
@@ -450,6 +450,33 @@ Parent: {}
 - After submitting your verdict, stop immediately.
 "#,
                 parent.unwrap_or("coordinator")
+            ),
+            AgentRole::Planner => format!(
+                r#"You are a planner agent in a hive swarm.
+Agent ID: {agent_id}
+Role: planner
+
+## Your Task
+{task_description}
+
+## Constraints
+- You are READ-ONLY. Do NOT modify any files.
+- Analyze the codebase and write a spec.
+- Use hive_save_spec to save your spec when done.
+"#
+            ),
+            AgentRole::Postmortem => format!(
+                r#"You are a post-mortem agent in a hive swarm.
+Agent ID: {agent_id}
+Role: postmortem
+
+## Your Task
+{task_description}
+
+## Constraints
+- Analyze the completed run and extract learnings.
+- Use hive_save_memory to save memory entries.
+"#
             ),
         }
     }

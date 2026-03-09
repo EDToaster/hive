@@ -10,6 +10,8 @@ pub enum AgentRole {
     Lead,
     Worker,
     Reviewer,
+    Planner,
+    Postmortem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,6 +149,32 @@ pub struct AgentCost {
     pub session_duration_secs: u64,
 }
 
+// --- Run Memory ---
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationalEntry {
+    pub run_id: String,
+    pub created_at: DateTime<Utc>,
+    pub tasks_total: u32,
+    pub tasks_failed: u32,
+    pub agents_spawned: u32,
+    pub total_cost_usd: f64,
+    pub learnings: Vec<String>,
+    pub spec_quality: String,
+    pub team_sizing: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureEntry {
+    pub run_id: String,
+    pub created_at: DateTime<Utc>,
+    pub pattern: String,
+    pub context: String,
+    pub run_number: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +200,20 @@ mod tests {
         );
         let role: AgentRole = serde_json::from_str("\"reviewer\"").unwrap();
         assert_eq!(role, AgentRole::Reviewer);
+
+        assert_eq!(
+            serde_json::to_string(&AgentRole::Planner).unwrap(),
+            "\"planner\""
+        );
+        let role: AgentRole = serde_json::from_str("\"planner\"").unwrap();
+        assert_eq!(role, AgentRole::Planner);
+
+        assert_eq!(
+            serde_json::to_string(&AgentRole::Postmortem).unwrap(),
+            "\"postmortem\""
+        );
+        let role: AgentRole = serde_json::from_str("\"postmortem\"").unwrap();
+        assert_eq!(role, AgentRole::Postmortem);
     }
 
     #[test]
@@ -369,5 +411,47 @@ mod tests {
         let back: RunMetadata = serde_json::from_str(&json).unwrap();
         assert_eq!(back.id, "run-abc");
         assert_eq!(back.status, RunStatus::Active);
+    }
+
+    #[test]
+    fn operational_entry_roundtrip() {
+        let entry = OperationalEntry {
+            run_id: "run-1".into(),
+            created_at: chrono::Utc::now(),
+            tasks_total: 10,
+            tasks_failed: 2,
+            agents_spawned: 5,
+            total_cost_usd: 3.50,
+            learnings: vec!["lesson 1".into(), "lesson 2".into()],
+            spec_quality: "good".into(),
+            team_sizing: "appropriate".into(),
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: OperationalEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.run_id, "run-1");
+        assert_eq!(back.tasks_total, 10);
+        assert_eq!(back.tasks_failed, 2);
+        assert_eq!(back.agents_spawned, 5);
+        assert!((back.total_cost_usd - 3.50).abs() < f64::EPSILON);
+        assert_eq!(back.learnings.len(), 2);
+        assert_eq!(back.spec_quality, "good");
+        assert_eq!(back.team_sizing, "appropriate");
+    }
+
+    #[test]
+    fn failure_entry_roundtrip() {
+        let entry = FailureEntry {
+            run_id: "run-1".into(),
+            created_at: chrono::Utc::now(),
+            pattern: "timeout on large files".into(),
+            context: "worker-3 failed processing".into(),
+            run_number: 5,
+        };
+        let json = serde_json::to_string(&entry).unwrap();
+        let back: FailureEntry = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.run_id, "run-1");
+        assert_eq!(back.pattern, "timeout on large files");
+        assert_eq!(back.context, "worker-3 failed processing");
+        assert_eq!(back.run_number, 5);
     }
 }

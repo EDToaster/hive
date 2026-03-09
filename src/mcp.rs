@@ -209,9 +209,11 @@ impl HiveMcp {
             "lead" => AgentRole::Lead,
             "worker" => AgentRole::Worker,
             "reviewer" => AgentRole::Reviewer,
+            "planner" => AgentRole::Planner,
+            "postmortem" => AgentRole::Postmortem,
             _ => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Invalid role. Use 'lead', 'worker', or 'reviewer'.",
+                    "Invalid role. Use 'lead', 'worker', 'reviewer', 'planner', or 'postmortem'.",
                 )]));
             }
         };
@@ -221,6 +223,7 @@ impl HiveMcp {
         let allowed = matches!(
             (caller_role, role),
             (AgentRole::Coordinator, AgentRole::Lead)
+                | (AgentRole::Coordinator, AgentRole::Planner)
                 | (AgentRole::Lead, AgentRole::Worker)
                 | (AgentRole::Lead, AgentRole::Reviewer)
         );
@@ -462,8 +465,8 @@ impl HiveMcp {
                     )]));
                 }
             }
-            AgentRole::Reviewer => {
-                // Reviewers can only message the coordinator
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem => {
+                // Reviewers/Planner/Postmortem can only message the coordinator
                 if p.to != "coordinator" {
                     return Ok(CallToolResult::error(vec![Content::text(
                         "Reviewers can only send messages to the coordinator.",
@@ -1241,9 +1244,9 @@ impl HiveMcp {
                     )]));
                 }
             }
-            AgentRole::Worker | AgentRole::Reviewer => {
+            AgentRole::Worker | AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Workers and reviewers cannot retry agents.",
+                    "Workers, reviewers, planners, and postmortem agents cannot retry agents.",
                 )]));
             }
         }
