@@ -10,6 +10,8 @@ pub enum AgentRole {
     Lead,
     Worker,
     Reviewer,
+    Planner,
+    Postmortem,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -145,6 +147,26 @@ pub struct AgentCost {
     pub output_tokens: u64,
     pub cost_usd: f64,
     pub session_duration_secs: u64,
+}
+
+// --- Memory Types ---
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OperationalEntry {
+    pub run_id: String,
+    pub task_count: u32,
+    pub failed_count: u32,
+    pub agent_count: u32,
+    pub cost_usd: f64,
+    pub learnings: Vec<String>,
+    pub timestamp: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureEntry {
+    pub pattern: String,
+    pub context: String,
+    pub timestamp: DateTime<Utc>,
 }
 
 #[cfg(test)]

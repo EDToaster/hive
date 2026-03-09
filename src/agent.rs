@@ -451,6 +451,33 @@ Parent: {}
 "#,
                 parent.unwrap_or("coordinator")
             ),
+            AgentRole::Planner => format!(
+                r#"You are a planner agent in a hive swarm.
+Agent ID: {agent_id}
+Role: planner
+
+## Your Task
+{task_description}
+
+## Constraints
+- You are READ-ONLY. Do NOT modify any source files.
+- Analyze the codebase and produce a spec.
+- Save the spec via hive_save_spec when done.
+"#
+            ),
+            AgentRole::Postmortem => format!(
+                r#"You are a post-mortem agent in a hive swarm.
+Agent ID: {agent_id}
+Role: postmortem
+
+## Your Task
+{task_description}
+
+## Constraints
+- Analyze the completed run and extract learnings.
+- Save memory entries via hive_save_memory.
+"#
+            ),
         }
     }
 
