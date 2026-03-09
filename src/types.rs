@@ -9,6 +9,7 @@ pub enum AgentRole {
     Coordinator,
     Lead,
     Worker,
+    Reviewer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +79,8 @@ pub struct Task {
     pub domain: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub review_count: u32,
 }
 
 // --- Message Types ---
@@ -299,6 +302,7 @@ mod tests {
             domain: Some("backend".into()),
             created_at: now,
             updated_at: now,
+            review_count: 0,
         };
         let json = serde_json::to_string(&task).unwrap();
         let back: Task = serde_json::from_str(&json).unwrap();
