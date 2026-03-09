@@ -1,4 +1,5 @@
 /target
 .hive/
 .mcp.json
+.claude/worktrees/
 CLAUDE.local.md
