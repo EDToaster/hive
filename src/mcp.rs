@@ -1,8 +1,8 @@
 use crate::logging::LogDb;
 use crate::state::HiveState;
 use crate::types::{
-    AgentRole, AgentStatus, MergeQueue, MergeQueueEntry, Message, MessageType, Task, TaskStatus,
-    Urgency,
+    AgentRole, AgentStatus, FailureEntry, MergeQueue, MergeQueueEntry, Message, MessageType,
+    OperationalEntry, Task, TaskStatus, Urgency,
 };
 use chrono::Utc;
 use rmcp::handler::server::ServerHandler;
@@ -160,6 +160,20 @@ pub struct ReviewVerdictParams {
     pub verdict: String,
     /// Feedback message (required for request-changes and reject)
     pub feedback: Option<String>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SaveMemoryParams {
+    /// Memory type: "operation", "convention", or "failure"
+    pub memory_type: String,
+    /// Content: JSON string for operation/failure entries, markdown for conventions
+    pub content: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+pub struct SaveSpecParams {
+    /// Full spec markdown content
+    pub spec: String,
 }
 
 #[tool_router]
@@ -950,7 +964,7 @@ impl HiveMcp {
     )]
     async fn hive_check_agents(&self) -> Result<CallToolResult, McpError> {
         if let Err(result) =
-            self.require_role(&[AgentRole::Coordinator, AgentRole::Lead, AgentRole::Reviewer])
+            self.require_role(&[AgentRole::Coordinator, AgentRole::Lead, AgentRole::Reviewer, AgentRole::Planner, AgentRole::Postmortem])
         {
             return Ok(result);
         }
@@ -1475,6 +1489,56 @@ impl HiveMcp {
         Ok(CallToolResult::success(vec![Content::text(
             lines.join("\n"),
         )]))
+    }
+
+    #[tool(description = "Save a memory entry (operation, convention, or failure). Postmortem-only.")]
+    async fn hive_save_memory(
+        &self,
+        params: Parameters<SaveMemoryParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Postmortem]) {
+            return Ok(result);
+        }
+        let p = &params.0;
+        let state = self.state();
+        match p.memory_type.as_str() {
+            "operation" => {
+                let entry: OperationalEntry = serde_json::from_str(&p.content)
+                    .map_err(|e| McpError::invalid_params(format!("Invalid operation JSON: {e}"), None))?;
+                state.save_operation(&entry)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                Ok(CallToolResult::success(vec![Content::text("Saved operation entry.")]))
+            }
+            "convention" => {
+                state.save_conventions(&p.content)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                Ok(CallToolResult::success(vec![Content::text("Saved conventions.")]))
+            }
+            "failure" => {
+                let entry: FailureEntry = serde_json::from_str(&p.content)
+                    .map_err(|e| McpError::invalid_params(format!("Invalid failure JSON: {e}"), None))?;
+                state.save_failure(&entry)
+                    .map_err(|e| McpError::internal_error(e, None))?;
+                Ok(CallToolResult::success(vec![Content::text("Saved failure entry.")]))
+            }
+            _ => Ok(CallToolResult::error(vec![Content::text(
+                "Invalid memory_type. Use 'operation', 'convention', or 'failure'.",
+            )])),
+        }
+    }
+
+    #[tool(description = "Save the generated spec for this run. Planner-only.")]
+    async fn hive_save_spec(
+        &self,
+        params: Parameters<SaveSpecParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Err(result) = self.require_role(&[AgentRole::Planner]) {
+            return Ok(result);
+        }
+        let state = self.state();
+        state.save_planner_spec(&self.run_id, &params.0.spec)
+            .map_err(|e| McpError::internal_error(e, None))?;
+        Ok(CallToolResult::success(vec![Content::text("Spec saved.")]))
     }
 }
 
