@@ -49,6 +49,8 @@ fn main() {
         Commands::Cost { run } => cmd_cost(run),
         Commands::History => cmd_history(),
         Commands::Memory { command } => cmd_memory(command),
+        Commands::Explore { intent } => cmd_explore(&intent),
+        Commands::Mind { command } => cmd_mind(command),
         Commands::Stop => cmd_stop(),
         Commands::Watch { interval } => cmd_watch(interval),
     };
@@ -970,6 +972,176 @@ fn cmd_memory(command: Option<cli::MemoryCommands>) -> Result<(), String> {
     }
 }
 
+fn cmd_explore(intent: &str) -> Result<(), String> {
+    let state = HiveState::discover()?;
+
+    let run_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
+    state.create_run(&run_id)?;
+
+    // Initialize log.db
+    let log_path = state.run_dir(&run_id).join("log.db");
+    LogDb::open(&log_path)?;
+
+    // Save intent as spec
+    state.save_spec(&run_id, intent)?;
+
+    // Generate coordinator prompt for explore mode
+    let codebase_summary =
+        crate::agent::AgentSpawner::generate_codebase_summary(state.repo_root());
+    let memory = state.load_memory_for_prompt(&crate::types::AgentRole::Coordinator);
+    let coordinator_prompt = crate::agent::AgentSpawner::explore_coordinator_prompt(
+        &run_id,
+        intent,
+        &codebase_summary,
+        &memory,
+    );
+
+    // Write coordinator CLAUDE.local.md to the base repo
+    let repo_root = state.repo_root();
+    fs::write(repo_root.join("CLAUDE.local.md"), &coordinator_prompt).map_err(|e| e.to_string())?;
+
+    // Write .claude/settings.local.json for coordinator hooks
+    let claude_dir = repo_root.join(".claude");
+    fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
+    let settings_json = serde_json::json!({
+        "hooks": {
+            "PostToolUse": [{
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!(
+                        "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent coordinator --tool {{}} --status success"
+                    )
+                }]
+            }]
+        }
+    });
+    fs::write(
+        claude_dir.join("settings.local.json"),
+        serde_json::to_string_pretty(&settings_json).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Write .mcp.json for coordinator MCP
+    let mcp_config = serde_json::json!({
+        "mcpServers": {
+            "hive": {
+                "command": "hive",
+                "args": ["mcp", "--run", &run_id, "--agent", "coordinator"]
+            }
+        }
+    });
+    fs::write(
+        repo_root.join(".mcp.json"),
+        serde_json::to_string_pretty(&mcp_config).unwrap(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    // Register coordinator agent (no PID — user launches claude manually)
+    let coordinator = crate::types::Agent {
+        id: "coordinator".to_string(),
+        role: crate::types::AgentRole::Coordinator,
+        status: crate::types::AgentStatus::Running,
+        parent: None,
+        pid: None,
+        worktree: None,
+        heartbeat: Some(chrono::Utc::now()),
+        task_id: None,
+        session_id: None,
+        last_completed_at: None,
+        messages_read_at: None,
+        retry_count: 0,
+    };
+    state.save_agent(&run_id, &coordinator)?;
+
+    println!("Created explore run: {run_id}");
+    println!("Coordinator configured for EXPLORE mode.");
+    println!("Launch Claude Code in this directory to begin.");
+    println!("Run 'hive tui' in another terminal to monitor progress.");
+
+    Ok(())
+}
+
+fn cmd_mind(command: Option<cli::MindCommands>) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let run_id = state.active_run_id()?;
+
+    match command {
+        None => {
+            let discoveries = state.load_discoveries(&run_id);
+            let insights = state.load_insights(&run_id);
+            println!("Hive Mind for run {run_id}:");
+            println!("  Discoveries: {}", discoveries.len());
+            println!("  Insights: {}", insights.len());
+
+            if !discoveries.is_empty() {
+                println!("\n--- Recent Discoveries ---");
+                for disc in discoveries.iter().rev().take(5).rev() {
+                    let content_preview = if disc.content.len() > 80 {
+                        &disc.content[..80]
+                    } else {
+                        &disc.content
+                    };
+                    println!(
+                        "  {} [{}] by {} ({:?}): {}",
+                        disc.id,
+                        disc.tags.join(", "),
+                        disc.agent_id,
+                        disc.confidence,
+                        content_preview
+                    );
+                }
+            }
+
+            if !insights.is_empty() {
+                println!("\n--- Insights ---");
+                for ins in &insights {
+                    println!("  {} [{}]: {}", ins.id, ins.tags.join(", "), ins.content);
+                    println!("    Based on: {}", ins.discovery_ids.join(", "));
+                }
+            }
+
+            Ok(())
+        }
+        Some(cli::MindCommands::Query { query }) => {
+            let result = state.query_mind(&run_id, &query);
+            println!("Hive Mind query: \"{}\"", query);
+            println!(
+                "Found {} discoveries, {} insights",
+                result.discoveries.len(),
+                result.insights.len()
+            );
+
+            if !result.discoveries.is_empty() {
+                println!("\n--- Matching Discoveries ---");
+                for disc in &result.discoveries {
+                    println!(
+                        "  {} [{}] by {} ({:?})",
+                        disc.id,
+                        disc.tags.join(", "),
+                        disc.agent_id,
+                        disc.confidence
+                    );
+                    println!("    {}", disc.content);
+                    if !disc.file_paths.is_empty() {
+                        println!("    Files: {}", disc.file_paths.join(", "));
+                    }
+                }
+            }
+
+            if !result.insights.is_empty() {
+                println!("\n--- Matching Insights ---");
+                for ins in &result.insights {
+                    println!("  {} [{}]: {}", ins.id, ins.tags.join(", "), ins.content);
+                    println!("    Based on: {}", ins.discovery_ids.join(", "));
+                }
+            }
+
+            Ok(())
+        }
+    }
+}
+
 fn cmd_stop() -> Result<(), String> {
     let state = HiveState::discover()?;
     let run_id = state.active_run_id()?;
@@ -1069,4 +1241,31 @@ fn cmd_stop() -> Result<(), String> {
     cmd_summary(Some(run_id))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    #[test]
+    fn test_cli_explore_command() {
+        let cli = crate::cli::Cli::try_parse_from(["hive", "explore", "test intent"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            crate::cli::Commands::Explore { .. }
+        ));
+    }
+
+    #[test]
+    fn test_cli_mind_command() {
+        let cli = crate::cli::Cli::try_parse_from(["hive", "mind"]).unwrap();
+        assert!(matches!(cli.command, crate::cli::Commands::Mind { .. }));
+    }
+
+    #[test]
+    fn test_cli_mind_query_command() {
+        let cli =
+            crate::cli::Cli::try_parse_from(["hive", "mind", "query", "search term"]).unwrap();
+        assert!(matches!(cli.command, crate::cli::Commands::Mind { .. }));
+    }
 }

@@ -141,6 +141,15 @@ pub enum Commands {
         command: Option<MemoryCommands>,
     },
 
+    /// Start an explore run with divergent exploration
+    Explore { intent: String },
+
+    /// View Hive Mind discoveries and insights
+    Mind {
+        #[command(subcommand)]
+        command: Option<MindCommands>,
+    },
+
     /// Stop the current run and clean up worktrees
     Stop,
 
@@ -150,6 +159,12 @@ pub enum Commands {
         #[arg(long, default_value = "10")]
         interval: u64,
     },
+}
+
+#[derive(Subcommand)]
+pub enum MindCommands {
+    /// Search the Hive Mind by keyword
+    Query { query: String },
 }
 
 #[derive(Subcommand)]
