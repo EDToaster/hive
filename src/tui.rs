@@ -775,7 +775,11 @@ fn render_tasks_pane(frame: &mut Frame, area: Rect, tasks: &[Task], ui: &TuiStat
                     Style::default().fg(task_status_color(t.status)),
                 )),
                 Cell::from(assigned.to_string()),
-                Cell::from(t.title.clone()),
+                Cell::from(if t.review_count > 0 {
+                    format!("{} (review cycle {})", t.title, t.review_count)
+                } else {
+                    t.title.clone()
+                }),
             ])
             .style(stripe)
         })
@@ -1015,8 +1019,13 @@ fn render_task_overlay(frame: &mut Frame, area: Rect, task: &Task) {
             " Updated:     {}",
             task.updated_at.format("%H:%M:%S")
         )),
-        Line::from(""),
     ];
+
+    if task.review_count > 0 {
+        lines.push(Line::from(format!(" Reviews:     {}", task.review_count)));
+    }
+
+    lines.push(Line::from(""));
 
     if !task.description.is_empty() {
         lines.push(Line::from(" Description:"));
