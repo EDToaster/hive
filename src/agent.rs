@@ -31,7 +31,7 @@ impl AgentSpawner {
 
         let settings_json = if matches!(
             role,
-            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem | AgentRole::Evaluator
         ) {
             serde_json::json!({
                 "hooks": {
@@ -434,6 +434,14 @@ Parent: {}
 - When done, stop and wait. Do not loop.
 "#,
                 parent.unwrap_or("unknown")
+            ),
+            AgentRole::Explorer => format!(
+                "You are an explorer agent in a hive swarm.\nAgent ID: {agent_id}\nRole: explorer\nParent: {}\n\n## Your Task\n{task_description}\n",
+                parent.unwrap_or("coordinator")
+            ),
+            AgentRole::Evaluator => format!(
+                "You are an evaluator agent in a hive swarm.\nAgent ID: {agent_id}\nRole: evaluator\nParent: {}\n\n## Your Task\n{task_description}\n",
+                parent.unwrap_or("coordinator")
             ),
             AgentRole::Reviewer => format!(
                 r#"You are a reviewer agent in a hive swarm.
@@ -880,5 +888,35 @@ mod tests {
         // Postmortem still gets memory appended (memory filtering is done by load_memory_for_prompt
         // which returns empty for Postmortem), but if passed directly it should still append
         assert!(prompt.contains("Project Memory"));
+    }
+
+    #[test]
+    fn test_explorer_prompt_placeholder() {
+        let prompt = AgentSpawner::generate_prompt(
+            "explorer-1",
+            AgentRole::Explorer,
+            Some("coordinator"),
+            "Explore alternative caching strategies",
+            "",
+        );
+        assert!(prompt.contains("explorer"));
+        assert!(prompt.contains("Agent ID: explorer-1"));
+        assert!(prompt.contains("Explore alternative caching strategies"));
+        assert!(prompt.contains("Parent: coordinator"));
+    }
+
+    #[test]
+    fn test_evaluator_prompt_placeholder() {
+        let prompt = AgentSpawner::generate_prompt(
+            "evaluator-1",
+            AgentRole::Evaluator,
+            Some("coordinator"),
+            "Evaluate explorer branches",
+            "",
+        );
+        assert!(prompt.contains("evaluator"));
+        assert!(prompt.contains("Agent ID: evaluator-1"));
+        assert!(prompt.contains("Evaluate explorer branches"));
+        assert!(prompt.contains("Parent: coordinator"));
     }
 }

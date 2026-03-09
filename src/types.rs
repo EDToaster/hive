@@ -12,6 +12,8 @@ pub enum AgentRole {
     Reviewer,
     Planner,
     Postmortem,
+    Explorer,
+    Evaluator,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,6 +175,47 @@ pub struct FailureEntry {
     pub pattern: String,
     pub context: String,
     pub run_number: u32,
+}
+
+// --- Hive Mind ---
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Confidence {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Discovery {
+    pub id: String,
+    pub run_id: String,
+    pub agent_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub content: String,
+    #[serde(default)]
+    pub file_paths: Vec<String>,
+    pub confidence: Confidence,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Insight {
+    pub id: String,
+    pub run_id: String,
+    pub timestamp: DateTime<Utc>,
+    pub content: String,
+    pub discovery_ids: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MindQueryResult {
+    pub discoveries: Vec<Discovery>,
+    pub insights: Vec<Insight>,
 }
 
 #[cfg(test)]
@@ -453,5 +496,109 @@ mod tests {
         assert_eq!(back.pattern, "timeout on large files");
         assert_eq!(back.context, "worker-3 failed processing");
         assert_eq!(back.run_number, 5);
+    }
+
+    #[test]
+    fn explorer_evaluator_role_roundtrip() {
+        for (variant, expected) in [
+            (AgentRole::Explorer, "\"explorer\""),
+            (AgentRole::Evaluator, "\"evaluator\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+            let back: AgentRole = serde_json::from_str(expected).unwrap();
+            assert_eq!(variant, back);
+        }
+    }
+
+    #[test]
+    fn confidence_all_variants_roundtrip() {
+        for (variant, expected) in [
+            (Confidence::Low, "\"low\""),
+            (Confidence::Medium, "\"medium\""),
+            (Confidence::High, "\"high\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+            let back: Confidence = serde_json::from_str(expected).unwrap();
+            assert_eq!(variant, back);
+        }
+    }
+
+    #[test]
+    fn discovery_struct_roundtrip() {
+        let disc = Discovery {
+            id: "disc-abc".into(),
+            run_id: "run-1".into(),
+            agent_id: "explorer-1".into(),
+            timestamp: chrono::Utc::now(),
+            content: "Found interesting pattern".into(),
+            file_paths: vec!["src/main.rs".into(), "src/lib.rs".into()],
+            confidence: Confidence::High,
+            tags: vec!["architecture".into(), "pattern".into()],
+        };
+        let json = serde_json::to_string(&disc).unwrap();
+        let back: Discovery = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "disc-abc");
+        assert_eq!(back.run_id, "run-1");
+        assert_eq!(back.agent_id, "explorer-1");
+        assert_eq!(back.content, "Found interesting pattern");
+        assert_eq!(back.file_paths.len(), 2);
+        assert_eq!(back.confidence, Confidence::High);
+        assert_eq!(back.tags.len(), 2);
+    }
+
+    #[test]
+    fn discovery_default_fields() {
+        let json = r#"{"id":"d1","run_id":"r1","agent_id":"a1","timestamp":"2026-01-01T00:00:00Z","content":"test","confidence":"medium"}"#;
+        let disc: Discovery = serde_json::from_str(json).unwrap();
+        assert!(disc.file_paths.is_empty());
+        assert!(disc.tags.is_empty());
+    }
+
+    #[test]
+    fn insight_struct_roundtrip() {
+        let insight = Insight {
+            id: "ins-abc".into(),
+            run_id: "run-1".into(),
+            timestamp: chrono::Utc::now(),
+            content: "Synthesized finding".into(),
+            discovery_ids: vec!["disc-1".into(), "disc-2".into()],
+            tags: vec!["summary".into()],
+        };
+        let json = serde_json::to_string(&insight).unwrap();
+        let back: Insight = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "ins-abc");
+        assert_eq!(back.content, "Synthesized finding");
+        assert_eq!(back.discovery_ids.len(), 2);
+        assert_eq!(back.tags, vec!["summary"]);
+    }
+
+    #[test]
+    fn mind_query_result_roundtrip() {
+        let result = MindQueryResult {
+            discoveries: vec![Discovery {
+                id: "disc-1".into(),
+                run_id: "run-1".into(),
+                agent_id: "explorer-1".into(),
+                timestamp: chrono::Utc::now(),
+                content: "Found something".into(),
+                file_paths: vec![],
+                confidence: Confidence::Low,
+                tags: vec![],
+            }],
+            insights: vec![Insight {
+                id: "ins-1".into(),
+                run_id: "run-1".into(),
+                timestamp: chrono::Utc::now(),
+                content: "Key insight".into(),
+                discovery_ids: vec!["disc-1".into()],
+                tags: vec![],
+            }],
+        };
+        let json = serde_json::to_string(&result).unwrap();
+        let back: MindQueryResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.discoveries.len(), 1);
+        assert_eq!(back.insights.len(), 1);
+        assert_eq!(back.discoveries[0].id, "disc-1");
+        assert_eq!(back.insights[0].id, "ins-1");
     }
 }

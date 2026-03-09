@@ -528,6 +528,97 @@ impl HiveState {
         Ok(())
     }
 
+    // --- Hive Mind ---
+
+    pub fn mind_dir(&self, run_id: &str) -> PathBuf {
+        self.run_dir(run_id).join("mind")
+    }
+
+    pub fn save_discovery(&self, run_id: &str, discovery: &Discovery) -> Result<(), String> {
+        let dir = self.mind_dir(run_id);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("discoveries.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(discovery).map_err(|e| e.to_string())?;
+        writeln!(file, "{json}").map_err(|e| e.to_string())
+    }
+
+    pub fn load_discoveries(&self, run_id: &str) -> Vec<Discovery> {
+        let path = self.mind_dir(run_id).join("discoveries.jsonl");
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    pub fn save_insight(&self, run_id: &str, insight: &Insight) -> Result<(), String> {
+        let dir = self.mind_dir(run_id);
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let path = dir.join("insights.jsonl");
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| e.to_string())?;
+        let json = serde_json::to_string(insight).map_err(|e| e.to_string())?;
+        writeln!(file, "{json}").map_err(|e| e.to_string())
+    }
+
+    pub fn load_insights(&self, run_id: &str) -> Vec<Insight> {
+        let path = self.mind_dir(run_id).join("insights.jsonl");
+        let content = match fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => return vec![],
+        };
+        content
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect()
+    }
+
+    pub fn query_mind(&self, run_id: &str, query: &str) -> MindQueryResult {
+        let words: Vec<String> = query.split_whitespace().map(|w| w.to_lowercase()).collect();
+        let discoveries = self.load_discoveries(run_id);
+        let insights = self.load_insights(run_id);
+
+        let matching_discoveries = discoveries
+            .into_iter()
+            .filter(|d| {
+                let content_lower = d.content.to_lowercase();
+                words.iter().any(|w| {
+                    content_lower.contains(w)
+                        || d.tags.iter().any(|t| t.to_lowercase().contains(w))
+                        || d.file_paths.iter().any(|f| f.to_lowercase().contains(w))
+                })
+            })
+            .collect();
+
+        let matching_insights = insights
+            .into_iter()
+            .filter(|i| {
+                let content_lower = i.content.to_lowercase();
+                words.iter().any(|w| {
+                    content_lower.contains(w) || i.tags.iter().any(|t| t.to_lowercase().contains(w))
+                })
+            })
+            .collect();
+
+        MindQueryResult {
+            discoveries: matching_discoveries,
+            insights: matching_insights,
+        }
+    }
+
     pub fn load_memory_for_prompt(&self, role: &AgentRole) -> String {
         if matches!(role, AgentRole::Postmortem) {
             return String::new();
@@ -539,7 +630,11 @@ impl HiveState {
         let include_conventions = !matches!(role, AgentRole::Coordinator);
         let include_failures = matches!(
             role,
-            AgentRole::Lead | AgentRole::Worker | AgentRole::Reviewer
+            AgentRole::Lead
+                | AgentRole::Worker
+                | AgentRole::Reviewer
+                | AgentRole::Explorer
+                | AgentRole::Evaluator
         );
 
         if include_operations {
@@ -1590,5 +1685,208 @@ mod tests {
             (total - expected).abs() < 1e-10,
             "Expected {expected}, got {total}"
         );
+    }
+
+    // --- Hive Mind ---
+
+    fn make_discovery(id: &str, content: &str) -> Discovery {
+        Discovery {
+            id: id.into(),
+            run_id: "run-1".into(),
+            agent_id: "explorer-1".into(),
+            timestamp: chrono::Utc::now(),
+            content: content.into(),
+            file_paths: vec![],
+            confidence: Confidence::Medium,
+            tags: vec![],
+        }
+    }
+
+    fn make_insight(id: &str, content: &str) -> Insight {
+        Insight {
+            id: id.into(),
+            run_id: "run-1".into(),
+            timestamp: chrono::Utc::now(),
+            content: content.into(),
+            discovery_ids: vec!["disc-1".into()],
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn test_mind_dir_path() {
+        let state = HiveState::new("/tmp/myrepo".into());
+        assert_eq!(
+            state.mind_dir("run-1"),
+            std::path::PathBuf::from("/tmp/myrepo/.hive/runs/run-1/mind")
+        );
+    }
+
+    #[test]
+    fn test_save_load_discoveries() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let d1 = make_discovery("disc-1", "Found pattern A");
+        let d2 = make_discovery("disc-2", "Found pattern B");
+        state.save_discovery("run-1", &d1).unwrap();
+        state.save_discovery("run-1", &d2).unwrap();
+
+        let loaded = state.load_discoveries("run-1");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "disc-1");
+        assert_eq!(loaded[0].content, "Found pattern A");
+        assert_eq!(loaded[1].id, "disc-2");
+    }
+
+    #[test]
+    fn test_save_load_insights() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let i1 = make_insight("ins-1", "Key insight A");
+        let i2 = make_insight("ins-2", "Key insight B");
+        state.save_insight("run-1", &i1).unwrap();
+        state.save_insight("run-1", &i2).unwrap();
+
+        let loaded = state.load_insights("run-1");
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].id, "ins-1");
+        assert_eq!(loaded[0].content, "Key insight A");
+        assert_eq!(loaded[1].id, "ins-2");
+    }
+
+    #[test]
+    fn test_query_mind_matches_content() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        state
+            .save_discovery(
+                "run-1",
+                &make_discovery("disc-1", "Found a caching pattern"),
+            )
+            .unwrap();
+        state
+            .save_discovery("run-1", &make_discovery("disc-2", "Database optimization"))
+            .unwrap();
+
+        let result = state.query_mind("run-1", "caching");
+        assert_eq!(result.discoveries.len(), 1);
+        assert_eq!(result.discoveries[0].id, "disc-1");
+    }
+
+    #[test]
+    fn test_query_mind_matches_tags() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let mut d = make_discovery("disc-1", "Some content");
+        d.tags = vec!["architecture".into(), "performance".into()];
+        state.save_discovery("run-1", &d).unwrap();
+
+        let result = state.query_mind("run-1", "architecture");
+        assert_eq!(result.discoveries.len(), 1);
+        assert_eq!(result.discoveries[0].id, "disc-1");
+    }
+
+    #[test]
+    fn test_query_mind_matches_file_paths() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let mut d = make_discovery("disc-1", "Some content");
+        d.file_paths = vec!["src/main.rs".into()];
+        state.save_discovery("run-1", &d).unwrap();
+
+        let result = state.query_mind("run-1", "main.rs");
+        assert_eq!(result.discoveries.len(), 1);
+        assert_eq!(result.discoveries[0].id, "disc-1");
+    }
+
+    #[test]
+    fn test_query_mind_matches_insights() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        state
+            .save_insight("run-1", &make_insight("ins-1", "Caching is essential"))
+            .unwrap();
+        state
+            .save_insight("run-1", &make_insight("ins-2", "Database needs indexing"))
+            .unwrap();
+
+        let result = state.query_mind("run-1", "caching");
+        assert_eq!(result.insights.len(), 1);
+        assert_eq!(result.insights[0].id, "ins-1");
+    }
+
+    #[test]
+    fn test_query_mind_empty_results() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        state
+            .save_discovery("run-1", &make_discovery("disc-1", "Some content"))
+            .unwrap();
+
+        let result = state.query_mind("run-1", "nonexistent");
+        assert!(result.discoveries.is_empty());
+        assert!(result.insights.is_empty());
+    }
+
+    #[test]
+    fn test_query_mind_case_insensitive() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        state
+            .save_discovery(
+                "run-1",
+                &make_discovery("disc-1", "Found a CACHING pattern"),
+            )
+            .unwrap();
+
+        let result = state.query_mind("run-1", "caching");
+        assert_eq!(result.discoveries.len(), 1);
+
+        let result = state.query_mind("run-1", "CACHING");
+        assert_eq!(result.discoveries.len(), 1);
+    }
+
+    #[test]
+    fn test_memory_prompt_explorer_gets_conventions_and_failures() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_conventions("Use snake_case.").unwrap();
+        state.save_failure(&make_failure("timeout")).unwrap();
+        let prompt = state.load_memory_for_prompt(&AgentRole::Explorer);
+        assert!(prompt.contains("### Conventions"));
+        assert!(prompt.contains("Use snake_case."));
+        assert!(prompt.contains("### Known Failure Patterns"));
+        assert!(prompt.contains("timeout"));
+        assert!(!prompt.contains("### Recent Operations"));
+    }
+
+    #[test]
+    fn test_memory_prompt_evaluator_gets_conventions_and_failures() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.save_conventions("Use snake_case.").unwrap();
+        state.save_failure(&make_failure("timeout")).unwrap();
+        let prompt = state.load_memory_for_prompt(&AgentRole::Evaluator);
+        assert!(prompt.contains("### Conventions"));
+        assert!(prompt.contains("Use snake_case."));
+        assert!(prompt.contains("### Known Failure Patterns"));
+        assert!(prompt.contains("timeout"));
+        assert!(!prompt.contains("### Recent Operations"));
     }
 }
