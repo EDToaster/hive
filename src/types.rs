@@ -9,6 +9,7 @@ pub enum AgentRole {
     Coordinator,
     Lead,
     Worker,
+    Reviewer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -76,6 +77,8 @@ pub struct Task {
     pub parent_task: Option<String>,
     pub branch: Option<String>,
     pub domain: Option<String>,
+    #[serde(default)]
+    pub review_count: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -162,6 +165,13 @@ mod tests {
 
         let role: AgentRole = serde_json::from_str("\"coordinator\"").unwrap();
         assert_eq!(role, AgentRole::Coordinator);
+
+        assert_eq!(
+            serde_json::to_string(&AgentRole::Reviewer).unwrap(),
+            "\"reviewer\""
+        );
+        let role: AgentRole = serde_json::from_str("\"reviewer\"").unwrap();
+        assert_eq!(role, AgentRole::Reviewer);
     }
 
     #[test]
@@ -297,6 +307,7 @@ mod tests {
             parent_task: None,
             branch: None,
             domain: Some("backend".into()),
+            review_count: 0,
             created_at: now,
             updated_at: now,
         };
@@ -305,6 +316,13 @@ mod tests {
         assert_eq!(back.status, TaskStatus::Pending);
         assert_eq!(back.urgency, Urgency::High);
         assert_eq!(back.blocking, vec!["task-2"]);
+    }
+
+    #[test]
+    fn task_without_review_count_defaults_to_zero() {
+        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"domain":null,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}"#;
+        let task: Task = serde_json::from_str(json).unwrap();
+        assert_eq!(task.review_count, 0);
     }
 
     #[test]
