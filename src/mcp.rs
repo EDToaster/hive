@@ -544,11 +544,11 @@ impl HiveMcp {
                     )]));
                 }
             }
-            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem => {
-                // Reviewers/Planner/Postmortem can only message the coordinator
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem | AgentRole::Explorer | AgentRole::Evaluator => {
+                // These roles can only message the coordinator
                 if p.to != "coordinator" {
                     return Ok(CallToolResult::error(vec![Content::text(
-                        "Reviewers can only send messages to the coordinator.",
+                        "This role can only send messages to the coordinator.",
                     )]));
                 }
             }
@@ -1347,9 +1347,11 @@ impl HiveMcp {
             AgentRole::Worker
             | AgentRole::Reviewer
             | AgentRole::Planner
-            | AgentRole::Postmortem => {
+            | AgentRole::Postmortem
+            | AgentRole::Explorer
+            | AgentRole::Evaluator => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Workers, reviewers, planners, and postmortem agents cannot retry agents.",
+                    "Only coordinators and leads can retry agents.",
                 )]));
             }
         }

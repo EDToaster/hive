@@ -61,7 +61,7 @@ impl AgentSpawner {
 
         let settings_json = if matches!(
             role,
-            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem | AgentRole::Evaluator
         ) {
             // Read-only agents: block Edit/Write/destructive Bash
             serde_json::json!({
@@ -130,10 +130,17 @@ impl AgentSpawner {
 
         // Step 4: Write CLAUDE.local.md
         let memory = state.load_memory_for_prompt(&role);
-        let task_description = format!(
-            "Your task is `{}`: `{}`.\n\n{}\n\nWhen done, call `hive_update_task(status=review)`.",
-            task.id, task.title, task.description
-        );
+        let task_description = if matches!(role, AgentRole::Lead) {
+            format!(
+                "You are managing task `{}`: `{}`.\n\n{}\n\nYour job is to decompose this into subtasks, spawn workers for each, review their output, and submit the final branch to the merge queue. Do NOT implement this yourself.",
+                task.id, task.title, task.description
+            )
+        } else {
+            format!(
+                "Your task is `{}`: `{}`.\n\n{}\n\nWhen done, call `hive_update_task(status=review)`.",
+                task.id, task.title, task.description
+            )
+        };
         let prompt = Self::generate_prompt(agent_id, role, parent, &task_description, &memory);
         fs::write(worktree_path.join("CLAUDE.local.md"), &prompt).map_err(|e| e.to_string())?;
 
@@ -547,6 +554,33 @@ Use `hive_save_memory` for each entry type:
 - Be concise and actionable in your analysis — future agents will read this.
 - After saving all memory entries, stop immediately.
 "#
+            ),
+            // Explorer and Evaluator use Worker prompt as placeholder until their prompts are implemented
+            AgentRole::Explorer | AgentRole::Evaluator => format!(
+                r#"You are a {} agent in a hive swarm.
+Agent ID: {agent_id}
+Role: {:?}
+Parent: {}
+
+## Your Task
+{task_description}
+
+## Responsibilities
+- Implement the task in your worktree.
+- Run relevant tests and linters to verify your work.
+- When done, call hive_update_task to set status to "review".
+- Commit your work with descriptive messages as you go.
+- Always commit before finishing — uncommitted work may be lost.
+
+## Constraints
+- Do not spawn other agents.
+- Do not submit to the merge queue directly.
+- Stay focused on your assigned task.
+- When done, stop and wait.
+"#,
+                if role == AgentRole::Explorer { "explorer" } else { "evaluator" },
+                role,
+                parent.unwrap_or("coordinator")
             ),
         };
         if memory.is_empty() {
