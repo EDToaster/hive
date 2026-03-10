@@ -267,10 +267,13 @@ Role: coordinator
 - Let leads handle code review and task decomposition within their domain.
 
 ## Task Creation Protocol
-- Create ALL tasks FIRST with proper blocked_by relationships before spawning any leads.
+- Create one task per domain/lead. These are high-level tasks describing WHAT needs to happen, not HOW.
+- Set blocked_by relationships between lead-level tasks for cross-domain dependencies.
 - Use the domain field to tag each task for file-conflict prevention.
 - Set urgency: critical for blocking tasks, high for core features, normal for polish.
-- Each task title should be specific and actionable, not vague.
+- Each task title should describe the domain and goal, not implementation steps.
+- Do NOT create worker-level subtasks — leads will decompose their own tasks.
+- After creating all lead-level tasks, spawn one lead per task.
 
 ## Merge Queue Protocol
 - After hive_wait_for_activity reports a queue entry, immediately call hive_merge_next.
@@ -322,7 +325,7 @@ You guide a divergent exploration process in three phases. Do NOT skip phases.
 
 ### Phase 2: Explore Mode
 - Create tasks for each exploration angle using `hive_create_task`.
-- Spawn explorer agents via `hive_spawn_agent` (role: "explorer") for each task.
+- Spawn explorer agents via `hive_spawn_agent` with the task's task_id (role: "explorer") for each task.
 - ALWAYS include at least one adversarial explorer — one who deliberately takes a contrarian or unconventional approach to challenge assumptions.
 - Monitor progress with `hive_wait_for_activity` and `hive_check_agents`.
 - When all explorers complete, spawn an evaluator agent (role: "evaluator") to compare their approaches.
@@ -385,10 +388,13 @@ Role: coordinator
 - Let leads handle code review and task decomposition within their domain.
 
 ## Task Creation Protocol
-- Create ALL tasks FIRST with proper blocked_by relationships before spawning any leads.
+- Create one task per domain/lead. These are high-level tasks describing WHAT needs to happen, not HOW.
+- Set blocked_by relationships between lead-level tasks for cross-domain dependencies.
 - Use the domain field to tag each task for file-conflict prevention.
 - Set urgency: critical for blocking tasks, high for core features, normal for polish.
-- Each task title should be specific and actionable, not vague.
+- Each task title should describe the domain and goal, not implementation steps.
+- Do NOT create worker-level subtasks — leads will decompose their own tasks.
+- After creating all lead-level tasks, spawn one lead per task.
 
 ## Merge Queue Protocol
 - After hive_wait_for_activity reports a queue entry, immediately call hive_merge_next.
@@ -424,12 +430,12 @@ Parent: {}
 - When you have no more actions to take, finish your response.
   You will be resumed when workers complete or the coordinator sends a message.
 
-## Delegation Protocol
-- ALWAYS spawn workers for implementation. You are a manager, not an implementer.
-- Read the relevant source files to understand the codebase, then write a detailed implementation plan.
-- Spawn one worker per logical unit of work (usually one file or one feature).
-- After spawning workers, use hive_wait_for_activity and hive_check_agents to monitor.
-- When workers finish, review their work with hive_review_agent before submitting.
+## Task Decomposition Protocol
+- Read the relevant source files to understand the codebase and your task's scope.
+- Break your task into subtasks using hive_create_task with parent_task set to your task ID.
+- Each subtask should be a focused unit of work for one worker (usually one file or feature).
+- Spawn one worker per subtask using hive_spawn_agent with the subtask's task_id.
+- You own the lifecycle of every subtask you create.
 
 ## Code Review Protocol
 - Use hive_review_agent to see commits and diff stat.
@@ -438,9 +444,12 @@ Parent: {}
 - Only submit to merge queue after review passes.
 
 ## Subtask Lifecycle
-- If a worker's task is no longer needed, set it to "cancelled" via hive_update_task.
-- If a worker's changes were incorporated into another branch, set the task to "absorbed".
-- These are terminal statuses that bypass the merge queue — use them to unblock your workflow.
+- Monitor workers via hive_wait_for_activity and hive_check_agents.
+- When workers finish, review their work with hive_review_agent.
+- If a subtask is no longer needed, set it to "cancelled".
+- If a subtask's work was incorporated into another branch, set it to "absorbed".
+- You CANNOT submit to the merge queue until ALL subtasks are resolved (merged, failed, cancelled, or absorbed).
+- Only submit to merge queue after all subtasks are resolved and your branch is ready.
 
 ## Health Monitoring
 - After spawning workers, call hive_check_agents every 60 seconds.
@@ -498,9 +507,12 @@ Parent: {}
 - Before finishing: git add your changed files, commit with a descriptive message.
 - Run the full test suite one final time.
 - Call hive_update_task to set status to "review".
-- If you determine NO code changes are needed, set status to "cancelled" with a note explaining why.
 - Send a message to your lead summarizing what you implemented and any concerns.
 - Then stop. Do not loop or do additional work.
+
+## If No Code Changes Needed
+- If after analysis you determine no code changes are required, set your task status to "cancelled"
+  with a note explaining why. Do not submit to review — there's nothing to review.
 
 ## Context Management
 - If you notice your context is getting large, summarize your progress so far in a commit message.
@@ -889,7 +901,9 @@ mod tests {
             "",
         );
         assert!(prompt.contains("## Task Creation Protocol"));
-        assert!(prompt.contains("blocked_by relationships"));
+        assert!(prompt.contains("one task per domain/lead"));
+        assert!(prompt.contains("Do NOT create worker-level subtasks"));
+        assert!(!prompt.contains("Create ALL tasks FIRST"));
         assert!(prompt.contains("## Merge Queue Protocol"));
         assert!(prompt.contains("hive_merge_next"));
     }
@@ -905,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn lead_prompt_has_delegation_review_health() {
+    fn lead_prompt_has_decomposition_review_health() {
         let prompt = AgentSpawner::generate_prompt(
             "lead-1",
             AgentRole::Lead,
@@ -913,8 +927,10 @@ mod tests {
             "Handle backend",
             "",
         );
-        assert!(prompt.contains("## Delegation Protocol"));
-        assert!(prompt.contains("ALWAYS spawn workers"));
+        assert!(prompt.contains("## Task Decomposition Protocol"));
+        assert!(prompt.contains("Break your task into subtasks"));
+        assert!(prompt.contains("parent_task set to your task ID"));
+        assert!(prompt.contains("CANNOT submit to the merge queue until ALL subtasks are resolved"));
         assert!(prompt.contains("## Code Review Protocol"));
         assert!(prompt.contains("hive_review_agent"));
         assert!(prompt.contains("## Health Monitoring"));
@@ -1125,5 +1141,26 @@ mod tests {
     fn test_explore_coordinator_prompt_without_memory() {
         let prompt = AgentSpawner::explore_coordinator_prompt("run-1", "intent", "summary", "");
         assert!(!prompt.contains("Project Memory"));
+    }
+
+    #[test]
+    fn worker_prompt_has_no_code_changes_section() {
+        let prompt = AgentSpawner::generate_prompt(
+            "worker-1",
+            AgentRole::Worker,
+            Some("lead-1"),
+            "Implement feature",
+            "",
+        );
+        assert!(prompt.contains("## If No Code Changes Needed"));
+        assert!(prompt.contains("Do not submit to review"));
+    }
+
+    #[test]
+    fn coordinator_prompt_fn_has_new_task_creation_text() {
+        let prompt =
+            AgentSpawner::coordinator_prompt("run-1", "spec here", "summary", "");
+        assert!(prompt.contains("Do NOT create worker-level subtasks"));
+        assert!(!prompt.contains("Create ALL tasks FIRST"));
     }
 }
