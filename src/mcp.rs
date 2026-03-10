@@ -737,49 +737,7 @@ impl HiveMcp {
         }
 
         // Auto-wake: if target agent is idle with a session_id, resume it
-        let mut wake_info = None;
-        if let Ok(mut target_agent) = state.load_agent(&self.run_id, &p.to)
-            && target_agent.status == AgentStatus::Idle
-            && let Some(ref session_id) = target_agent.session_id
-        {
-            // Spawn a --resume invocation
-            let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
-            let output_file = std::fs::File::create(agent_output_dir.join("output.jsonl"))
-                .map_err(|e| format!("Failed to create output file: {e}"));
-            if let Ok(output_file) = output_file {
-                let worktree = target_agent.worktree.clone().unwrap_or_default();
-                let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log")).ok();
-                let mut cmd = std::process::Command::new("claude");
-                cmd.arg("-p")
-                    .arg(&p.body)
-                    .arg("--resume")
-                    .arg(session_id)
-                    .arg("--verbose")
-                    .arg("--output-format")
-                    .arg("stream-json")
-                    .arg("--dangerously-skip-permissions")
-                    .env_remove("CLAUDECODE")
-                    .current_dir(&worktree)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(output_file);
-                if let Some(f) = stderr_file {
-                    cmd.stderr(std::process::Stdio::from(f));
-                }
-                let result = cmd.spawn();
-                match result {
-                    Ok(child) => {
-                        target_agent.status = AgentStatus::Running;
-                        target_agent.pid = Some(child.id());
-                        target_agent.heartbeat = Some(Utc::now());
-                        let _ = state.save_agent(&self.run_id, &target_agent);
-                        wake_info = Some(format!(" (woke agent '{}', pid {})", p.to, child.id()));
-                    }
-                    Err(e) => {
-                        wake_info = Some(format!(" (failed to wake agent '{}': {e})", p.to));
-                    }
-                }
-            }
-        }
+        let wake_info = self.try_wake_agent(&p.to, &p.body);
 
         let wake_suffix = wake_info.unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -2012,6 +1970,54 @@ impl HiveMcp {
         crate::git::Git::add_all(wt_path).ok()?;
         let _ = crate::git::Git::commit(wt_path, "wip: auto-commit on agent exit");
         Some(status)
+    }
+
+    /// If the target agent is idle with a session_id, resume it by spawning
+    /// `claude --resume`. Returns a human-readable status string.
+    fn try_wake_agent(&self, to: &str, body: &str) -> Option<String> {
+        let state = self.state();
+        let mut target_agent = state.load_agent(&self.run_id, to).ok()?;
+        if target_agent.status != AgentStatus::Idle {
+            return None;
+        }
+        let session_id = target_agent.session_id.as_ref()?;
+
+        let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
+        let output_file = std::fs::File::create(agent_output_dir.join("output.jsonl"))
+            .map_err(|e| format!("Failed to create output file: {e}"));
+        let output_file = match output_file {
+            Ok(f) => f,
+            Err(_) => return None,
+        };
+        let worktree = target_agent.worktree.clone().unwrap_or_default();
+        let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log")).ok();
+        let mut cmd = std::process::Command::new("claude");
+        cmd.arg("-p")
+            .arg(body)
+            .arg("--resume")
+            .arg(session_id)
+            .arg("--verbose")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--dangerously-skip-permissions")
+            .env_remove("CLAUDECODE")
+            .current_dir(&worktree)
+            .stdin(std::process::Stdio::null())
+            .stdout(output_file);
+        if let Some(f) = stderr_file {
+            cmd.stderr(std::process::Stdio::from(f));
+        }
+        let result = cmd.spawn();
+        match result {
+            Ok(child) => {
+                target_agent.status = AgentStatus::Running;
+                target_agent.pid = Some(child.id());
+                target_agent.heartbeat = Some(Utc::now());
+                let _ = state.save_agent(&self.run_id, &target_agent);
+                Some(format!(" (woke agent '{to}', pid {})", child.id()))
+            }
+            Err(e) => Some(format!(" (failed to wake agent '{to}': {e})")),
+        }
     }
 
     fn notify_submitter(state: &HiveState, run_id: &str, to: &str, body: &str) {
