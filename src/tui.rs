@@ -42,6 +42,7 @@ struct TuiState {
     overlay: Option<Overlay>,
     selected_agent_filter: Option<String>,
     collapsed_tasks: HashSet<String>,
+    collapsed_agents: HashSet<String>,
 }
 
 impl Default for TuiState {
@@ -57,6 +58,7 @@ impl Default for TuiState {
             overlay: None,
             selected_agent_filter: None,
             collapsed_tasks: HashSet::new(),
+            collapsed_agents: HashSet::new(),
         }
     }
 }
@@ -102,6 +104,8 @@ struct TreeNode {
     task_id: Option<String>,
     heartbeat: Option<DateTime<Utc>>,
     role: AgentRole,
+    has_children: bool,
+    indicator: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -233,9 +237,8 @@ fn aggregate_child_status(children: &[&Task]) -> String {
     parts.join(", ")
 }
 
-fn build_tree(agents: &[Agent]) -> Vec<TreeNode> {
+fn build_tree(agents: &[Agent], collapsed: &HashSet<String>) -> Vec<TreeNode> {
     let mut nodes = Vec::new();
-    // Find roots (no parent)
     let mut roots: Vec<&Agent> = agents.iter().filter(|a| a.parent.is_none()).collect();
     roots.sort_by(|a, b| {
         let ord_a = if a.role == AgentRole::Coordinator {
@@ -251,48 +254,69 @@ fn build_tree(agents: &[Agent]) -> Vec<TreeNode> {
         ord_a.cmp(&ord_b).then(a.id.cmp(&b.id))
     });
     for root in &roots {
-        add_children(&mut nodes, agents, root, "");
+        add_agent_node(&mut nodes, agents, root, "", "", collapsed);
     }
     nodes
 }
 
-fn add_children(nodes: &mut Vec<TreeNode>, agents: &[Agent], agent: &Agent, prefix: &str) {
-    nodes.push(TreeNode {
-        agent_id: agent.id.clone(),
-        prefix: prefix.to_string(),
-        status: agent.status,
-        task_id: agent.task_id.clone(),
-        heartbeat: agent.heartbeat,
-        role: agent.role,
-    });
-
+fn agent_children<'a>(agents: &'a [Agent], agent_id: &str) -> Vec<&'a Agent> {
     let mut children: Vec<&Agent> = agents
         .iter()
-        .filter(|a| a.parent.as_deref() == Some(&agent.id))
+        .filter(|a| a.parent.as_deref() == Some(agent_id))
         .collect();
     children.sort_by(|a, b| a.id.cmp(&b.id));
-
-    for (i, child) in children.iter().enumerate() {
-        let is_last = i == children.len() - 1;
-        let connector = if is_last {
-            "\u{2514}\u{2500} "
-        } else {
-            "\u{251C}\u{2500} "
-        };
-        let child_prefix = format!("{prefix}{connector}");
-        let continuation = if is_last { "   " } else { "\u{2502}  " };
-        let next_prefix = format!("{prefix}{continuation}");
-        add_subtree(nodes, agents, child, &child_prefix, &next_prefix);
-    }
+    children
 }
 
-fn add_subtree(
+fn aggregate_agent_status(agents: &[Agent], agent_id: &str) -> String {
+    // Recursively collect all descendants
+    let mut descendants = Vec::new();
+    let mut frontier = vec![agent_id];
+    while let Some(id) = frontier.pop() {
+        for a in agents {
+            if a.parent.as_deref() == Some(id) {
+                descendants.push(a);
+                frontier.push(&a.id);
+            }
+        }
+    }
+    let statuses = [
+        (AgentStatus::Running, "run"),
+        (AgentStatus::Idle, "idle"),
+        (AgentStatus::Done, "done"),
+        (AgentStatus::Failed, "fail"),
+        (AgentStatus::Stalled, "stal"),
+    ];
+    let mut parts = Vec::new();
+    for (status, label) in &statuses {
+        let n = descendants.iter().filter(|a| a.status == *status).count();
+        if n > 0 {
+            parts.push(format!("{n} {label}"));
+        }
+    }
+    parts.join(", ")
+}
+
+fn add_agent_node(
     nodes: &mut Vec<TreeNode>,
     agents: &[Agent],
     agent: &Agent,
     this_prefix: &str,
     child_prefix: &str,
+    collapsed: &HashSet<String>,
 ) {
+    let children = agent_children(agents, &agent.id);
+    let has_children = !children.is_empty();
+    let is_collapsed = collapsed.contains(&agent.id);
+
+    let indicator = if !has_children {
+        String::new()
+    } else if is_collapsed {
+        "\u{25B6} ".to_string() // ▶
+    } else {
+        "\u{25BC} ".to_string() // ▼
+    };
+
     nodes.push(TreeNode {
         agent_id: agent.id.clone(),
         prefix: this_prefix.to_string(),
@@ -300,25 +324,23 @@ fn add_subtree(
         task_id: agent.task_id.clone(),
         heartbeat: agent.heartbeat,
         role: agent.role,
+        has_children,
+        indicator,
     });
 
-    let mut children: Vec<&Agent> = agents
-        .iter()
-        .filter(|a| a.parent.as_deref() == Some(&agent.id))
-        .collect();
-    children.sort_by(|a, b| a.id.cmp(&b.id));
-
-    for (i, child) in children.iter().enumerate() {
-        let is_last = i == children.len() - 1;
-        let connector = if is_last {
-            "\u{2514}\u{2500} "
-        } else {
-            "\u{251C}\u{2500} "
-        };
-        let this_pref = format!("{child_prefix}{connector}");
-        let continuation = if is_last { "   " } else { "\u{2502}  " };
-        let next_pref = format!("{child_prefix}{continuation}");
-        add_subtree(nodes, agents, child, &this_pref, &next_pref);
+    if !is_collapsed {
+        for (i, child) in children.iter().enumerate() {
+            let is_last = i == children.len() - 1;
+            let connector = if is_last {
+                "\u{2514}\u{2500} "
+            } else {
+                "\u{251C}\u{2500} "
+            };
+            let this_pref = format!("{child_prefix}{connector}");
+            let continuation = if is_last { "   " } else { "\u{2502}  " };
+            let next_pref = format!("{child_prefix}{continuation}");
+            add_agent_node(nodes, agents, child, &this_pref, &next_pref, collapsed);
+        }
     }
 }
 
@@ -563,7 +585,7 @@ fn run_tui_loop(
             .unwrap_or(MergeQueue { entries: vec![] });
         let messages = state.list_messages(run_id).unwrap_or_default();
         let run_meta = load_run_metadata(state, run_id);
-        let tree_nodes = build_tree(&agents);
+        let tree_nodes = build_tree(&agents, &ui.collapsed_agents);
         let task_tree_nodes = build_task_tree(&tasks, &ui.collapsed_tasks);
         let task_tree_len = task_tree_nodes.len();
 
@@ -622,6 +644,7 @@ fn run_tui_loop(
                         frame,
                         main_content[0],
                         &tree_nodes,
+                        &agents,
                         &queue,
                         &ui,
                         stall_timeout,
@@ -751,19 +774,33 @@ fn run_tui_loop(
                 KeyCode::Char('G') => {
                     ui.activity_auto_scroll = true;
                 }
-                KeyCode::Char(' ') => {
-                    if ui.focused_pane == Pane::Tasks
-                        && let Some(i) = ui.tasks_selected
-                        && let Some(node) = task_tree_nodes.get(i)
-                        && node.has_children
-                    {
-                        if ui.collapsed_tasks.contains(&node.task_id) {
-                            ui.collapsed_tasks.remove(&node.task_id);
-                        } else {
-                            ui.collapsed_tasks.insert(node.task_id.clone());
+                KeyCode::Char(' ') => match ui.focused_pane {
+                    Pane::Swarm => {
+                        if let Some(i) = ui.swarm_selected
+                            && let Some(node) = tree_nodes.get(i)
+                            && node.has_children
+                        {
+                            if ui.collapsed_agents.contains(&node.agent_id) {
+                                ui.collapsed_agents.remove(&node.agent_id);
+                            } else {
+                                ui.collapsed_agents.insert(node.agent_id.clone());
+                            }
                         }
                     }
-                }
+                    Pane::Tasks => {
+                        if let Some(i) = ui.tasks_selected
+                            && let Some(node) = task_tree_nodes.get(i)
+                            && node.has_children
+                        {
+                            if ui.collapsed_tasks.contains(&node.task_id) {
+                                ui.collapsed_tasks.remove(&node.task_id);
+                            } else {
+                                ui.collapsed_tasks.insert(node.task_id.clone());
+                            }
+                        }
+                    }
+                    Pane::Activity => {}
+                },
                 KeyCode::Enter => match ui.focused_pane {
                     Pane::Swarm => {
                         if let Some(i) = ui.swarm_selected
@@ -929,6 +966,7 @@ fn render_swarm_pane(
     frame: &mut Frame,
     area: Rect,
     tree_nodes: &[TreeNode],
+    agents: &[Agent],
     queue: &MergeQueue,
     ui: &TuiState,
     stall_timeout: i64,
@@ -952,6 +990,7 @@ fn render_swarm_pane(
 
             let mut spans = vec![
                 Span::raw(&node.prefix),
+                Span::raw(&node.indicator),
                 Span::styled(&node.agent_id, Style::default().fg(name_color)),
                 Span::styled(
                     format!(" [{}]", status_abbrev(node.status)),
@@ -963,6 +1002,14 @@ fn render_swarm_pane(
                 spans.push(Span::styled(
                     format!(" {tid}"),
                     Style::default().fg(if dimmed { Color::Gray } else { Color::White }),
+                ));
+            }
+
+            if node.has_children && ui.collapsed_agents.contains(&node.agent_id) {
+                let agg = aggregate_agent_status(agents, &node.agent_id);
+                spans.push(Span::styled(
+                    format!(" [{agg}]"),
+                    Style::default().fg(Color::DarkGray),
                 ));
             }
 
