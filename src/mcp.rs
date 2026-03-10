@@ -826,6 +826,10 @@ impl HiveMcp {
 
                 // Send feedback to the agent that worked on this task
                 if let Some(ref assigned) = task.assigned_to {
+                    let body = format!(
+                        "Review feedback for task '{}' (review cycle {}):\n{}",
+                        p.task_id, task.review_count, feedback
+                    );
                     let _ = state.save_message(
                         &self.run_id,
                         &Message {
@@ -834,13 +838,13 @@ impl HiveMcp {
                             to: assigned.clone(),
                             timestamp: Utc::now(),
                             message_type: MessageType::Request,
-                            body: format!(
-                                "Review feedback for task '{}' (review cycle {}):\n{}",
-                                p.task_id, task.review_count, feedback
-                            ),
+                            body: body.clone(),
                             refs: vec![p.task_id.clone()],
                         },
                     );
+
+                    // Auto-wake the agent to process feedback
+                    let _ = self.try_wake_agent(assigned, &body);
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(format!(
@@ -2703,5 +2707,55 @@ mod tests {
         let text = serde_json::to_string(&result.content).unwrap();
         assert!(text.contains("disc-test1"));
         assert!(text.contains("caching"));
+    }
+
+    #[tokio::test]
+    async fn review_verdict_request_changes_sends_feedback_message() {
+        let (_dir, mcp) = setup_mcp_with_id("reviewer-tasktest", AgentRole::Reviewer);
+        let state = mcp.state();
+
+        let mut task = make_task("task-test", None, TaskStatus::Review);
+        task.assigned_to = Some("lead-1".into());
+        task.review_count = 0;
+        state.save_task("test-run", &task).unwrap();
+
+        // Create an idle lead agent
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Idle,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-test".into()),
+            session_id: Some("sess-abc".into()),
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-test".into(),
+            verdict: "request-changes".into(),
+            feedback: Some("Please fix the error handling.".into()),
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        // Verify feedback message was saved for lead-1
+        let messages = state.list_messages("test-run").unwrap_or_default();
+        let lead_msgs: Vec<_> = messages.iter().filter(|m| m.to == "lead-1").collect();
+        assert!(!lead_msgs.is_empty(), "lead should have a feedback message");
+        assert!(
+            lead_msgs[0].body.contains("Please fix the error handling"),
+            "message should contain the feedback"
+        );
+
+        // Task should be back to Active with review_count incremented
+        let task = state.load_task("test-run", "task-test").unwrap();
+        assert_eq!(task.status, TaskStatus::Active);
+        assert_eq!(task.review_count, 1);
     }
 }
