@@ -114,7 +114,19 @@ impl AgentSpawner {
         )
         .map_err(|e| e.to_string())?;
 
-        // Step 3: Write .mcp.json at worktree root
+        // Step 3: Ensure .hive/ doesn't leak into worktree (breaks discover())
+        let gitignore_path = worktree_path.join(".gitignore");
+        let gitignore_entry = ".hive\n";
+        if let Ok(existing) = fs::read_to_string(&gitignore_path) {
+            if !existing.lines().any(|l| l.trim() == ".hive") {
+                fs::write(&gitignore_path, format!("{existing}{gitignore_entry}"))
+                    .map_err(|e| e.to_string())?;
+            }
+        } else {
+            fs::write(&gitignore_path, gitignore_entry).map_err(|e| e.to_string())?;
+        }
+
+        // Step 4: Write .mcp.json at worktree root
         let mcp_json = serde_json::json!({
             "mcpServers": {
                 "hive": {
@@ -129,12 +141,12 @@ impl AgentSpawner {
         )
         .map_err(|e| e.to_string())?;
 
-        // Step 4: Write CLAUDE.local.md
+        // Step 5: Write CLAUDE.local.md
         let memory = state.load_memory_for_prompt(&role);
         let prompt = Self::generate_prompt(agent_id, role, parent, task_description, &memory);
         fs::write(worktree_path.join("CLAUDE.local.md"), &prompt).map_err(|e| e.to_string())?;
 
-        // Step 5: Launch claude code process
+        // Step 6: Launch claude code process
         let agent_output_dir = state.agents_dir(run_id).join(agent_id);
         fs::create_dir_all(&agent_output_dir).map_err(|e| e.to_string())?;
         let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
