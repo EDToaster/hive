@@ -28,6 +28,7 @@ enum Pane {
 enum Overlay {
     Agent(String),
     Task(String),
+    AgentOutput(String),
 }
 
 struct TuiState {
@@ -36,6 +37,8 @@ struct TuiState {
     tasks_selected: Option<usize>,
     activity_scroll: usize,
     activity_auto_scroll: bool,
+    output_scroll: usize,
+    output_auto_scroll: bool,
     overlay: Option<Overlay>,
     selected_agent_filter: Option<String>,
     collapsed_tasks: HashSet<String>,
@@ -49,6 +52,8 @@ impl Default for TuiState {
             tasks_selected: None,
             activity_scroll: 0,
             activity_auto_scroll: true,
+            output_scroll: 0,
+            output_auto_scroll: true,
             overlay: None,
             selected_agent_filter: None,
             collapsed_tasks: HashSet::new(),
@@ -394,6 +399,36 @@ fn heartbeat_color(age_secs: i64, stall_timeout: i64) -> Color {
     }
 }
 
+fn truncate_spans(spans: Vec<Span<'_>>, max_width: usize) -> Vec<Span<'_>> {
+    if max_width == 0 {
+        return vec![];
+    }
+    let total: usize = spans.iter().map(|s| s.content.len()).sum();
+    if total <= max_width {
+        return spans;
+    }
+
+    let mut result = Vec::new();
+    let target = max_width.saturating_sub(1); // reserve 1 char for ellipsis
+    let mut remaining = target;
+    for span in spans {
+        let len = span.content.len();
+        if remaining == 0 {
+            break;
+        }
+        if len <= remaining {
+            remaining -= len;
+            result.push(span);
+        } else {
+            let truncated: String = span.content.chars().take(remaining).collect();
+            result.push(Span::styled(truncated, span.style));
+            remaining = 0;
+        }
+    }
+    result.push(Span::styled("\u{2026}", Style::default().fg(Color::DarkGray))); // …
+    result
+}
+
 fn border_color(focused: Pane, this: Pane) -> Color {
     if focused == this {
         Color::Cyan
@@ -559,10 +594,10 @@ fn run_tui_loop(
                 let outer = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(1),  // Title bar
-                        Constraint::Length(1),  // Stats bar
-                        Constraint::Min(8),     // Main content
-                        Constraint::Length(10), // Activity stream
+                        Constraint::Length(1), // Title bar
+                        Constraint::Length(1), // Stats bar
+                        Constraint::Fill(3),   // Main content
+                        Constraint::Fill(1),   // Activity stream
                     ])
                     .split(frame.area());
 
@@ -583,8 +618,8 @@ fn run_tui_loop(
                     let main_content = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([
-                            Constraint::Percentage(35), // Swarm
-                            Constraint::Percentage(65), // Tasks
+                            Constraint::Fill(2), // Swarm: ~40%
+                            Constraint::Fill(3), // Tasks: ~60%
                         ])
                         .split(outer[2]);
 
@@ -605,10 +640,10 @@ fn run_tui_loop(
                             .direction(Direction::Vertical)
                             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
                             .split(main_content[1]);
-                        render_tasks_pane(frame, tasks_and_spec[0], &tasks, &ui);
+                        render_tasks_pane(frame, tasks_and_spec[0], &task_tree_nodes, &ui);
                         render_spec_viewer(frame, tasks_and_spec[1], spec);
                     } else {
-                        render_tasks_pane(frame, main_content[1], &tasks, &ui);
+                        render_tasks_pane(frame, main_content[1], &task_tree_nodes, &ui);
                     }
                 }
 
@@ -617,7 +652,16 @@ fn run_tui_loop(
 
                 // -- Overlay --
                 if let Some(ref overlay) = ui.overlay {
-                    render_overlay(frame, overlay, &agents, &tasks);
+                    render_overlay(
+                        frame,
+                        overlay,
+                        &agents,
+                        &tasks,
+                        state,
+                        run_id,
+                        ui.output_scroll,
+                        ui.output_auto_scroll,
+                    );
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -627,6 +671,32 @@ fn run_tui_loop(
         if event::poll(timeout).map_err(|e| e.to_string())?
             && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
         {
+            // Intercept keys when AgentOutput overlay is open
+            if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('q') => {
+                        ui.overlay = None;
+                    }
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        ui.output_auto_scroll = false;
+                        ui.output_scroll = ui.output_scroll.saturating_add(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        ui.output_auto_scroll = false;
+                        ui.output_scroll = ui.output_scroll.saturating_sub(1);
+                    }
+                    KeyCode::Char('G') => {
+                        ui.output_auto_scroll = true;
+                    }
+                    _ => {}
+                }
+                // Skip normal key dispatch
+                if last_tick.elapsed() >= tick_rate {
+                    last_tick = Instant::now();
+                }
+                continue;
+            }
+
             match key.code {
                 KeyCode::Char('q') => {
                     if ui.overlay.is_none() {
@@ -717,6 +787,17 @@ fn run_tui_loop(
                     }
                     Pane::Activity => {}
                 },
+                KeyCode::Char('o') => {
+                    if ui.focused_pane == Pane::Swarm
+                        && ui.overlay.is_none()
+                        && let Some(i) = ui.swarm_selected
+                        && let Some(node) = tree_nodes.get(i)
+                    {
+                        ui.output_scroll = 0;
+                        ui.output_auto_scroll = true;
+                        ui.overlay = Some(Overlay::AgentOutput(node.agent_id.clone()));
+                    }
+                }
                 _ => {}
             }
         }
@@ -752,12 +833,10 @@ fn render_title_bar(frame: &mut Frame, area: Rect, run_id: &str, run_meta: &Opti
     let clock = chrono::Local::now().format("%H:%M:%S");
     let right = format!("Run: {run_id} ({uptime}) \u{2500}\u{2500} {clock}");
 
-    let padding = area.width as usize;
     let left_text = " \u{2B21} HIVE";
-    let gap = padding
-        .saturating_sub(left_text.len())
-        .saturating_sub(right.len())
-        .saturating_sub(1);
+    let total_width = area.width as usize;
+    let content_width = left_text.len() + right.len();
+    let gap = total_width.saturating_sub(content_width);
 
     let line = Line::from(vec![
         Span::styled(left_text, Style::default().fg(Color::Cyan).bold()),
@@ -861,6 +940,7 @@ fn render_swarm_pane(
     stall_timeout: i64,
 ) {
     let now = Utc::now();
+    let inner_width = area.width.saturating_sub(2) as usize; // subtract borders
     let mut items: Vec<ListItem> = tree_nodes
         .iter()
         .map(|node| {
@@ -905,7 +985,7 @@ fn render_swarm_pane(
                 ));
             }
 
-            ListItem::new(Line::from(spans))
+            ListItem::new(Line::from(truncate_spans(spans, inner_width)))
         })
         .collect();
 
@@ -926,7 +1006,7 @@ fn render_swarm_pane(
 
     let bc = border_color(ui.focused_pane, Pane::Swarm);
     let block = Block::default()
-        .title(" Swarm ")
+        .title(" Swarm [Enter] detail  [o] output ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(bc));
 
@@ -944,9 +1024,7 @@ fn render_swarm_pane(
 // Render: Tasks pane
 // ---------------------------------------------------------------------------
 
-fn render_tasks_pane(frame: &mut Frame, area: Rect, tasks: &[Task], ui: &TuiState) {
-    let tree_nodes = build_task_tree(tasks, &ui.collapsed_tasks);
-
+fn render_tasks_pane(frame: &mut Frame, area: Rect, tree_nodes: &[TaskTreeNode], ui: &TuiState) {
     let rows: Vec<Row> = tree_nodes
         .iter()
         .enumerate()
@@ -974,10 +1052,10 @@ fn render_tasks_pane(frame: &mut Frame, area: Rect, tasks: &[Task], ui: &TuiStat
         .collect();
 
     let widths = [
-        Constraint::Min(18), // wider to fit indicator + prefix + ID
-        Constraint::Min(12),
-        Constraint::Min(10),
-        Constraint::Min(20),
+        Constraint::Length(20), // indicator + prefix + ID
+        Constraint::Length(12), // status bullet
+        Constraint::Length(14), // assigned agent
+        Constraint::Fill(1),   // title gets remaining space
     ];
 
     let bc = border_color(ui.focused_pane, Pane::Tasks);
@@ -1148,20 +1226,47 @@ fn render_spec_viewer(frame: &mut Frame, area: Rect, spec: &str) {
 // Render: Detail overlay
 // ---------------------------------------------------------------------------
 
-fn render_overlay(frame: &mut Frame, overlay: &Overlay, agents: &[Agent], tasks: &[Task]) {
-    let area = centered_rect(60, 80, frame.area());
-    frame.render_widget(Clear, area);
-
+#[allow(clippy::too_many_arguments)]
+fn render_overlay(
+    frame: &mut Frame,
+    overlay: &Overlay,
+    agents: &[Agent],
+    tasks: &[Task],
+    state: &HiveState,
+    run_id: &str,
+    output_scroll: usize,
+    output_auto_scroll: bool,
+) {
     match overlay {
         Overlay::Agent(agent_id) => {
+            let area = centered_rect(60, 80, frame.area());
+            frame.render_widget(Clear, area);
             if let Some(agent) = agents.iter().find(|a| &a.id == agent_id) {
                 render_agent_overlay(frame, area, agent);
             }
         }
         Overlay::Task(task_id) => {
+            let area = centered_rect(60, 80, frame.area());
+            frame.render_widget(Clear, area);
             if let Some(task) = tasks.iter().find(|t| &t.id == task_id) {
                 render_task_overlay(frame, area, task);
             }
+        }
+        Overlay::AgentOutput(agent_id) => {
+            let area = centered_rect(90, 90, frame.area());
+            frame.render_widget(Clear, area);
+            let path = state
+                .agents_dir(run_id)
+                .join(agent_id)
+                .join("output.jsonl");
+            render_agent_output_overlay(
+                frame,
+                area,
+                agent_id,
+                &path,
+                output_scroll,
+                output_auto_scroll,
+            );
         }
     }
 }
@@ -1291,6 +1396,139 @@ fn render_task_overlay(frame: &mut Frame, area: Rect, task: &Task) {
     let paragraph = Paragraph::new(lines)
         .block(block)
         .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+}
+
+fn render_agent_output_overlay(
+    frame: &mut Frame,
+    area: Rect,
+    agent_id: &str,
+    path: &std::path::Path,
+    scroll: usize,
+    auto_scroll: bool,
+) {
+    use crate::output::{load_output_file, parse_output_lines, OutputEntry};
+
+    let raw_lines = load_output_file(path);
+    let entries = parse_output_lines(&raw_lines);
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    if entries.is_empty() {
+        lines.push(Line::from(Span::styled(
+            " (no output yet)",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for entry in &entries {
+            match entry {
+                OutputEntry::AssistantText(text) => {
+                    for l in text.lines() {
+                        lines.push(Line::from(Span::styled(
+                            format!(" {l}"),
+                            Style::default().fg(Color::White),
+                        )));
+                    }
+                }
+                OutputEntry::ToolUse {
+                    name,
+                    input_summary,
+                } => {
+                    lines.push(Line::from(vec![
+                        Span::styled(
+                            "\u{25b6} ",
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        Span::styled(
+                            name.as_str(),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(" {input_summary}"),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]));
+                }
+                OutputEntry::ToolResult { content } => {
+                    let result_lines: Vec<&str> = content.lines().collect();
+                    let show = result_lines.len().min(5);
+                    for l in &result_lines[..show] {
+                        lines.push(Line::from(Span::styled(
+                            format!("   {l}"),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                    if result_lines.len() > 5 {
+                        lines.push(Line::from(Span::styled(
+                            format!("   ... ({} more lines)", result_lines.len() - 5),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                }
+                OutputEntry::Result {
+                    duration_ms,
+                    cost_usd,
+                    num_turns,
+                    result,
+                } => {
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        "\u{2500}\u{2500} Session Complete \u{2500}\u{2500}",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    let secs = duration_ms / 1000;
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            " Duration: {}m{}s  Cost: ${:.4}  Turns: {}",
+                            secs / 60,
+                            secs % 60,
+                            cost_usd,
+                            num_turns
+                        ),
+                        Style::default().fg(Color::Green),
+                    )));
+                    if !result.is_empty() {
+                        let truncated = crate::output::truncate(result, 200);
+                        for l in truncated.lines() {
+                            lines.push(Line::from(Span::styled(
+                                format!(" {l}"),
+                                Style::default().fg(Color::Green),
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Footer
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " [j/k] scroll  [G] follow  [Esc] close",
+        Style::default().fg(Color::Gray),
+    )));
+
+    let total_lines = lines.len();
+    // Visible height inside the block (subtract 2 for top/bottom border)
+    let visible = area.height.saturating_sub(2) as usize;
+    let max_scroll = total_lines.saturating_sub(visible);
+    let effective_scroll = if auto_scroll {
+        max_scroll
+    } else {
+        scroll.min(max_scroll)
+    };
+
+    let block = Block::default()
+        .title(format!(" Output: {} ", agent_id))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Yellow));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((effective_scroll as u16, 0));
     frame.render_widget(paragraph, area);
 }
 

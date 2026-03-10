@@ -4,7 +4,6 @@ mod cli;
 mod git;
 mod logging;
 mod mcp;
-#[allow(dead_code)]
 mod output;
 #[allow(dead_code)]
 mod state;
