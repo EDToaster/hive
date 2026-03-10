@@ -30,6 +30,8 @@ pub struct SpawnAgentParams {
     pub agent_id: String,
     /// Role: "lead" or "worker"
     pub role: String,
+    /// Task ID to bind this agent to
+    pub task_id: String,
     /// Task description for the agent
     pub task_description: String,
 }
@@ -81,6 +83,8 @@ pub struct ListTasksParams {
     pub assignee: Option<String>,
     /// Filter by domain
     pub domain: Option<String>,
+    /// Filter by parent task. Use "none" for top-level only, or a task ID for that task's subtasks.
+    pub parent_task: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -308,6 +312,31 @@ impl HiveMcp {
             }
         }
 
+        // Spawn-task binding: validate and bind task before spawning
+        let mut task = match state.load_task(&self.run_id, &p.task_id) {
+            Ok(t) => t,
+            Err(_) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Task '{}' not found.",
+                    p.task_id
+                ))]));
+            }
+        };
+        if !matches!(task.status, TaskStatus::Pending | TaskStatus::Blocked) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Task '{}' is in {:?} status, expected pending or blocked.",
+                p.task_id, task.status
+            ))]));
+        }
+        task.assigned_to = Some(p.agent_id.clone());
+        task.status = TaskStatus::Active;
+        task.updated_at = Utc::now();
+        if let Err(e) = state.save_task(&self.run_id, &task) {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "Failed to update task: {e}"
+            ))]));
+        }
+
         match crate::agent::AgentSpawner::spawn(
             &state,
             &self.run_id,
@@ -316,12 +345,20 @@ impl HiveMcp {
             Some(&self.agent_id),
             &p.task_description,
         ) {
-            Ok(agent) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Spawned agent '{}' (role={:?}, worktree={})",
-                agent.id,
-                agent.role,
-                agent.worktree.unwrap_or_default()
-            ))])),
+            Ok(agent) => {
+                // Bind agent to task
+                if let Ok(mut spawned_agent) = state.load_agent(&self.run_id, &agent.id) {
+                    spawned_agent.task_id = Some(p.task_id.clone());
+                    let _ = state.save_agent(&self.run_id, &spawned_agent);
+                }
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Spawned agent '{}' (role={:?}, task={}, worktree={})",
+                    agent.id,
+                    agent.role,
+                    p.task_id,
+                    agent.worktree.unwrap_or_default()
+                ))]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
@@ -334,6 +371,53 @@ impl HiveMcp {
         params: Parameters<CreateTaskParams>,
     ) -> Result<CallToolResult, McpError> {
         let p = &params.0;
+
+        // Permission checks for task creation
+        let caller_agent = self.state().load_agent(&self.run_id, &self.agent_id).ok();
+        let caller_role = caller_agent
+            .as_ref()
+            .map(|a| a.role)
+            .unwrap_or(AgentRole::Worker);
+
+        match caller_role {
+            AgentRole::Coordinator => {
+                if p.parent_task.is_some() {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Permission denied: coordinator cannot create subtasks. Create a lead-level task (no parent_task) and let the assigned lead decompose it.",
+                    )]));
+                }
+            }
+            AgentRole::Lead => {
+                if p.parent_task.is_none() {
+                    return Ok(CallToolResult::error(vec![Content::text(
+                        "Permission denied: leads can only create subtasks under their own task.",
+                    )]));
+                }
+                let own_task = caller_agent
+                    .as_ref()
+                    .and_then(|a| a.task_id.as_deref())
+                    .unwrap_or("");
+                if p.parent_task.as_deref() != Some(own_task) {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Permission denied: you can only create subtasks under your own task ({}), not under {}.",
+                        own_task,
+                        p.parent_task.as_deref().unwrap_or("unknown")
+                    ))]));
+                }
+            }
+            AgentRole::Worker => {
+                return Ok(CallToolResult::error(vec![Content::text(
+                    "Permission denied: workers cannot create tasks. Send a message to your lead suggesting the task.",
+                )]));
+            }
+            other => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Permission denied: {:?} agents cannot create tasks.",
+                    other
+                ))]));
+            }
+        }
+
         let urgency = match p.urgency.as_str() {
             "low" => Urgency::Low,
             "normal" => Urgency::Normal,
@@ -385,6 +469,83 @@ impl HiveMcp {
             Ok(t) => t,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
+
+        // Ownership enforcement
+        let caller_agent = state.load_agent(&self.run_id, &self.agent_id).ok();
+        let caller_role = caller_agent
+            .as_ref()
+            .map(|a| a.role)
+            .unwrap_or(AgentRole::Worker);
+        let caller_id = &self.agent_id;
+
+        let ownership_ok = match caller_role {
+            AgentRole::Coordinator => task.parent_task.is_none(),
+            AgentRole::Lead => {
+                let is_own = task.assigned_to.as_deref() == Some(caller_id.as_str());
+                let is_created = task.created_by == *caller_id;
+                let is_child_task = if let Some(ref assigned) = task.assigned_to {
+                    state
+                        .load_agent(&self.run_id, assigned)
+                        .map(|a| a.parent.as_deref() == Some(caller_id.as_str()))
+                        .unwrap_or(false)
+                } else {
+                    false
+                };
+                is_own || is_created || is_child_task
+            }
+            AgentRole::Worker => task.assigned_to.as_deref() == Some(caller_id.as_str()),
+            AgentRole::Reviewer => {
+                caller_agent
+                    .as_ref()
+                    .and_then(|a| a.task_id.as_deref())
+                    == Some(&task.id)
+            }
+            _ => false,
+        };
+
+        if !ownership_ok {
+            let err_msg = match caller_role {
+                AgentRole::Coordinator => {
+                    "Permission denied: coordinator cannot modify subtasks. Send a message to the lead who owns this task.".to_string()
+                }
+                AgentRole::Worker => {
+                    let own_task = caller_agent
+                        .as_ref()
+                        .and_then(|a| a.task_id.as_deref())
+                        .unwrap_or("unknown");
+                    let lead = caller_agent
+                        .as_ref()
+                        .and_then(|a| a.parent.as_deref())
+                        .unwrap_or("unknown");
+                    if task.parent_task.is_none() {
+                        format!(
+                            "Permission denied: {} is a lead-level task owned by '{}'. Send a message to your lead instead.",
+                            p.task_id,
+                            task.assigned_to.as_deref().unwrap_or("unknown")
+                        )
+                    } else {
+                        format!(
+                            "Permission denied: you can only update your own assigned task ({}). To request changes to {}, send a message to its owner '{}' or your lead '{}'.",
+                            own_task,
+                            p.task_id,
+                            task.assigned_to.as_deref().unwrap_or("unknown"),
+                            lead
+                        )
+                    }
+                }
+                AgentRole::Lead => {
+                    format!(
+                        "Permission denied: {} belongs to another lead's domain. Send a message to the coordinator to coordinate cross-domain changes.",
+                        p.task_id
+                    )
+                }
+                _ => format!(
+                    "Permission denied: {:?} cannot update this task.",
+                    caller_role
+                ),
+            };
+            return Ok(CallToolResult::error(vec![Content::text(err_msg)]));
+        }
 
         if let Some(ref status_str) = p.status {
             let new_status = match status_str.as_str() {
@@ -477,6 +638,15 @@ impl HiveMcp {
                     && t.domain.as_deref() != Some(d.as_str())
                 {
                     return false;
+                }
+                if let Some(ref pt) = p.parent_task {
+                    if pt == "none" {
+                        if t.parent_task.is_some() {
+                            return false;
+                        }
+                    } else if t.parent_task.as_deref() != Some(pt.as_str()) {
+                        return false;
+                    }
                 }
                 true
             })
@@ -786,6 +956,35 @@ impl HiveMcp {
             Ok(t) => t,
             Err(e) => return Ok(CallToolResult::error(vec![Content::text(e)])),
         };
+
+        // Subtask completion gate
+        if let Ok(all_tasks) = state.list_tasks(&self.run_id) {
+            let unresolved: Vec<_> = all_tasks
+                .iter()
+                .filter(|t| t.parent_task.as_deref() == Some(&p.task_id))
+                .filter(|t| !t.status.is_resolved())
+                .collect();
+            if !unresolved.is_empty() {
+                let details: Vec<String> = unresolved
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "  - {} ({}): {:?} — assigned to {}",
+                            t.id,
+                            t.title,
+                            t.status,
+                            t.assigned_to.as_deref().unwrap_or("unassigned")
+                        )
+                    })
+                    .collect();
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "Cannot submit task '{}': {} subtask(s) are not resolved:\n{}\nResolve all subtasks first. Use status 'cancelled' or 'absorbed' for tasks that don't need independent merges.",
+                    p.task_id,
+                    unresolved.len(),
+                    details.join("\n")
+                ))]));
+            }
+        }
 
         // Check review cycle limit (max 3)
         if task.review_count >= 3 {
@@ -1891,6 +2090,370 @@ mod tests {
             root.to_string_lossy().to_string(),
         );
         (dir, mcp)
+    }
+
+    fn setup_mcp_with_id(agent_id: &str, role: AgentRole) -> (TempDir, HiveMcp) {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        let state = HiveState::new(root.clone());
+        state.create_run("test-run").unwrap();
+        let agent = Agent {
+            id: agent_id.into(),
+            role,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &agent).unwrap();
+        let mcp = HiveMcp::new(
+            "test-run".into(),
+            agent_id.into(),
+            root.to_string_lossy().to_string(),
+        );
+        (dir, mcp)
+    }
+
+    fn make_task(id: &str, parent: Option<&str>, status: TaskStatus) -> Task {
+        let now = Utc::now();
+        Task {
+            id: id.into(),
+            title: format!("Task {id}"),
+            description: format!("Description for {id}"),
+            status,
+            urgency: Urgency::Normal,
+            blocking: vec![],
+            blocked_by: vec![],
+            assigned_to: None,
+            created_by: "coordinator".into(),
+            parent_task: parent.map(|s| s.to_string()),
+            branch: None,
+            domain: None,
+            review_count: 0,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_rejects_missing_task_id() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "lead-test".into(),
+            role: "lead".into(),
+            task_id: "nonexistent-task".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn update_task_worker_can_update_own() {
+        let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
+        let state = mcp.state();
+
+        // Set worker's parent
+        let mut agent = state.load_agent("test-run", "worker-1").unwrap();
+        agent.task_id = Some("task-w1".into());
+        agent.parent = Some("lead-1".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let mut task = make_task("task-w1", Some("task-lead"), TaskStatus::Active);
+        task.assigned_to = Some("worker-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-w1".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Worker should update own task"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_task_worker_denied_other() {
+        let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "worker-1").unwrap();
+        agent.task_id = Some("task-w1".into());
+        agent.parent = Some("lead-1".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let mut task = make_task("task-w2", Some("task-lead"), TaskStatus::Active);
+        task.assigned_to = Some("worker-2".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-w2".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+        assert!(text.contains("task-w1")); // mentions own task
+        assert!(text.contains("lead-1")); // mentions lead
+    }
+
+    #[tokio::test]
+    async fn update_task_coordinator_denied_subtask() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let task = make_task("task-sub", Some("task-lead"), TaskStatus::Active);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-sub".into(),
+            status: Some("cancelled".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("coordinator cannot modify subtasks"));
+    }
+
+    #[tokio::test]
+    async fn update_task_lead_can_update_own_and_children() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut lead_agent = state.load_agent("test-run", "lead-1").unwrap();
+        lead_agent.task_id = Some("task-lead".into());
+        state.save_agent("test-run", &lead_agent).unwrap();
+
+        // Lead's own task
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // Worker task created by lead
+        let mut worker_task = make_task("task-w1", Some("task-lead"), TaskStatus::Active);
+        worker_task.created_by = "lead-1".into();
+        worker_task.assigned_to = Some("worker-1".into());
+        state.save_task("test-run", &worker_task).unwrap();
+
+        // Worker agent parented to lead
+        let worker_agent = Agent {
+            id: "worker-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-1".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-w1".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker_agent).unwrap();
+
+        // Lead can update own task
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-lead".into(),
+            status: None,
+            assigned_to: None,
+            branch: None,
+            notes: Some("progress note".into()),
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Lead should update own task"
+        );
+
+        // Lead can update worker's task (created by lead)
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-w1".into(),
+            status: None,
+            assigned_to: None,
+            branch: None,
+            notes: Some("feedback".into()),
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Lead should update worker's task"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_task_coordinator_no_parent_ok() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(CreateTaskParams {
+            title: "Lead task".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Coordinator should create top-level task"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_task_coordinator_denied_with_parent() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(CreateTaskParams {
+            title: "Subtask".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: Some("task-lead".into()),
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("coordinator cannot create subtasks"));
+    }
+
+    #[tokio::test]
+    async fn create_task_lead_with_own_parent_ok() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut lead_agent = state.load_agent("test-run", "lead-1").unwrap();
+        lead_agent.task_id = Some("task-lead".into());
+        state.save_agent("test-run", &lead_agent).unwrap();
+
+        let params = Parameters(CreateTaskParams {
+            title: "Subtask".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: Some("task-lead".into()),
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Lead should create subtask under own task"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_task_worker_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let params = Parameters(CreateTaskParams {
+            title: "Task".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("workers cannot create tasks"));
+    }
+
+    #[tokio::test]
+    async fn submit_to_queue_blocked_by_unresolved_subtasks() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // Active subtask (unresolved)
+        let mut sub1 = make_task("task-sub1", Some("task-lead"), TaskStatus::Active);
+        sub1.assigned_to = Some("worker-1".into());
+        state.save_task("test-run", &sub1).unwrap();
+
+        // Merged subtask (resolved)
+        let mut sub2 = make_task("task-sub2", Some("task-lead"), TaskStatus::Merged);
+        sub2.assigned_to = Some("worker-2".into());
+        state.save_task("test-run", &sub2).unwrap();
+
+        let params = Parameters(SubmitToQueueParams {
+            task_id: "task-lead".into(),
+            branch: "hive/test/lead-1".into(),
+        });
+        let result = mcp.hive_submit_to_queue(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("1 subtask(s) are not resolved"));
+        assert!(text.contains("task-sub1"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_parent_filter_none() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let top = make_task("task-top", None, TaskStatus::Active);
+        let sub = make_task("task-sub", Some("task-top"), TaskStatus::Active);
+        state.save_task("test-run", &top).unwrap();
+        state.save_task("test-run", &sub).unwrap();
+
+        let params = Parameters(ListTasksParams {
+            status: None,
+            assignee: None,
+            domain: None,
+            parent_task: Some("none".into()),
+        });
+        let result = mcp.hive_list_tasks(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("task-top"));
+        assert!(!text.contains("task-sub"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_parent_filter_by_id() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let top = make_task("task-top", None, TaskStatus::Active);
+        let sub = make_task("task-sub", Some("task-top"), TaskStatus::Active);
+        state.save_task("test-run", &top).unwrap();
+        state.save_task("test-run", &sub).unwrap();
+
+        let params = Parameters(ListTasksParams {
+            status: None,
+            assignee: None,
+            domain: None,
+            parent_task: Some("task-top".into()),
+        });
+        let result = mcp.hive_list_tasks(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(!text.contains("task-top") || text.contains("task-sub"));
+        assert!(text.contains("task-sub"));
     }
 
     #[test]
