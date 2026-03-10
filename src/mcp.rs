@@ -744,7 +744,7 @@ impl HiveMcp {
         {
             // Spawn a --resume invocation
             let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
-            let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
+            let output_file = std::fs::File::create(agent_output_dir.join("output.jsonl"))
                 .map_err(|e| format!("Failed to create output file: {e}"));
             if let Ok(output_file) = output_file {
                 let worktree = target_agent.worktree.clone().unwrap_or_default();
@@ -754,8 +754,9 @@ impl HiveMcp {
                     .arg(&p.body)
                     .arg("--resume")
                     .arg(session_id)
+                    .arg("--verbose")
                     .arg("--output-format")
-                    .arg("json")
+                    .arg("stream-json")
                     .arg("--dangerously-skip-permissions")
                     .env_remove("CLAUDECODE")
                     .current_dir(&worktree)
@@ -1266,12 +1267,12 @@ impl HiveMcp {
                 Self::auto_commit_worktree(wt);
             }
 
-            // Session ID capture: if process exited and no session_id yet, parse output.json
+            // Session ID capture: if process exited and no session_id yet, parse output.jsonl
             if process_alive == Some(false) && agent.session_id.is_none() {
                 let output_path = state
                     .agents_dir(&self.run_id)
                     .join(&agent.id)
-                    .join("output.json");
+                    .join("output.jsonl");
                 if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
                     agent.session_id = Some(sid);
                     agent.status = AgentStatus::Idle;
@@ -1331,7 +1332,7 @@ impl HiveMcp {
                             let output_path = state
                                 .agents_dir(&self.run_id)
                                 .join(&agent.id)
-                                .join("output.json");
+                                .join("output.jsonl");
                             if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
                                 agent.session_id = Some(sid);
                             }
@@ -1988,10 +1989,15 @@ impl ServerHandler for HiveMcp {
 impl HiveMcp {
     fn parse_session_id_from_output(output_path: &std::path::Path) -> Option<String> {
         let data = std::fs::read_to_string(output_path).ok()?;
-        let json: serde_json::Value = serde_json::from_str(&data).ok()?;
-        json.get("session_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+        // NDJSON (stream-json): scan lines in reverse for the result message with session_id
+        for line in data.lines().rev() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line)
+                && let Some(sid) = json.get("session_id").and_then(|v| v.as_str())
+            {
+                return Some(sid.to_string());
+            }
+        }
+        None
     }
 
     fn auto_commit_worktree(worktree: &str) -> Option<String> {

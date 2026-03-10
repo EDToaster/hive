@@ -378,9 +378,18 @@ impl HiveState {
     }
 
     pub fn load_agent_cost(&self, run_id: &str, agent_id: &str) -> Option<AgentCost> {
-        let output_path = self.agents_dir(run_id).join(agent_id).join("output.json");
+        let output_path = self.agents_dir(run_id).join(agent_id).join("output.jsonl");
         let data = fs::read_to_string(&output_path).ok()?;
-        let json: serde_json::Value = serde_json::from_str(&data).ok()?;
+
+        // NDJSON (stream-json): scan lines in reverse for the result message with token counts
+        let json = data.lines().rev().find_map(|line| {
+            let v: serde_json::Value = serde_json::from_str(line).ok()?;
+            if v.get("num_input_tokens").is_some() {
+                Some(v)
+            } else {
+                None
+            }
+        })?;
 
         let input_tokens = json.get("num_input_tokens")?.as_u64()?;
         let output_tokens = json.get("num_output_tokens")?.as_u64()?;
@@ -1653,24 +1662,24 @@ mod tests {
         state.save_agent("run-1", &agent1).unwrap();
         state.save_agent("run-1", &agent2).unwrap();
 
-        // Write output.json for agent-1: 1000 input, 500 output
-        let output1 = r#"{"num_input_tokens": 1000, "num_output_tokens": 500, "session_duration_seconds": 60}"#;
+        // Write output.jsonl for agent-1: 1000 input, 500 output
+        let output1 = "{\"type\":\"assistant\",\"message\":\"hello\"}\n{\"num_input_tokens\": 1000, \"num_output_tokens\": 500, \"session_duration_seconds\": 60}\n";
         std::fs::write(
             state
                 .agents_dir("run-1")
                 .join("agent-1")
-                .join("output.json"),
+                .join("output.jsonl"),
             output1,
         )
         .unwrap();
 
-        // Write output.json for agent-2: 2000 input, 1000 output
-        let output2 = r#"{"num_input_tokens": 2000, "num_output_tokens": 1000, "session_duration_seconds": 120}"#;
+        // Write output.jsonl for agent-2: 2000 input, 1000 output
+        let output2 = "{\"type\":\"assistant\",\"message\":\"hello\"}\n{\"num_input_tokens\": 2000, \"num_output_tokens\": 1000, \"session_duration_seconds\": 120}\n";
         std::fs::write(
             state
                 .agents_dir("run-1")
                 .join("agent-2")
-                .join("output.json"),
+                .join("output.jsonl"),
             output2,
         )
         .unwrap();

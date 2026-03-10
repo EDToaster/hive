@@ -149,7 +149,7 @@ impl AgentSpawner {
         // Step 6: Launch claude code process
         let agent_output_dir = state.agents_dir(run_id).join(agent_id);
         fs::create_dir_all(&agent_output_dir).map_err(|e| e.to_string())?;
-        let output_file = std::fs::File::create(agent_output_dir.join("output.json"))
+        let output_file = std::fs::File::create(agent_output_dir.join("output.jsonl"))
             .map_err(|e| format!("Failed to create output file: {e}"))?;
 
         let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log"))
@@ -158,8 +158,9 @@ impl AgentSpawner {
         let child = Command::new("claude")
             .arg("-p")
             .arg(&prompt)
+            .arg("--verbose")
             .arg("--output-format")
-            .arg("json")
+            .arg("stream-json")
             .arg("--dangerously-skip-permissions")
             .env_remove("CLAUDECODE")
             .current_dir(&worktree_path)
