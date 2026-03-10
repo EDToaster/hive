@@ -634,10 +634,10 @@ fn run_tui_loop(
                             .direction(Direction::Vertical)
                             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
                             .split(main_content[1]);
-                        render_tasks_pane(frame, tasks_and_spec[0], &task_tree_nodes, &ui);
+                        render_tasks_pane(frame, tasks_and_spec[0], &task_tree_nodes, &tasks, &ui);
                         render_spec_viewer(frame, tasks_and_spec[1], spec);
                     } else {
-                        render_tasks_pane(frame, main_content[1], &task_tree_nodes, &ui);
+                        render_tasks_pane(frame, main_content[1], &task_tree_nodes, &tasks, &ui);
                     }
                 }
 
@@ -1018,12 +1018,47 @@ fn render_swarm_pane(
 // Render: Tasks pane
 // ---------------------------------------------------------------------------
 
-fn render_tasks_pane(frame: &mut Frame, area: Rect, tree_nodes: &[TaskTreeNode], ui: &TuiState) {
+fn render_tasks_pane(
+    frame: &mut Frame,
+    area: Rect,
+    tree_nodes: &[TaskTreeNode],
+    tasks: &[Task],
+    ui: &TuiState,
+) {
+    // Build set of highlighted task IDs: tasks assigned to the selected agent + their subtasks
+    let highlighted_tasks: HashSet<&str> = if let Some(ref filter) = ui.selected_agent_filter {
+        let direct: HashSet<&str> = tasks
+            .iter()
+            .filter(|t| t.assigned_to.as_deref() == Some(filter.as_str()))
+            .map(|t| t.id.as_str())
+            .collect();
+        let mut all = direct.clone();
+        // Add children of directly matched tasks (recursively)
+        let mut frontier: Vec<&str> = direct.into_iter().collect();
+        while let Some(parent_id) = frontier.pop() {
+            for t in tasks {
+                if t.parent_task.as_deref() == Some(parent_id) && all.insert(t.id.as_str()) {
+                    frontier.push(t.id.as_str());
+                }
+            }
+        }
+        all
+    } else {
+        HashSet::new()
+    };
+
     let rows: Vec<Row> = tree_nodes
         .iter()
         .enumerate()
         .map(|(i, node)| {
-            let stripe = if i % 2 == 0 {
+            let is_dimmed = ui
+                .selected_agent_filter
+                .is_some()
+                && !highlighted_tasks.contains(node.task_id.as_str());
+
+            let stripe = if is_dimmed {
+                Style::default().fg(Color::Rgb(110, 110, 120))
+            } else if i % 2 == 0 {
                 Style::default().bg(Color::Rgb(45, 45, 55))
             } else {
                 Style::default()
@@ -1032,11 +1067,17 @@ fn render_tasks_pane(frame: &mut Frame, area: Rect, tree_nodes: &[TaskTreeNode],
             let id_cell = format!("{}{}{}", node.indicator, node.prefix, node.task_id);
             let assigned = node.assigned_to.as_deref().unwrap_or("--");
 
+            let status_style = if is_dimmed {
+                Style::default().fg(Color::Rgb(110, 110, 120))
+            } else {
+                Style::default().fg(task_status_color(node.status))
+            };
+
             Row::new(vec![
                 Cell::from(id_cell),
                 Cell::from(Span::styled(
                     task_status_bullet(node.status),
-                    Style::default().fg(task_status_color(node.status)),
+                    status_style,
                 )),
                 Cell::from(assigned.to_string()),
                 Cell::from(node.title.clone()),
