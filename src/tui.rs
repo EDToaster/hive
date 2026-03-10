@@ -1525,6 +1525,7 @@ fn render_agent_output_overlay(
         .border_style(Style::default().fg(Color::Yellow));
     let paragraph = Paragraph::new(lines)
         .block(block)
+        .wrap(Wrap { trim: false })
         .scroll((effective_scroll as u16, 0));
     frame.render_widget(paragraph, area);
 }
