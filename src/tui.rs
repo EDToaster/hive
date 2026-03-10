@@ -674,7 +674,7 @@ fn run_tui_loop(
             // Intercept keys when AgentOutput overlay is open
             if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
                 match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') => {
+                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => {
                         ui.overlay = None;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
