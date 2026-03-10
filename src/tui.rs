@@ -89,12 +89,6 @@ impl ActivityEntry {
         }
     }
 
-    fn agent_id(&self) -> &str {
-        match self {
-            Self::Message { from, .. } => from,
-            Self::ToolCall { agent_id, .. } => agent_id,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1095,7 +1089,10 @@ fn render_activity_stream(
             let is_dimmed = ui
                 .selected_agent_filter
                 .as_ref()
-                .is_some_and(|f| f != entry.agent_id());
+                .is_some_and(|f| match entry {
+                    ActivityEntry::Message { from, to, .. } => f != from && f != to,
+                    ActivityEntry::ToolCall { agent_id, .. } => f != agent_id,
+                });
 
             match entry {
                 ActivityEntry::Message {
