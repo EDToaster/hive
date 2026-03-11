@@ -493,7 +493,9 @@ impl HiveMcp {
                 };
                 is_own || is_created || is_child_task
             }
-            AgentRole::Worker => task.assigned_to.as_deref() == Some(caller_id.as_str()),
+            AgentRole::Worker | AgentRole::Explorer | AgentRole::Evaluator => {
+                task.assigned_to.as_deref() == Some(caller_id.as_str())
+            }
             AgentRole::Reviewer => {
                 caller_agent
                     .as_ref()
@@ -711,9 +713,9 @@ impl HiveMcp {
             AgentRole::Coordinator => {
                 // Coordinator can only message leads
                 let target = self.state().load_agent(&self.run_id, &p.to).ok();
-                if !matches!(target, Some(ref t) if t.role == AgentRole::Lead) {
+                if !matches!(target, Some(ref t) if matches!(t.role, AgentRole::Lead | AgentRole::Explorer | AgentRole::Evaluator)) {
                     return Ok(CallToolResult::error(vec![Content::text(
-                        "Coordinator can only send messages to leads.",
+                        "Coordinator can only send messages to leads, explorers, and evaluators.",
                     )]));
                 }
             }
@@ -725,7 +727,7 @@ impl HiveMcp {
                 // Reviewers/Planner/Postmortem/Explorer/Evaluator can only message the coordinator
                 if p.to != "coordinator" {
                     return Ok(CallToolResult::error(vec![Content::text(
-                        "Reviewers can only send messages to the coordinator.",
+                        "This role can only send messages to the coordinator.",
                     )]));
                 }
             }
@@ -2757,5 +2759,95 @@ mod tests {
         let task = state.load_task("test-run", "task-test").unwrap();
         assert_eq!(task.status, TaskStatus::Active);
         assert_eq!(task.review_count, 1);
+    }
+
+    #[tokio::test]
+    async fn coordinator_can_message_explorer() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let explorer = Agent {
+            id: "explorer-1".into(),
+            role: AgentRole::Explorer,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &explorer).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "explorer-1".into(),
+            message_type: "info".into(),
+            body: "Test message to explorer".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Coordinator should be able to message explorers"
+        );
+    }
+
+    #[tokio::test]
+    async fn explorer_can_update_own_task() {
+        let (_dir, mcp) = setup_mcp_with_id("explorer-1", AgentRole::Explorer);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "explorer-1").unwrap();
+        agent.task_id = Some("task-explore".into());
+        agent.parent = Some("coordinator".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let mut task = make_task("task-explore", None, TaskStatus::Active);
+        task.assigned_to = Some("explorer-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-explore".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Explorer should update own task"
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluator_can_update_own_task() {
+        let (_dir, mcp) = setup_mcp_with_id("evaluator-1", AgentRole::Evaluator);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "evaluator-1").unwrap();
+        agent.task_id = Some("task-eval".into());
+        agent.parent = Some("coordinator".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let mut task = make_task("task-eval", None, TaskStatus::Active);
+        task.assigned_to = Some("evaluator-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-eval".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Evaluator should update own task"
+        );
     }
 }
