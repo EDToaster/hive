@@ -523,6 +523,66 @@ fn load_tool_calls(log_db: &Option<Connection>, run_id: &str) -> Vec<ActivityEnt
     entries
 }
 
+fn load_latest_actions(
+    log_db: &Option<Connection>,
+    run_id: &str,
+) -> std::collections::HashMap<String, String> {
+    let conn = match log_db {
+        Some(c) => c,
+        None => return std::collections::HashMap::new(),
+    };
+    // Get the most recent tool call per agent using a window function
+    let mut stmt = match conn.prepare(
+        "SELECT agent_id, tool_name, args_summary FROM tool_calls \
+         WHERE run_id = ?1 AND rowid IN ( \
+           SELECT rowid FROM ( \
+             SELECT rowid, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY timestamp DESC) as rn \
+             FROM tool_calls WHERE run_id = ?1 \
+           ) WHERE rn = 1 \
+         )",
+    ) {
+        Ok(s) => s,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let rows = match stmt.query_map(rusqlite::params![run_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, Option<String>>(2)?,
+        ))
+    }) {
+        Ok(r) => r,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    rows.filter_map(|r| r.ok())
+        .map(|(agent_id, tool_name, args_summary)| {
+            let action = format_action_summary(&tool_name, args_summary.as_deref());
+            (agent_id, action)
+        })
+        .collect()
+}
+
+fn format_action_summary(tool_name: &str, args_summary: Option<&str>) -> String {
+    // Strip common prefixes for readability
+    let short_name = tool_name
+        .strip_prefix("hive_")
+        .or_else(|| tool_name.strip_prefix("mcp__hive__hive_"))
+        .unwrap_or(tool_name);
+
+    match args_summary {
+        Some(summary) if !summary.is_empty() => {
+            // Truncate the summary to keep it compact
+            let truncated = if summary.len() > 30 {
+                format!("{}…", &summary[..29])
+            } else {
+                summary.to_string()
+            };
+            format!("{short_name} {truncated}")
+        }
+        _ => short_name.to_string(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Terminal guard (RAII)
 // ---------------------------------------------------------------------------
@@ -589,6 +649,9 @@ fn run_tui_loop(
         let task_tree_nodes = build_task_tree(&tasks, &ui.collapsed_tasks);
         let task_tree_len = task_tree_nodes.len();
 
+        // Load latest action per agent for swarm pane display
+        let latest_actions = load_latest_actions(log_db, run_id);
+
         // Build activity entries
         let mut activity: Vec<ActivityEntry> = messages
             .iter()
@@ -648,6 +711,7 @@ fn run_tui_loop(
                         &queue,
                         &ui,
                         stall_timeout,
+                        &latest_actions,
                     );
 
                     // -- Tasks pane with optional spec viewer --
@@ -962,6 +1026,7 @@ fn render_stats_bar(
 // Render: Swarm pane
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 fn render_swarm_pane(
     frame: &mut Frame,
     area: Rect,
@@ -970,6 +1035,7 @@ fn render_swarm_pane(
     queue: &MergeQueue,
     ui: &TuiState,
     stall_timeout: i64,
+    latest_actions: &std::collections::HashMap<String, String>,
 ) {
     let now = Utc::now();
     let inner_width = area.width.saturating_sub(2) as usize; // subtract borders
@@ -1020,6 +1086,13 @@ fn render_swarm_pane(
                 } else {
                     heartbeat_color(age, stall_timeout)
                 };
+                // Show current action for running agents
+                if let Some(action) = latest_actions.get(&node.agent_id).filter(|_| !dimmed) {
+                    spans.push(Span::styled(
+                        format!(" {action}"),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                }
                 spans.push(Span::styled(
                     format!(" {}", format_duration_short(age)),
                     Style::default().fg(hb_color),
@@ -1928,6 +2001,83 @@ mod tests {
         assert_eq!(nodes.len(), 7);
         assert!(nodes[0].title.contains("[1 merged, 2 pending]"));
         assert_eq!(nodes[1].task_id, "task-59327398");
+    }
+
+    #[test]
+    fn format_action_summary_strips_hive_prefix() {
+        assert_eq!(
+            format_action_summary("hive_wait_for_activity", None),
+            "wait_for_activity"
+        );
+        assert_eq!(
+            format_action_summary("hive_send_message", Some("to=coordinator")),
+            "send_message to=coordinator"
+        );
+    }
+
+    #[test]
+    fn format_action_summary_strips_mcp_prefix() {
+        assert_eq!(
+            format_action_summary("mcp__hive__hive_spawn_agent", Some("role=worker")),
+            "spawn_agent role=worker"
+        );
+    }
+
+    #[test]
+    fn format_action_summary_truncates_long_args() {
+        let long_args = "a]".repeat(20); // 40 chars
+        let result = format_action_summary("Read", Some(&long_args));
+        assert!(result.len() < 40, "should truncate: {result}");
+        assert!(result.ends_with('…'));
+    }
+
+    #[test]
+    fn format_action_summary_no_prefix_passthrough() {
+        assert_eq!(
+            format_action_summary("Read", Some("src/main.rs")),
+            "Read src/main.rs"
+        );
+        assert_eq!(format_action_summary("Write", None), "Write");
+    }
+
+    #[test]
+    fn load_latest_actions_with_no_db() {
+        let result = load_latest_actions(&None, "test-run");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn load_latest_actions_from_in_memory_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tool_calls (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                args_summary TEXT,
+                status TEXT NOT NULL DEFAULT 'ok',
+                duration_ms INTEGER,
+                timestamp TEXT NOT NULL
+            );
+            INSERT INTO tool_calls (run_id, agent_id, tool_name, args_summary, status, timestamp)
+            VALUES ('run1', 'worker-1', 'Read', 'src/main.rs', 'ok', '2025-01-01T00:00:01Z');
+            INSERT INTO tool_calls (run_id, agent_id, tool_name, args_summary, status, timestamp)
+            VALUES ('run1', 'worker-1', 'Edit', 'src/tui.rs', 'ok', '2025-01-01T00:00:02Z');
+            INSERT INTO tool_calls (run_id, agent_id, tool_name, args_summary, status, timestamp)
+            VALUES ('run1', 'worker-2', 'hive_send_message', 'to=lead', 'ok', '2025-01-01T00:00:03Z');
+            INSERT INTO tool_calls (run_id, agent_id, tool_name, args_summary, status, timestamp)
+            VALUES ('run2', 'worker-3', 'Read', 'other.rs', 'ok', '2025-01-01T00:00:04Z');",
+        )
+        .unwrap();
+
+        let db = Some(conn);
+        let actions = load_latest_actions(&db, "run1");
+        assert_eq!(actions.len(), 2);
+        assert_eq!(actions.get("worker-1").unwrap(), "Edit src/tui.rs");
+        assert_eq!(actions.get("worker-2").unwrap(), "send_message to=lead");
+        // worker-3 belongs to run2, should not appear
+        assert!(!actions.contains_key("worker-3"));
     }
 
     #[test]
