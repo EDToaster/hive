@@ -493,7 +493,9 @@ impl HiveMcp {
                 };
                 is_own || is_created || is_child_task
             }
-            AgentRole::Worker => task.assigned_to.as_deref() == Some(caller_id.as_str()),
+            AgentRole::Worker | AgentRole::Explorer | AgentRole::Evaluator => {
+                task.assigned_to.as_deref() == Some(caller_id.as_str())
+            }
             AgentRole::Reviewer => {
                 caller_agent
                     .as_ref()
@@ -711,9 +713,9 @@ impl HiveMcp {
             AgentRole::Coordinator => {
                 // Coordinator can only message leads
                 let target = self.state().load_agent(&self.run_id, &p.to).ok();
-                if !matches!(target, Some(ref t) if t.role == AgentRole::Lead) {
+                if !matches!(target, Some(ref t) if matches!(t.role, AgentRole::Lead | AgentRole::Explorer | AgentRole::Evaluator)) {
                     return Ok(CallToolResult::error(vec![Content::text(
-                        "Coordinator can only send messages to leads.",
+                        "Coordinator can only send messages to leads, explorers, and evaluators.",
                     )]));
                 }
             }
@@ -725,7 +727,7 @@ impl HiveMcp {
                 // Reviewers/Planner/Postmortem/Explorer/Evaluator can only message the coordinator
                 if p.to != "coordinator" {
                     return Ok(CallToolResult::error(vec![Content::text(
-                        "Reviewers can only send messages to the coordinator.",
+                        "This role can only send messages to the coordinator.",
                     )]));
                 }
             }
@@ -1314,6 +1316,22 @@ impl HiveMcp {
 
             let uncommitted_changes = agent.worktree.as_deref().and_then(Self::worktree_status);
 
+            let (recent_commits, commit_count) = agent.worktree.as_deref().map(|wt| {
+                let wt_path = std::path::Path::new(wt);
+                match crate::git::Git::log_oneline_since(wt_path, "main") {
+                    Ok(log) if !log.trim().is_empty() => {
+                        let lines: Vec<&str> = log.trim().lines().collect();
+                        let count = lines.len();
+                        let mut commits: Vec<String> = lines.iter().take(10).map(|s| s.to_string()).collect();
+                        if count > 10 {
+                            commits.push(format!("... and {} more", count - 10));
+                        }
+                        (Some(commits), count)
+                    }
+                    _ => (None, 0),
+                }
+            }).unwrap_or((None, 0));
+
             reports.push(serde_json::json!({
                 "agent_id": agent.id,
                 "role": agent.role,
@@ -1323,6 +1341,8 @@ impl HiveMcp {
                 "process_alive": process_alive,
                 "idle_since_secs": idle_since_secs,
                 "uncommitted_changes": uncommitted_changes,
+                "recent_commits": recent_commits,
+                "commit_count": commit_count,
             }));
         }
 
@@ -2780,5 +2800,211 @@ mod tests {
         let task = state.load_task("test-run", "task-test").unwrap();
         assert_eq!(task.status, TaskStatus::Active);
         assert_eq!(task.review_count, 1);
+    }
+
+    #[tokio::test]
+    async fn coordinator_can_message_explorer() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let explorer = Agent {
+            id: "explorer-1".into(),
+            role: AgentRole::Explorer,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &explorer).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "explorer-1".into(),
+            message_type: "info".into(),
+            body: "Test message to explorer".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Coordinator should be able to message explorers"
+        );
+    }
+
+    #[tokio::test]
+    async fn explorer_can_update_own_task() {
+        let (_dir, mcp) = setup_mcp_with_id("explorer-1", AgentRole::Explorer);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "explorer-1").unwrap();
+        agent.task_id = Some("task-explore".into());
+        agent.parent = Some("coordinator".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let mut task = make_task("task-explore", None, TaskStatus::Active);
+        task.assigned_to = Some("explorer-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-explore".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Explorer should update own task"
+        );
+    }
+
+    #[tokio::test]
+    async fn evaluator_can_update_own_task() {
+        let (_dir, mcp) = setup_mcp_with_id("evaluator-1", AgentRole::Evaluator);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "evaluator-1").unwrap();
+        agent.task_id = Some("task-eval".into());
+        agent.parent = Some("coordinator".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let mut task = make_task("task-eval", None, TaskStatus::Active);
+        task.assigned_to = Some("evaluator-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-eval".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Evaluator should update own task"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_agents_includes_commits() {
+        use std::process::Command;
+
+        // Create a git repo with a main branch and an initial commit
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.email", "test@test.com"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["config", "user.name", "Test"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join("init.txt"), "init").unwrap();
+        crate::git::Git::add_all(&root).unwrap();
+        crate::git::Git::commit(&root, "initial commit").unwrap();
+
+        // Create a worktree on a feature branch with commits
+        let wt_path = root.join("worktree-test");
+        Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                wt_path.to_str().unwrap(),
+                "-b",
+                "feature-branch",
+            ])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        std::fs::write(wt_path.join("a.txt"), "a").unwrap();
+        crate::git::Git::add_all(&wt_path).unwrap();
+        crate::git::Git::commit(&wt_path, "first feature commit").unwrap();
+        std::fs::write(wt_path.join("b.txt"), "b").unwrap();
+        crate::git::Git::add_all(&wt_path).unwrap();
+        crate::git::Git::commit(&wt_path, "second feature commit").unwrap();
+
+        // Set up hive state with an agent that has the worktree
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        let state = HiveState::new(root.clone());
+        state.create_run("test-run").unwrap();
+        let agent = Agent {
+            id: "worker-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-1".into()),
+            pid: None,
+            worktree: Some(wt_path.to_string_lossy().to_string()),
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &agent).unwrap();
+
+        // Create a coordinator MCP to call check_agents
+        let coord = Agent {
+            id: "coordinator".into(),
+            role: AgentRole::Coordinator,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &coord).unwrap();
+        let mcp = HiveMcp::new(
+            "test-run".into(),
+            "coordinator".into(),
+            root.to_string_lossy().to_string(),
+        );
+
+        let result = mcp.hive_check_agents().await.unwrap();
+        let text = match &result.content[0].raw {
+            rmcp::model::RawContent::Text(t) => &t.text,
+            _ => panic!("expected text content"),
+        };
+        let reports: Vec<serde_json::Value> = serde_json::from_str(text).unwrap();
+
+        // Find the worker-1 report
+        let worker_report = reports
+            .iter()
+            .find(|r| r["agent_id"] == "worker-1")
+            .expect("worker-1 report should exist");
+
+        assert_eq!(worker_report["commit_count"], 2);
+        let commits = worker_report["recent_commits"].as_array().unwrap();
+        assert_eq!(commits.len(), 2);
+        assert!(commits.iter().any(|c| c.as_str().unwrap().contains("first feature commit")));
+        assert!(commits.iter().any(|c| c.as_str().unwrap().contains("second feature commit")));
+
+        // Coordinator should have no commits (no worktree)
+        let coord_report = reports
+            .iter()
+            .find(|r| r["agent_id"] == "coordinator")
+            .expect("coordinator report should exist");
+        assert_eq!(coord_report["commit_count"], 0);
+        assert!(coord_report["recent_commits"].is_null());
     }
 }

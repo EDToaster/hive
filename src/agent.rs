@@ -439,6 +439,10 @@ Present three options to the human:
 2. **Refine** — spawn new explorers to iterate on the most promising approach.
 3. **Escalate to full execution** — convert the best approach into a full spec and hand off to `hive start`.
 
+When merging, set the winning explorer's task to "approved" and submit their branch to the merge queue.
+Set losing explorers' tasks to "absorbed" (their work was considered but not merged).
+Set the evaluator's task to "approved" after evaluation is complete.
+
 ## Hive Mind Tools
 - `hive_query_mind` — search prior discoveries and insights
 - `hive_discover` — record your own discoveries during analysis
@@ -688,6 +692,8 @@ Parent: {}
    - Read and analyze the code changes using Read, Glob, and Grep.
    - Run the test suite on the branch: `cargo test --all-targets`
    - Note: lines changed, test results, code complexity, and approach taken.
+   - Use `git diff main...<branch>` to compare a branch against main.
+   - Use `git show <branch>:<file>` to read specific files from other branches without switching.
 3. Compare all explorer branches on these dimensions:
    - **Correctness:** Do tests pass? Does the implementation match the intent?
    - **Complexity:** Lines of code changed, cyclomatic complexity, number of new dependencies.
