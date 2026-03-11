@@ -1162,6 +1162,112 @@ fn render_tasks_pane(
 }
 
 // ---------------------------------------------------------------------------
+// Tool call formatting
+// ---------------------------------------------------------------------------
+
+/// Extract a value for `key` from a comma-separated "key=value, key2=value2" string.
+fn extract_arg<'a>(args: &'a str, key: &str) -> Option<&'a str> {
+    for part in args.split(',') {
+        let part = part.trim();
+        if let Some(val) = part.strip_prefix(key).and_then(|rest| rest.strip_prefix('=')) {
+            return Some(val.trim());
+        }
+    }
+    None
+}
+
+/// Return a rich display string and color for a tool call.
+///
+/// Hive tools get `Color::Yellow`, standard Claude tools get `Color::Gray`.
+fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, Color) {
+    let args = args_summary.unwrap_or("");
+
+    match tool_name {
+        // --- Hive MCP tools ---
+        "hive_wait_for_activity" => {
+            let timeout = extract_arg(args, "timeout_secs").unwrap_or("?");
+            (format!("WaitForActivity (timeout: {timeout}s)"), Color::Yellow)
+        }
+        "hive_spawn_agent" => {
+            let agent = extract_arg(args, "agent_id").unwrap_or("?");
+            let role = extract_arg(args, "role").unwrap_or("?");
+            (format!("SpawnAgent {agent} {role}"), Color::Yellow)
+        }
+        "hive_check_agents" => ("CheckAgents".to_string(), Color::Yellow),
+        "hive_send_message" => {
+            let target = extract_arg(args, "to").unwrap_or("?");
+            (format!("SendMessage \u{2192} {target}"), Color::Yellow)
+        }
+        "hive_create_task" => {
+            let title = extract_arg(args, "title").unwrap_or("?");
+            (format!("CreateTask: {title}"), Color::Yellow)
+        }
+        "hive_update_task" => {
+            let task = extract_arg(args, "task_id").unwrap_or("?");
+            let status = extract_arg(args, "status").unwrap_or("?");
+            (format!("UpdateTask {task} \u{2192} {status}"), Color::Yellow)
+        }
+        "hive_submit_to_queue" => {
+            let task = extract_arg(args, "task_id").unwrap_or("?");
+            (format!("SubmitToQueue {task}"), Color::Yellow)
+        }
+        "hive_merge_next" => ("MergeNext".to_string(), Color::Yellow),
+        "hive_review_verdict" => {
+            let task = extract_arg(args, "task_id").unwrap_or("?");
+            let verdict = extract_arg(args, "verdict").unwrap_or("?");
+            (format!("ReviewVerdict {task}: {verdict}"), Color::Yellow)
+        }
+        // Catch-all for other hive_ tools
+        name if name.starts_with("hive_") => {
+            let short = name.strip_prefix("hive_").unwrap_or(name);
+            if args.is_empty() {
+                (short.to_string(), Color::Yellow)
+            } else {
+                let truncated = if args.len() > 40 { &args[..40] } else { args };
+                (format!("{short} {truncated}"), Color::Yellow)
+            }
+        }
+
+        // --- Common Claude tools ---
+        "Read" => {
+            let path = extract_arg(args, "file_path").unwrap_or("?");
+            (format!("Read {path}"), Color::Gray)
+        }
+        "Write" => {
+            let path = extract_arg(args, "file_path").unwrap_or("?");
+            (format!("Write {path}"), Color::Gray)
+        }
+        "Edit" => {
+            let path = extract_arg(args, "file_path").unwrap_or("?");
+            (format!("Edit {path}"), Color::Gray)
+        }
+        "Bash" => {
+            let cmd = extract_arg(args, "command").unwrap_or("?");
+            let preview = if cmd.len() > 50 { &cmd[..50] } else { cmd };
+            (format!("$ {preview}"), Color::Gray)
+        }
+        "Grep" => {
+            let pattern = extract_arg(args, "pattern").unwrap_or("?");
+            (format!("Grep {pattern}"), Color::Gray)
+        }
+        "Glob" => {
+            let pattern = extract_arg(args, "pattern").unwrap_or("?");
+            (format!("Glob {pattern}"), Color::Gray)
+        }
+
+        // --- Fallback ---
+        _ => {
+            if args.is_empty() {
+                (tool_name.to_string(), Color::Gray)
+            } else {
+                let truncated = if args.len() > 40 { &args[..40] } else { args };
+                (format!("{tool_name} {truncated}"), Color::Gray)
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Render: Activity stream
 // ---------------------------------------------------------------------------
 
@@ -1207,12 +1313,13 @@ fn render_activity_stream(
                     duration_ms,
                 } => {
                     let ts = timestamp.format("%H:%M:%S");
-                    let args = args_summary.as_deref().unwrap_or("");
+                    let (display, tool_color) =
+                        format_tool_display(tool_name, args_summary.as_deref());
                     let (icon, color) = if status == "success" {
                         if is_dimmed {
                             ("\u{2713}", Color::Rgb(110, 110, 120))
                         } else {
-                            ("\u{2713}", Color::Gray)
+                            ("\u{2713}", tool_color)
                         }
                     } else if is_dimmed {
                         ("\u{2717}", Color::Rgb(110, 110, 120))
@@ -1220,7 +1327,7 @@ fn render_activity_stream(
                         ("\u{2717}", Color::Red)
                     };
                     let dur = duration_ms.map(|d| format!(" {d}ms")).unwrap_or_default();
-                    let text = format!("{ts}   {agent_id}  {tool_name}  {args}  {icon}{dur}");
+                    let text = format!("{ts}   {agent_id}  {display}  {icon}{dur}");
                     ListItem::new(Span::styled(text, Style::default().fg(color)))
                 }
             }
@@ -1819,5 +1926,146 @@ mod tests {
         assert_eq!(collapsed_nodes.len(), 2);
         assert_eq!(collapsed_nodes[0].task_id, "p1");
         assert_eq!(collapsed_nodes[1].task_id, "p2");
+    }
+
+    // -----------------------------------------------------------------------
+    // format_tool_display tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_hive_wait_for_activity() {
+        let (display, color) =
+            format_tool_display("hive_wait_for_activity", Some("timeout_secs=30"));
+        assert_eq!(display, "WaitForActivity (timeout: 30s)");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_spawn_agent() {
+        let (display, color) =
+            format_tool_display("hive_spawn_agent", Some("agent_id=worker-1, role=worker"));
+        assert_eq!(display, "SpawnAgent worker-1 worker");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_check_agents() {
+        let (display, color) = format_tool_display("hive_check_agents", None);
+        assert_eq!(display, "CheckAgents");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_send_message() {
+        let (display, color) =
+            format_tool_display("hive_send_message", Some("to=coordinator, body=done"));
+        assert_eq!(display, "SendMessage \u{2192} coordinator");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_create_task() {
+        let (display, color) =
+            format_tool_display("hive_create_task", Some("title=Add feature X"));
+        assert_eq!(display, "CreateTask: Add feature X");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_update_task() {
+        let (display, color) =
+            format_tool_display("hive_update_task", Some("task_id=t-1, status=review"));
+        assert_eq!(display, "UpdateTask t-1 \u{2192} review");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_submit_to_queue() {
+        let (display, color) =
+            format_tool_display("hive_submit_to_queue", Some("task_id=t-42"));
+        assert_eq!(display, "SubmitToQueue t-42");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_merge_next() {
+        let (display, color) = format_tool_display("hive_merge_next", None);
+        assert_eq!(display, "MergeNext");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_review_verdict() {
+        let (display, color) = format_tool_display(
+            "hive_review_verdict",
+            Some("task_id=t-5, verdict=approve"),
+        );
+        assert_eq!(display, "ReviewVerdict t-5: approve");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_hive_unknown_tool() {
+        let (display, color) = format_tool_display("hive_something_new", Some("x=1"));
+        assert_eq!(display, "something_new x=1");
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn format_read_tool() {
+        let (display, color) = format_tool_display("Read", Some("file_path=/src/main.rs"));
+        assert_eq!(display, "Read /src/main.rs");
+        assert_eq!(color, Color::Gray);
+    }
+
+    #[test]
+    fn format_edit_tool() {
+        let (display, color) = format_tool_display("Edit", Some("file_path=/src/tui.rs"));
+        assert_eq!(display, "Edit /src/tui.rs");
+        assert_eq!(color, Color::Gray);
+    }
+
+    #[test]
+    fn format_bash_tool() {
+        let (display, color) = format_tool_display("Bash", Some("command=cargo test"));
+        assert_eq!(display, "$ cargo test");
+        assert_eq!(color, Color::Gray);
+    }
+
+    #[test]
+    fn format_grep_tool() {
+        let (display, color) = format_tool_display("Grep", Some("pattern=TODO"));
+        assert_eq!(display, "Grep TODO");
+        assert_eq!(color, Color::Gray);
+    }
+
+    #[test]
+    fn format_unknown_tool() {
+        let (display, color) = format_tool_display("SomeNewTool", None);
+        assert_eq!(display, "SomeNewTool");
+        assert_eq!(color, Color::Gray);
+    }
+
+    #[test]
+    fn format_unknown_tool_with_args() {
+        let (display, color) = format_tool_display("SomeNewTool", Some("key=val"));
+        assert_eq!(display, "SomeNewTool key=val");
+        assert_eq!(color, Color::Gray);
+    }
+
+    #[test]
+    fn extract_arg_finds_value() {
+        assert_eq!(extract_arg("file_path=/src/main.rs, limit=100", "file_path"), Some("/src/main.rs"));
+        assert_eq!(extract_arg("file_path=/src/main.rs, limit=100", "limit"), Some("100"));
+    }
+
+    #[test]
+    fn extract_arg_missing_key() {
+        assert_eq!(extract_arg("file_path=/src/main.rs", "missing"), None);
+    }
+
+    #[test]
+    fn extract_arg_empty_string() {
+        assert_eq!(extract_arg("", "key"), None);
     }
 }
