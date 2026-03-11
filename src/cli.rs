@@ -150,6 +150,14 @@ pub enum Commands {
         command: Option<MindCommands>,
     },
 
+    /// Transition an agent from Running to Idle on exit (called by Stop hook)
+    AgentExit {
+        #[arg(long)]
+        run: String,
+        #[arg(long)]
+        agent: String,
+    },
+
     /// Stop the current run and clean up worktrees
     Stop,
 

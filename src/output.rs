@@ -180,6 +180,23 @@ pub fn parse_output_lines(lines: &[String]) -> Vec<OutputEntry> {
     entries
 }
 
+/// Parse session_id from a Claude Code NDJSON output file.
+///
+/// Scans lines in reverse looking for any JSON line containing a `session_id` field.
+/// Returns the most recent session_id found, or None if the file doesn't exist or
+/// contains no session_id.
+pub fn parse_session_id_from_output(output_path: &Path) -> Option<String> {
+    let data = fs::read_to_string(output_path).ok()?;
+    for line in data.lines().rev() {
+        if let Ok(json) = serde_json::from_str::<Value>(line)
+            && let Some(sid) = json.get("session_id").and_then(|v| v.as_str())
+        {
+            return Some(sid.to_string());
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,5 +576,43 @@ mod tests {
             }
             other => panic!("Expected two ToolUse entries, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn test_parse_session_id_from_output() {
+        let dir = std::env::temp_dir().join("hive_test_session_id");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("output.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"system","subtype":"init","session_id":"abc123"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}
+{"type":"result","subtype":"success","session_id":"def456","duration_ms":100,"total_cost_usd":0.01,"num_turns":1,"result":"Done"}
+"#,
+        )
+        .unwrap();
+        // Should return the last session_id (scanning in reverse)
+        let sid = parse_session_id_from_output(&path);
+        assert_eq!(sid, Some("def456".to_string()));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_parse_session_id_from_output_missing_file() {
+        let sid = parse_session_id_from_output(Path::new("/nonexistent/output.jsonl"));
+        assert_eq!(sid, None);
+    }
+
+    #[test]
+    fn test_parse_session_id_from_output_no_session_id() {
+        let dir = std::env::temp_dir().join("hive_test_no_sid");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("output.jsonl");
+        fs::write(&path, r#"{"type":"assistant","message":{"content":[]}}"#).unwrap();
+        let sid = parse_session_id_from_output(&path);
+        assert_eq!(sid, None);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
     }
 }

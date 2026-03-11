@@ -1235,7 +1235,7 @@ impl HiveMcp {
                     .agents_dir(&self.run_id)
                     .join(&agent.id)
                     .join("output.jsonl");
-                if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
+                if let Some(sid) = crate::output::parse_session_id_from_output(&output_path) {
                     agent.session_id = Some(sid);
                     agent.status = AgentStatus::Idle;
                     agent.last_completed_at = Some(now);
@@ -1295,7 +1295,7 @@ impl HiveMcp {
                                 .agents_dir(&self.run_id)
                                 .join(&agent.id)
                                 .join("output.jsonl");
-                            if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
+                            if let Some(sid) = crate::output::parse_session_id_from_output(&output_path) {
                                 agent.session_id = Some(sid);
                             }
                         }
@@ -1949,19 +1949,6 @@ impl ServerHandler for HiveMcp {
 }
 
 impl HiveMcp {
-    fn parse_session_id_from_output(output_path: &std::path::Path) -> Option<String> {
-        let data = std::fs::read_to_string(output_path).ok()?;
-        // NDJSON (stream-json): scan lines in reverse for the result message with session_id
-        for line in data.lines().rev() {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line)
-                && let Some(sid) = json.get("session_id").and_then(|v| v.as_str())
-            {
-                return Some(sid.to_string());
-            }
-        }
-        None
-    }
-
     fn auto_commit_worktree(worktree: &str) -> Option<String> {
         let wt_path = std::path::Path::new(worktree);
         if !wt_path.exists() {

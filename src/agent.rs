@@ -101,7 +101,7 @@ impl AgentSpawner {
                         "hooks": [{
                             "type": "command",
                             "command": format!(
-                                "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook"
+                                "hive read-messages --agent {agent_id} --run {run_id} --unread --stop-hook && hive agent-exit --run {run_id} --agent {agent_id}"
                             )
                         }]
                     }]
