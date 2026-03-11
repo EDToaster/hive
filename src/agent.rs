@@ -114,32 +114,27 @@ impl AgentSpawner {
         )
         .map_err(|e| e.to_string())?;
 
-        // Step 3: Ensure .hive/ doesn't leak into worktree (breaks discover())
+        // Step 3: Ensure .hive and .mcp.json are in .gitignore
         let gitignore_path = worktree_path.join(".gitignore");
-        let gitignore_entry = ".hive\n";
-        if let Ok(existing) = fs::read_to_string(&gitignore_path) {
-            if !existing.lines().any(|l| l.trim() == ".hive") {
-                fs::write(&gitignore_path, format!("{existing}{gitignore_entry}"))
-                    .map_err(|e| e.to_string())?;
+        let existing = fs::read_to_string(&gitignore_path).unwrap_or_default();
+        let mut appended = String::new();
+        for entry in &[".hive", ".mcp.json"] {
+            if !existing.lines().any(|l| l.trim() == *entry) {
+                appended.push_str(entry);
+                appended.push('\n');
             }
-        } else {
-            fs::write(&gitignore_path, gitignore_entry).map_err(|e| e.to_string())?;
+        }
+        if !appended.is_empty() {
+            let new_content = if existing.is_empty() || existing.ends_with('\n') {
+                format!("{existing}{appended}")
+            } else {
+                format!("{existing}\n{appended}")
+            };
+            fs::write(&gitignore_path, new_content).map_err(|e| e.to_string())?;
         }
 
-        // Step 4: Write .mcp.json at worktree root
-        let mcp_json = serde_json::json!({
-            "mcpServers": {
-                "hive": {
-                    "command": "hive",
-                    "args": ["mcp", "--run", run_id, "--agent", agent_id]
-                }
-            }
-        });
-        fs::write(
-            worktree_path.join(".mcp.json"),
-            serde_json::to_string_pretty(&mcp_json).unwrap(),
-        )
-        .map_err(|e| e.to_string())?;
+        // Step 4: Write .mcp.json at worktree root (merge with existing)
+        Self::write_mcp_config(&worktree_path.join(".mcp.json"), run_id, agent_id)?;
 
         // Step 5: Write CLAUDE.local.md
         let memory = state.load_memory_for_prompt(&role);
@@ -149,11 +144,33 @@ impl AgentSpawner {
         // Step 6: Launch claude code process
         let agent_output_dir = state.agents_dir(run_id).join(agent_id);
         fs::create_dir_all(&agent_output_dir).map_err(|e| e.to_string())?;
-        let output_file = std::fs::File::create(agent_output_dir.join("output.jsonl"))
+        let mut output_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(agent_output_dir.join("output.jsonl"))
             .map_err(|e| format!("Failed to create output file: {e}"))?;
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                output_file,
+                r#"{{"type":"session_boundary","timestamp":"{}","reason":"spawn"}}"#,
+                Utc::now().to_rfc3339()
+            );
+        }
 
-        let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log"))
+        let mut stderr_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(agent_output_dir.join("stderr.log"))
             .map_err(|e| format!("Failed to create stderr file: {e}"))?;
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                stderr_file,
+                r#"{{"type":"session_boundary","timestamp":"{}","reason":"spawn"}}"#,
+                Utc::now().to_rfc3339()
+            );
+        }
 
         let child = Command::new("claude")
             .arg("-p")
@@ -188,6 +205,66 @@ impl AgentSpawner {
         state.save_agent(run_id, &agent)?;
 
         Ok(agent)
+    }
+
+    /// Write or merge the hive MCP server entry into an existing .mcp.json file.
+    /// Preserves any other mcpServers entries already present.
+    pub fn write_mcp_config(path: &Path, run_id: &str, agent_id: &str) -> Result<(), String> {
+        let mut root = if path.exists() {
+            let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+            serde_json::from_str::<serde_json::Value>(&content)
+                .map_err(|e| format!("Failed to parse .mcp.json: {e}"))?
+        } else {
+            serde_json::json!({})
+        };
+
+        let obj = root.as_object_mut().ok_or(".mcp.json is not an object")?;
+        if !obj.contains_key("mcpServers") {
+            obj.insert(
+                "mcpServers".to_string(),
+                serde_json::Value::Object(serde_json::Map::new()),
+            );
+        }
+        let servers = obj
+            .get_mut("mcpServers")
+            .and_then(|v| v.as_object_mut())
+            .ok_or("mcpServers is not an object")?;
+        servers.insert(
+            "hive".to_string(),
+            serde_json::json!({
+                "command": "hive",
+                "args": ["mcp", "--run", run_id, "--agent", agent_id]
+            }),
+        );
+
+        fs::write(path, serde_json::to_string_pretty(&root).unwrap())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Remove the hive MCP server entry from .mcp.json.
+    /// Deletes the file if no other servers remain.
+    pub fn remove_hive_mcp_entry(path: &Path) -> Result<(), String> {
+        if !path.exists() {
+            return Ok(());
+        }
+        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
+        let mut root: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("Failed to parse .mcp.json: {e}"))?;
+
+        if let Some(servers) = root
+            .as_object_mut()
+            .and_then(|o| o.get_mut("mcpServers"))
+            .and_then(|v| v.as_object_mut())
+        {
+            servers.remove("hive");
+            if servers.is_empty() {
+                fs::remove_file(path).map_err(|e| e.to_string())?;
+                return Ok(());
+            }
+        }
+
+        fs::write(path, serde_json::to_string_pretty(&root).unwrap())
+            .map_err(|e| e.to_string())
     }
 
     /// Scan the repo and return a brief summary of the project structure.

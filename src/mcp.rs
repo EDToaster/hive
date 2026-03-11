@@ -1987,14 +1987,37 @@ impl HiveMcp {
         let session_id = target_agent.session_id.as_ref()?;
 
         let agent_output_dir = state.agents_dir(&self.run_id).join(&target_agent.id);
-        let output_file = std::fs::File::create(agent_output_dir.join("output.jsonl"))
-            .map_err(|e| format!("Failed to create output file: {e}"));
-        let output_file = match output_file {
+        let output_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(agent_output_dir.join("output.jsonl"));
+        let mut output_file = match output_file {
             Ok(f) => f,
             Err(_) => return None,
         };
+        {
+            use std::io::Write;
+            let _ = writeln!(
+                output_file,
+                r#"{{"type":"session_boundary","timestamp":"{}","reason":"wake"}}"#,
+                chrono::Utc::now().to_rfc3339()
+            );
+        }
         let worktree = target_agent.worktree.clone().unwrap_or_default();
-        let stderr_file = std::fs::File::create(agent_output_dir.join("stderr.log")).ok();
+        let stderr_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(agent_output_dir.join("stderr.log"))
+            .ok()
+            .map(|mut f| {
+                use std::io::Write;
+                let _ = writeln!(
+                    f,
+                    r#"{{"type":"session_boundary","timestamp":"{}","reason":"wake"}}"#,
+                    chrono::Utc::now().to_rfc3339()
+                );
+                f
+            });
         let mut cmd = std::process::Command::new("claude");
         cmd.arg("-p")
             .arg(body)
