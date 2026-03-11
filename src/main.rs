@@ -209,20 +209,8 @@ fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
-    // Write .mcp.json for coordinator MCP
-    let mcp_config = serde_json::json!({
-        "mcpServers": {
-            "hive": {
-                "command": "hive",
-                "args": ["mcp", "--run", &run_id, "--agent", "coordinator"]
-            }
-        }
-    });
-    fs::write(
-        repo_root.join(".mcp.json"),
-        serde_json::to_string_pretty(&mcp_config).unwrap(),
-    )
-    .map_err(|e| e.to_string())?;
+    // Write .mcp.json for coordinator MCP (merge with existing)
+    crate::agent::AgentSpawner::write_mcp_config(&repo_root.join(".mcp.json"), &run_id, "coordinator")?;
 
     // Register coordinator agent (no PID — user launches claude manually)
     let coordinator = crate::types::Agent {
@@ -1026,20 +1014,8 @@ fn cmd_explore(intent: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
-    // Write .mcp.json for coordinator MCP
-    let mcp_config = serde_json::json!({
-        "mcpServers": {
-            "hive": {
-                "command": "hive",
-                "args": ["mcp", "--run", &run_id, "--agent", "coordinator"]
-            }
-        }
-    });
-    fs::write(
-        repo_root.join(".mcp.json"),
-        serde_json::to_string_pretty(&mcp_config).unwrap(),
-    )
-    .map_err(|e| e.to_string())?;
+    // Write .mcp.json for coordinator MCP (merge with existing)
+    crate::agent::AgentSpawner::write_mcp_config(&repo_root.join(".mcp.json"), &run_id, "coordinator")?;
 
     // Register coordinator agent (no PID — user launches claude manually)
     let coordinator = crate::types::Agent {
@@ -1230,7 +1206,7 @@ fn cmd_stop() -> Result<(), String> {
     // Clean up coordinator files
     let repo_root = state.repo_root();
     let _ = std::fs::remove_file(repo_root.join("CLAUDE.local.md"));
-    let _ = std::fs::remove_file(repo_root.join(".mcp.json"));
+    let _ = crate::agent::AgentSpawner::remove_hive_mcp_entry(&repo_root.join(".mcp.json"));
     let _ = std::fs::remove_file(repo_root.join(".claude/settings.local.json"));
 
     // Mark run as completed
