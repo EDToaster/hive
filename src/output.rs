@@ -180,6 +180,27 @@ pub fn parse_output_lines(lines: &[String]) -> Vec<OutputEntry> {
     entries
 }
 
+/// Parse session_id from the init line at the start of output.jsonl.
+/// This captures the session ID early (before the agent finishes), enabling crash recovery.
+pub fn parse_early_session_id(output_path: &Path) -> Option<String> {
+    use std::io::{BufRead, BufReader};
+    let file = std::fs::File::open(output_path).ok()?;
+    let reader = BufReader::new(file);
+    for line in reader.lines().take(10) {
+        let line = line.ok()?;
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&line)
+            && json.get("type").and_then(|t| t.as_str()) == Some("system")
+            && json.get("subtype").and_then(|t| t.as_str()) == Some("init")
+        {
+            return json
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+        }
+    }
+    None
+}
+
 /// Parse session_id from a Claude Code NDJSON output file.
 ///
 /// Scans lines in reverse looking for any JSON line containing a `session_id` field.
@@ -611,6 +632,48 @@ mod tests {
         let path = dir.join("output.jsonl");
         fs::write(&path, r#"{"type":"assistant","message":{"content":[]}}"#).unwrap();
         let sid = parse_session_id_from_output(&path);
+        assert_eq!(sid, None);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_parse_early_session_id() {
+        let dir = std::env::temp_dir().join("hive_test_early_sid");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("output.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"system","subtype":"init","session_id":"early123","cwd":"/project"}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}
+"#,
+        )
+        .unwrap();
+        let sid = parse_early_session_id(&path);
+        assert_eq!(sid, Some("early123".to_string()));
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_parse_early_session_id_missing_file() {
+        let sid = parse_early_session_id(Path::new("/nonexistent/output.jsonl"));
+        assert_eq!(sid, None);
+    }
+
+    #[test]
+    fn test_parse_early_session_id_no_init() {
+        let dir = std::env::temp_dir().join("hive_test_early_no_init");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("output.jsonl");
+        fs::write(
+            &path,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]}}
+{"type":"result","subtype":"success","duration_ms":100,"total_cost_usd":0.01,"num_turns":1,"result":"Done"}
+"#,
+        )
+        .unwrap();
+        let sid = parse_early_session_id(&path);
         assert_eq!(sid, None);
         let _ = fs::remove_file(&path);
         let _ = fs::remove_dir(&dir);
