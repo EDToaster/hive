@@ -22,8 +22,20 @@ impl AgentSpawner {
         let worktree_path = state.worktree_path(run_id, agent_id);
         let branch = format!("hive/{run_id}/{agent_id}");
 
-        // Step 1: Create worktree
-        Git::worktree_add(state.repo_root(), &worktree_path, &branch)?;
+        // Step 1: Create worktree (branch from parent's branch if parent has a worktree)
+        let start_point = parent.and_then(|parent_id| {
+            state
+                .load_agent(run_id, parent_id)
+                .ok()
+                .filter(|agent| agent.worktree.is_some())
+                .map(|_| format!("hive/{run_id}/{parent_id}"))
+        });
+        Git::worktree_add(
+            state.repo_root(),
+            &worktree_path,
+            &branch,
+            start_point.as_deref(),
+        )?;
 
         // Step 2: Write .claude/settings.local.json (hooks)
         let claude_dir = worktree_path.join(".claude");

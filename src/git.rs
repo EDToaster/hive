@@ -23,17 +23,14 @@ impl Git {
         repo_root: &Path,
         worktree_path: &Path,
         branch: &str,
+        start_point: Option<&str>,
     ) -> Result<(), String> {
-        Self::run(
-            &[
-                "worktree",
-                "add",
-                &worktree_path.to_string_lossy(),
-                "-b",
-                branch,
-            ],
-            repo_root,
-        )?;
+        let wt_str = worktree_path.to_string_lossy();
+        let mut args = vec!["worktree", "add", &wt_str, "-b", branch];
+        if let Some(sp) = start_point {
+            args.push(sp);
+        }
+        Self::run(&args, repo_root)?;
         Ok(())
     }
 
@@ -188,7 +185,7 @@ mod tests {
         let dir = init_test_repo();
         let wt_path = dir.path().join("worktree-1");
 
-        Git::worktree_add(dir.path(), &wt_path, "test-branch").unwrap();
+        Git::worktree_add(dir.path(), &wt_path, "test-branch", None).unwrap();
 
         assert!(wt_path.exists());
         assert!(wt_path.is_dir());
@@ -201,8 +198,8 @@ mod tests {
         let wt1 = dir.path().join("wt1");
         let wt2 = dir.path().join("wt2");
 
-        Git::worktree_add(dir.path(), &wt1, "same-branch").unwrap();
-        assert!(Git::worktree_add(dir.path(), &wt2, "same-branch").is_err());
+        Git::worktree_add(dir.path(), &wt1, "same-branch", None).unwrap();
+        assert!(Git::worktree_add(dir.path(), &wt2, "same-branch", None).is_err());
     }
 
     #[test]
@@ -210,7 +207,7 @@ mod tests {
         let dir = init_test_repo();
         let wt_path = dir.path().join("wt-remove");
 
-        Git::worktree_add(dir.path(), &wt_path, "remove-branch").unwrap();
+        Git::worktree_add(dir.path(), &wt_path, "remove-branch", None).unwrap();
         assert!(wt_path.exists());
 
         Git::worktree_remove(dir.path(), &wt_path).unwrap();
@@ -426,6 +423,31 @@ mod tests {
     fn reset_hard_invalid_ref_fails() {
         let dir = init_test_repo();
         assert!(Git::reset_hard(dir.path(), "nonexistent-ref-abc123").is_err());
+    }
+
+    #[test]
+    fn worktree_add_with_start_point() {
+        let dir = init_test_repo();
+
+        // Create a branch with a unique commit
+        Git::run(&["checkout", "-b", "parent-branch"], dir.path()).unwrap();
+        fs::write(dir.path().join("parent.txt"), "parent content").unwrap();
+        Git::run(&["add", "parent.txt"], dir.path()).unwrap();
+        Git::run(&["commit", "-m", "parent commit"], dir.path()).unwrap();
+
+        // Go back to main
+        Git::checkout(dir.path(), "main").unwrap();
+
+        // Create worktree branching from parent-branch
+        let wt_path = dir.path().join("child-wt");
+        Git::worktree_add(dir.path(), &wt_path, "child-branch", Some("parent-branch")).unwrap();
+
+        // Verify the worktree exists and has the parent's commit
+        assert!(wt_path.exists());
+        assert_eq!(Git::current_branch(&wt_path).unwrap(), "child-branch");
+        assert!(wt_path.join("parent.txt").exists());
+        let content = fs::read_to_string(wt_path.join("parent.txt")).unwrap();
+        assert_eq!(content, "parent content");
     }
 
     #[test]
