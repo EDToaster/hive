@@ -1079,7 +1079,9 @@ fn render_swarm_pane(
                 ));
             }
 
-            if let Some(hb) = node.heartbeat {
+            if node.role != AgentRole::Coordinator
+                && let Some(hb) = node.heartbeat
+            {
                 let age = (now - hb).num_seconds().max(0);
                 let hb_color = if dimmed {
                     Color::Gray
@@ -1120,7 +1122,8 @@ fn render_swarm_pane(
 
     let bc = border_color(ui.focused_pane, Pane::Swarm);
     let block = Block::default()
-        .title(" Swarm [Enter] detail  [o] output ")
+        .title(" Swarm ")
+        .title_bottom(Line::from(" [Enter] detail  [o] output ").right_aligned())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(bc));
 
@@ -1748,7 +1751,7 @@ fn render_agent_output_overlay(
                     duration_ms,
                     cost_usd,
                     num_turns,
-                    result,
+                    ..
                 } => {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
@@ -1768,15 +1771,6 @@ fn render_agent_output_overlay(
                         ),
                         Style::default().fg(Color::Green),
                     )));
-                    if !result.is_empty() {
-                        let truncated = crate::output::truncate(result, 200);
-                        for l in truncated.lines() {
-                            lines.push(Line::from(Span::styled(
-                                format!(" {l}"),
-                                Style::default().fg(Color::Green),
-                            )));
-                        }
-                    }
                 }
             }
         }
