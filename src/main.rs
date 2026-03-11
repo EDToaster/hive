@@ -52,6 +52,7 @@ fn main() {
         Commands::Memory { command } => cmd_memory(command),
         Commands::Explore { intent } => cmd_explore(&intent),
         Commands::Mind { command } => cmd_mind(command),
+        Commands::AgentExit { run, agent } => cmd_agent_exit(&run, &agent),
         Commands::Stop => cmd_stop(),
         Commands::Watch { interval } => cmd_watch(interval),
     };
@@ -209,20 +210,8 @@ fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
-    // Write .mcp.json for coordinator MCP
-    let mcp_config = serde_json::json!({
-        "mcpServers": {
-            "hive": {
-                "command": "hive",
-                "args": ["mcp", "--run", &run_id, "--agent", "coordinator"]
-            }
-        }
-    });
-    fs::write(
-        repo_root.join(".mcp.json"),
-        serde_json::to_string_pretty(&mcp_config).unwrap(),
-    )
-    .map_err(|e| e.to_string())?;
+    // Write .mcp.json for coordinator MCP (merge with existing)
+    crate::agent::AgentSpawner::write_mcp_config(&repo_root.join(".mcp.json"), &run_id, "coordinator")?;
 
     // Register coordinator agent (no PID — user launches claude manually)
     let coordinator = crate::types::Agent {
@@ -477,6 +466,43 @@ fn cmd_log_tool(
 fn cmd_heartbeat(run_id: &str, agent_id: &str) -> Result<(), String> {
     let state = HiveState::discover()?;
     state.update_agent_heartbeat(run_id, agent_id)
+}
+
+fn cmd_agent_exit(run_id: &str, agent_id: &str) -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let mut agent = state.load_agent(run_id, agent_id)?;
+
+    // Only transition if currently Running — otherwise silently succeed (idempotent)
+    if agent.status != types::AgentStatus::Running {
+        return Ok(());
+    }
+
+    // Auto-commit any uncommitted work
+    if let Some(ref wt) = agent.worktree {
+        let wt_path = std::path::Path::new(wt);
+        if wt_path.exists()
+            && let Ok(status) = git::Git::status_porcelain(wt_path)
+            && !status.is_empty()
+        {
+            let _ = git::Git::add_all(wt_path);
+            let _ = git::Git::commit(wt_path, "wip: auto-commit on agent exit");
+        }
+    }
+
+    // Parse session_id from output
+    let output_path = state
+        .agents_dir(run_id)
+        .join(agent_id)
+        .join("output.jsonl");
+    agent.session_id = output::parse_session_id_from_output(&output_path);
+
+    // Transition to Idle
+    agent.status = types::AgentStatus::Idle;
+    agent.last_completed_at = Some(chrono::Utc::now());
+    agent.pid = None;
+    state.save_agent(run_id, &agent)?;
+
+    Ok(())
 }
 
 fn cmd_logs(agent_filter: Option<String>) -> Result<(), String> {
@@ -1026,20 +1052,8 @@ fn cmd_explore(intent: &str) -> Result<(), String> {
     )
     .map_err(|e| e.to_string())?;
 
-    // Write .mcp.json for coordinator MCP
-    let mcp_config = serde_json::json!({
-        "mcpServers": {
-            "hive": {
-                "command": "hive",
-                "args": ["mcp", "--run", &run_id, "--agent", "coordinator"]
-            }
-        }
-    });
-    fs::write(
-        repo_root.join(".mcp.json"),
-        serde_json::to_string_pretty(&mcp_config).unwrap(),
-    )
-    .map_err(|e| e.to_string())?;
+    // Write .mcp.json for coordinator MCP (merge with existing)
+    crate::agent::AgentSpawner::write_mcp_config(&repo_root.join(".mcp.json"), &run_id, "coordinator")?;
 
     // Register coordinator agent (no PID — user launches claude manually)
     let coordinator = crate::types::Agent {
@@ -1230,7 +1244,7 @@ fn cmd_stop() -> Result<(), String> {
     // Clean up coordinator files
     let repo_root = state.repo_root();
     let _ = std::fs::remove_file(repo_root.join("CLAUDE.local.md"));
-    let _ = std::fs::remove_file(repo_root.join(".mcp.json"));
+    let _ = crate::agent::AgentSpawner::remove_hive_mcp_entry(&repo_root.join(".mcp.json"));
     let _ = std::fs::remove_file(repo_root.join(".claude/settings.local.json"));
 
     // Mark run as completed
@@ -1268,5 +1282,22 @@ mod tests {
         let cli =
             crate::cli::Cli::try_parse_from(["hive", "mind", "query", "search term"]).unwrap();
         assert!(matches!(cli.command, crate::cli::Commands::Mind { .. }));
+    }
+
+    #[test]
+    fn test_cli_agent_exit_command() {
+        let cli = crate::cli::Cli::try_parse_from([
+            "hive",
+            "agent-exit",
+            "--run",
+            "abc",
+            "--agent",
+            "worker-1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            crate::cli::Commands::AgentExit { .. }
+        ));
     }
 }
