@@ -1243,11 +1243,13 @@ impl HiveMcp {
                     agent.last_completed_at = Some(now);
                     agent.pid = None;
                     let _ = state.save_agent(&self.run_id, &agent);
+                    self.notify_parent_of_transition(&state, &agent);
                 } else if agent.status == AgentStatus::Running {
                     // Process exited but no session_id found — mark as failed
                     agent.status = AgentStatus::Failed;
                     agent.pid = None;
                     let _ = state.save_agent(&self.run_id, &agent);
+                    self.notify_parent_of_transition(&state, &agent);
                 }
             } else if process_alive == Some(false)
                 && agent.session_id.is_some()
@@ -1258,6 +1260,7 @@ impl HiveMcp {
                 agent.last_completed_at = Some(now);
                 agent.pid = None;
                 let _ = state.save_agent(&self.run_id, &agent);
+                self.notify_parent_of_transition(&state, &agent);
             }
 
             let idle_since_secs = agent.last_completed_at.map(|lc| (now - lc).num_seconds());
@@ -1306,6 +1309,7 @@ impl HiveMcp {
                         agent.status = AgentStatus::Stalled;
                         agent.pid = None;
                         let _ = state.save_agent(&self.run_id, &agent);
+                        self.notify_parent_of_transition(&state, &agent);
 
                         "stalled"
                     } else {
@@ -2066,6 +2070,33 @@ impl HiveMcp {
             }
             Err(e) => Some(format!(" (failed to wake agent '{to}': {e})")),
         }
+    }
+
+    /// Send a status notification to an agent's parent when the agent transitions
+    /// from Running to Idle/Failed/Stalled, and wake the parent if idle.
+    fn notify_parent_of_transition(&self, state: &HiveState, agent: &crate::types::Agent) {
+        let parent_id = match agent.parent {
+            Some(ref id) => id,
+            None => return,
+        };
+        let body = format!(
+            "Agent {} transitioned to {:?} (task: {})",
+            agent.id,
+            agent.status,
+            agent.task_id.as_deref().unwrap_or("none")
+        );
+        let msg_id = format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+        let message = Message {
+            id: msg_id,
+            from: agent.id.clone(),
+            to: parent_id.clone(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Status,
+            body: body.clone(),
+            refs: agent.task_id.clone().into_iter().collect(),
+        };
+        let _ = state.save_message(&self.run_id, &message);
+        let _ = self.try_wake_agent(parent_id, &body);
     }
 
     fn notify_submitter(state: &HiveState, run_id: &str, to: &str, body: &str) {
@@ -3007,5 +3038,78 @@ mod tests {
             .expect("coordinator report should exist");
         assert_eq!(coord_report["commit_count"], 0);
         assert!(coord_report["recent_commits"].is_null());
+    }
+
+    #[test]
+    fn notify_parent_of_transition_sends_message_and_records() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        // Create a worker agent with a parent
+        let worker = Agent {
+            id: "worker-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Idle,
+            parent: Some("lead-1".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-w1".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker).unwrap();
+
+        // Call the helper
+        mcp.notify_parent_of_transition(&state, &worker);
+
+        // Verify a message was sent to the parent
+        let messages = state.list_messages("test-run").unwrap();
+        let notify_msgs: Vec<_> = messages
+            .iter()
+            .filter(|m| m.from == "worker-1" && m.to == "lead-1")
+            .collect();
+        assert_eq!(notify_msgs.len(), 1, "Should send exactly one notification");
+        let msg = notify_msgs[0];
+        assert_eq!(msg.message_type, MessageType::Status);
+        assert!(msg.body.contains("worker-1"));
+        assert!(msg.body.contains("Idle"));
+        assert!(msg.body.contains("task-w1"));
+        assert_eq!(msg.refs, vec!["task-w1".to_string()]);
+    }
+
+    #[test]
+    fn notify_parent_of_transition_no_parent_is_noop() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        // Agent with no parent
+        let agent = Agent {
+            id: "solo-agent".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Idle,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &agent).unwrap();
+
+        mcp.notify_parent_of_transition(&state, &agent);
+
+        // No messages should be created
+        let messages = state.list_messages("test-run").unwrap();
+        let notify_msgs: Vec<_> = messages
+            .iter()
+            .filter(|m| m.from == "solo-agent")
+            .collect();
+        assert_eq!(notify_msgs.len(), 0, "No notification without a parent");
     }
 }
