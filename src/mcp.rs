@@ -1,7 +1,7 @@
 use crate::logging::LogDb;
 use crate::state::HiveState;
 use crate::types::{
-    AgentRole, AgentStatus, Confidence, Discovery, FailureEntry, Insight, MergeQueue,
+    Agent, AgentRole, AgentStatus, Confidence, Discovery, FailureEntry, Insight, MergeQueue,
     MergeQueueEntry, Message, MessageType, OperationalEntry, Task, TaskStatus, Urgency,
 };
 use chrono::Utc;
@@ -1231,13 +1231,28 @@ impl HiveMcp {
                 Self::auto_commit_worktree(wt);
             }
 
+            // Early session ID capture: for running agents, try to grab session_id from init line
+            if agent.status == AgentStatus::Running
+                && process_alive == Some(true)
+                && agent.session_id.is_none()
+            {
+                let output_path = state
+                    .agents_dir(&self.run_id)
+                    .join(&agent.id)
+                    .join("output.jsonl");
+                if let Some(sid) = crate::output::parse_early_session_id(&output_path) {
+                    agent.session_id = Some(sid);
+                    let _ = state.save_agent(&self.run_id, &agent);
+                }
+            }
+
             // Session ID capture: if process exited and no session_id yet, parse output.jsonl
             if process_alive == Some(false) && agent.session_id.is_none() {
                 let output_path = state
                     .agents_dir(&self.run_id)
                     .join(&agent.id)
                     .join("output.jsonl");
-                if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
+                if let Some(sid) = crate::output::parse_session_id_from_output(&output_path) {
                     agent.session_id = Some(sid);
                     agent.status = AgentStatus::Idle;
                     agent.last_completed_at = Some(now);
@@ -1297,7 +1312,7 @@ impl HiveMcp {
                                 .agents_dir(&self.run_id)
                                 .join(&agent.id)
                                 .join("output.jsonl");
-                            if let Some(sid) = Self::parse_session_id_from_output(&output_path) {
+                            if let Some(sid) = crate::output::parse_session_id_from_output(&output_path) {
                                 agent.session_id = Some(sid);
                             }
                         }
@@ -1548,6 +1563,40 @@ impl HiveMcp {
                 "Agent has exceeded max retries ({})",
                 config.max_retries
             ))]));
+        }
+
+        // Prefer resume when session_id exists and worktree is intact
+        if agent.session_id.is_some()
+            && agent
+                .worktree
+                .as_ref()
+                .is_some_and(|wt| std::path::Path::new(wt).exists())
+        {
+            let task_description = match &agent.task_id {
+                Some(tid) => match state.load_task(&self.run_id, tid) {
+                    Ok(task) => task.description.clone(),
+                    Err(_) => String::new(),
+                },
+                None => String::new(),
+            };
+            let retry_num = agent.retry_count + 1;
+            let mut enhanced_desc = task_description;
+            enhanced_desc.push_str(&format!("\n\n## Retry #{}\n", retry_num));
+            if let Some(ref feedback) = p.feedback {
+                enhanced_desc.push_str(feedback);
+            }
+            let mut agent = agent.clone();
+            match self.resume_agent(&mut agent, &enhanced_desc) {
+                Ok(pid) => {
+                    agent.retry_count = retry_num;
+                    let _ = state.save_agent(&self.run_id, &agent);
+                    return Ok(CallToolResult::success(vec![Content::text(format!(
+                        "Resumed agent '{}' (retry #{}, pid={}, preserving conversation context)",
+                        agent.id, retry_num, pid
+                    ))]));
+                }
+                Err(_) => { /* Fall through to destroy-and-respawn */ }
+            }
         }
 
         // Get task description for re-spawn
@@ -1969,19 +2018,6 @@ impl ServerHandler for HiveMcp {
 }
 
 impl HiveMcp {
-    fn parse_session_id_from_output(output_path: &std::path::Path) -> Option<String> {
-        let data = std::fs::read_to_string(output_path).ok()?;
-        // NDJSON (stream-json): scan lines in reverse for the result message with session_id
-        for line in data.lines().rev() {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(line)
-                && let Some(sid) = json.get("session_id").and_then(|v| v.as_str())
-            {
-                return Some(sid.to_string());
-            }
-        }
-        None
-    }
-
     fn auto_commit_worktree(worktree: &str) -> Option<String> {
         let wt_path = std::path::Path::new(worktree);
         if !wt_path.exists() {
@@ -1994,6 +2030,50 @@ impl HiveMcp {
         crate::git::Git::add_all(wt_path).ok()?;
         let _ = crate::git::Git::commit(wt_path, "wip: auto-commit on agent exit");
         Some(status)
+    }
+
+    /// Resume a crashed/failed agent using its existing session_id, preserving conversation context.
+    fn resume_agent(&self, agent: &mut Agent, prompt: &str) -> Result<u32, String> {
+        let state = self.state();
+        let session_id = agent
+            .session_id
+            .as_ref()
+            .ok_or("No session_id for resume")?;
+        let worktree = agent.worktree.as_ref().ok_or("No worktree for resume")?;
+        let agent_output_dir = state.agents_dir(&self.run_id).join(&agent.id);
+        let output_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(agent_output_dir.join("output.jsonl"))
+            .map_err(|e| format!("Failed to open output file: {e}"))?;
+        let stderr_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(agent_output_dir.join("stderr.log"))
+            .map_err(|e| format!("Failed to open stderr file: {e}"))?;
+        let child = std::process::Command::new("claude")
+            .arg("-p")
+            .arg(prompt)
+            .arg("--resume")
+            .arg(session_id)
+            .arg("--verbose")
+            .arg("--output-format")
+            .arg("stream-json")
+            .arg("--dangerously-skip-permissions")
+            .env_remove("CLAUDECODE")
+            .current_dir(worktree)
+            .stdin(std::process::Stdio::null())
+            .stdout(output_file)
+            .stderr(std::process::Stdio::from(stderr_file))
+            .spawn()
+            .map_err(|e| format!("Failed to resume claude: {e}"))?;
+        let pid = child.id();
+        agent.status = AgentStatus::Running;
+        agent.pid = Some(pid);
+        agent.heartbeat = Some(Utc::now());
+        agent.session_id = None; // Will be re-captured from new output
+        let _ = state.save_agent(&self.run_id, agent);
+        Ok(pid)
     }
 
     /// If the target agent is idle with a session_id, resume it by spawning
