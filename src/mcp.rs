@@ -1375,6 +1375,7 @@ impl HiveMcp {
             self.repo_root.as_ref(),
             &self.run_id,
             params.0.timeout_secs,
+            Some(&self.agent_id),
         )
         .await;
         match result {
