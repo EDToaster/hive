@@ -1356,6 +1356,18 @@ fn render_activity_stream(
     let list = List::new(items).block(block);
 
     frame.render_stateful_widget(list, area, &mut list_state);
+
+    // Scrollbar
+    let scroll_position = if ui.activity_auto_scroll {
+        activity.len().saturating_sub(1)
+    } else {
+        ui.activity_scroll
+    };
+    let mut scrollbar_state = ScrollbarState::new(activity.len()).position(scroll_position);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .track_style(Style::default().fg(Color::DarkGray))
+        .thumb_style(Style::default().fg(Color::Gray));
+    frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
 // ---------------------------------------------------------------------------
@@ -1697,6 +1709,11 @@ fn render_agent_output_overlay(
         }
     }
 
+    // Overscroll: breathing room at the bottom
+    for _ in 0..5 {
+        lines.push(Line::from(""));
+    }
+
     // Footer
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -1723,6 +1740,13 @@ fn render_agent_output_overlay(
         .wrap(Wrap { trim: false })
         .scroll((effective_scroll as u16, 0));
     frame.render_widget(paragraph, area);
+
+    // Scrollbar
+    let mut scrollbar_state = ScrollbarState::new(total_lines).position(effective_scroll);
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .track_style(Style::default().fg(Color::DarkGray))
+        .thumb_style(Style::default().fg(Color::Gray));
+    frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
 
 #[cfg(test)]
