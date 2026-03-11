@@ -562,6 +562,7 @@ fn cmd_wait(run: Option<String>, timeout: u64) -> Result<(), String> {
         state.repo_root(),
         &run_id,
         timeout,
+        None,
     ))?;
     println!("{result}");
     Ok(())
