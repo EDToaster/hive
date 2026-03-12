@@ -329,6 +329,50 @@ fn format_action_summary(tool_name: &str, args_summary: Option<&str>) -> String 
 }
 
 /// Load the first tool call timestamp per agent from log.db as approximate spawn time.
+/// Per-agent tool call record for gantt visualization (phase coloring + idle gaps).
+pub(crate) struct AgentToolCall {
+    pub timestamp: DateTime<Utc>,
+    pub tool_name: String,
+}
+
+fn load_agent_tool_calls(
+    log_db: &Option<Connection>,
+    run_id: &str,
+) -> HashMap<String, Vec<AgentToolCall>> {
+    let conn = match log_db {
+        Some(c) => c,
+        None => return HashMap::new(),
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT agent_id, tool_name, timestamp FROM tool_calls \
+         WHERE run_id = ?1 ORDER BY timestamp",
+    ) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let rows = match stmt.query_map(rusqlite::params![run_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    }) {
+        Ok(r) => r,
+        Err(_) => return HashMap::new(),
+    };
+    let mut result: HashMap<String, Vec<AgentToolCall>> = HashMap::new();
+    for row in rows.flatten() {
+        let (agent_id, tool_name, ts_str) = row;
+        if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
+            result.entry(agent_id).or_default().push(AgentToolCall {
+                timestamp: ts,
+                tool_name,
+            });
+        }
+    }
+    result
+}
+
 fn load_agent_spawn_times(
     log_db: &Option<Connection>,
     run_id: &str,
@@ -443,8 +487,9 @@ fn run_tui_loop(
         // Load latest action per agent for swarm pane display
         let latest_actions = load_latest_actions(log_db, run_id);
 
-        // Load agent spawn times from log.db for gantt view
+        // Load agent data from log.db for gantt view
         let spawn_times = load_agent_spawn_times(log_db, run_id);
+        let agent_tool_calls = load_agent_tool_calls(log_db, run_id);
 
         // Build activity entries
         let mut activity: Vec<ActivityEntry> = messages
@@ -524,6 +569,7 @@ fn run_tui_loop(
                         &queue,
                         &run_meta,
                         &spawn_times,
+                        &agent_tool_calls,
                         ui.gantt_scroll,
                     );
                 } else if let Some(planner) = planner_agent {
