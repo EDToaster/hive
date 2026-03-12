@@ -1,6 +1,9 @@
 use crate::state::HiveState;
 
-pub fn cmd_tasks(status_filter: Option<String>, assignee_filter: Option<String>) -> Result<(), String> {
+pub fn cmd_tasks(
+    status_filter: Option<String>,
+    assignee_filter: Option<String>,
+) -> Result<(), String> {
     let state = HiveState::discover()?;
     let run_id = state.active_run_id()?;
     let tasks = state.list_tasks(&run_id)?;

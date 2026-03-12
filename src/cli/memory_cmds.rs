@@ -1,5 +1,5 @@
-use crate::state::HiveState;
 use super::MemoryCommands;
+use crate::state::HiveState;
 
 pub fn cmd_memory(command: Option<MemoryCommands>) -> Result<(), String> {
     let state = HiveState::discover()?;

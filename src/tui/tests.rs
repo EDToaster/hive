@@ -324,8 +324,7 @@ fn format_hive_send_message() {
 
 #[test]
 fn format_hive_create_task() {
-    let (tool, args, color) =
-        format_tool_display("hive_create_task", Some("title=Add feature X"));
+    let (tool, args, color) = format_tool_display("hive_create_task", Some("title=Add feature X"));
     assert_eq!(tool, "CreateTask");
     assert_eq!(args, "Add feature X");
     assert_eq!(color, Color::Yellow);
@@ -794,12 +793,7 @@ fn detect_multiplexer_returns_valid_value() {
 // Helper: make_agent
 // -----------------------------------------------------------------------
 
-fn make_agent(
-    id: &str,
-    role: AgentRole,
-    status: AgentStatus,
-    parent: Option<&str>,
-) -> Agent {
+fn make_agent(id: &str, role: AgentRole, status: AgentStatus, parent: Option<&str>) -> Agent {
     Agent {
         id: id.into(),
         role,
@@ -841,9 +835,12 @@ fn aggregate_child_status_empty_children() {
 
 #[test]
 fn aggregate_agent_status_no_descendants() {
-    let agents = vec![
-        make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-    ];
+    let agents = vec![make_agent(
+        "coord",
+        AgentRole::Coordinator,
+        AgentStatus::Running,
+        None,
+    )];
     let result = aggregate_agent_status(&agents, "coord");
     assert_eq!(result, "");
 }
@@ -1095,19 +1092,13 @@ fn extract_arg_value_with_spaces() {
 
 #[test]
 fn extract_arg_last_key() {
-    assert_eq!(
-        extract_arg("a=1, b=2, c=3", "c"),
-        Some("3")
-    );
+    assert_eq!(extract_arg("a=1, b=2, c=3", "c"), Some("3"));
 }
 
 #[test]
 fn extract_arg_key_substring_no_false_match() {
     // "file_path" should not match "path"
-    assert_eq!(
-        extract_arg("file_path=/src/main.rs", "path"),
-        None
-    );
+    assert_eq!(extract_arg("file_path=/src/main.rs", "path"), None);
 }
 
 // -----------------------------------------------------------------------
@@ -1116,9 +1107,12 @@ fn extract_arg_key_substring_no_false_match() {
 
 #[test]
 fn agent_tree_single_coordinator() {
-    let agents = vec![
-        make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-    ];
+    let agents = vec![make_agent(
+        "coord",
+        AgentRole::Coordinator,
+        AgentStatus::Running,
+        None,
+    )];
     let nodes = build_tree(&agents, &HashSet::new());
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].agent_id, "coord");
@@ -1140,8 +1134,18 @@ fn agent_tree_coordinator_sorts_first() {
 fn agent_tree_with_children() {
     let agents = vec![
         make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-        make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
-        make_agent("worker-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
+        make_agent(
+            "lead-1",
+            AgentRole::Lead,
+            AgentStatus::Running,
+            Some("coord"),
+        ),
+        make_agent(
+            "worker-1",
+            AgentRole::Worker,
+            AgentStatus::Done,
+            Some("lead-1"),
+        ),
     ];
     let nodes = build_tree(&agents, &HashSet::new());
     assert_eq!(nodes.len(), 3);
@@ -1156,8 +1160,18 @@ fn agent_tree_with_children() {
 fn agent_tree_collapse_hides_children() {
     let agents = vec![
         make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-        make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
-        make_agent("worker-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
+        make_agent(
+            "lead-1",
+            AgentRole::Lead,
+            AgentStatus::Running,
+            Some("coord"),
+        ),
+        make_agent(
+            "worker-1",
+            AgentRole::Worker,
+            AgentStatus::Done,
+            Some("lead-1"),
+        ),
     ];
     let mut collapsed = HashSet::new();
     collapsed.insert("coord".to_string());
@@ -1171,9 +1185,24 @@ fn agent_tree_collapse_hides_children() {
 fn agent_tree_collapse_inner_node_only() {
     let agents = vec![
         make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-        make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
-        make_agent("worker-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
-        make_agent("worker-2", AgentRole::Worker, AgentStatus::Running, Some("lead-1")),
+        make_agent(
+            "lead-1",
+            AgentRole::Lead,
+            AgentStatus::Running,
+            Some("coord"),
+        ),
+        make_agent(
+            "worker-1",
+            AgentRole::Worker,
+            AgentStatus::Done,
+            Some("lead-1"),
+        ),
+        make_agent(
+            "worker-2",
+            AgentRole::Worker,
+            AgentStatus::Running,
+            Some("lead-1"),
+        ),
     ];
     // Collapse lead-1 but not coord
     let mut collapsed = HashSet::new();
@@ -1190,10 +1219,20 @@ fn agent_tree_collapse_inner_node_only() {
 fn aggregate_agent_status_mixed() {
     let agents = vec![
         make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-        make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+        make_agent(
+            "lead-1",
+            AgentRole::Lead,
+            AgentStatus::Running,
+            Some("coord"),
+        ),
         make_agent("lead-2", AgentRole::Lead, AgentStatus::Done, Some("coord")),
         make_agent("w-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
-        make_agent("w-2", AgentRole::Worker, AgentStatus::Failed, Some("lead-1")),
+        make_agent(
+            "w-2",
+            AgentRole::Worker,
+            AgentStatus::Failed,
+            Some("lead-1"),
+        ),
     ];
     let result = aggregate_agent_status(&agents, "coord");
     assert!(result.contains("1 run"));
@@ -1205,8 +1244,18 @@ fn aggregate_agent_status_mixed() {
 fn agent_children_sorted_by_id() {
     let agents = vec![
         make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-        make_agent("lead-b", AgentRole::Lead, AgentStatus::Running, Some("coord")),
-        make_agent("lead-a", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+        make_agent(
+            "lead-b",
+            AgentRole::Lead,
+            AgentStatus::Running,
+            Some("coord"),
+        ),
+        make_agent(
+            "lead-a",
+            AgentRole::Lead,
+            AgentStatus::Running,
+            Some("coord"),
+        ),
     ];
     let children = agent_children(&agents, "coord");
     assert_eq!(children[0].id, "lead-a");
@@ -1219,9 +1268,7 @@ fn agent_children_sorted_by_id() {
 
 #[test]
 fn task_tree_all_status_types_in_aggregate() {
-    let mut tasks = vec![
-        make_task("p", "Parent", None, TaskStatus::Active),
-    ];
+    let mut tasks = vec![make_task("p", "Parent", None, TaskStatus::Active)];
     let statuses = [
         TaskStatus::Active,
         TaskStatus::Review,
@@ -1235,7 +1282,12 @@ fn task_tree_all_status_types_in_aggregate() {
         TaskStatus::Cancelled,
     ];
     for (i, status) in statuses.iter().enumerate() {
-        tasks.push(make_task(&format!("c{i}"), &format!("Child {i}"), Some("p"), *status));
+        tasks.push(make_task(
+            &format!("c{i}"),
+            &format!("Child {i}"),
+            Some("p"),
+            *status,
+        ));
     }
     let mut collapsed = HashSet::new();
     collapsed.insert("p".to_string());
@@ -1276,9 +1328,12 @@ fn task_tree_review_count_on_child() {
 #[test]
 fn task_tree_orphan_child_treated_as_root() {
     // Child references a parent that doesn't exist — treated as standalone
-    let tasks = vec![
-        make_task("orphan", "Orphan Task", Some("nonexistent"), TaskStatus::Active),
-    ];
+    let tasks = vec![make_task(
+        "orphan",
+        "Orphan Task",
+        Some("nonexistent"),
+        TaskStatus::Active,
+    )];
     let nodes = build_task_tree(&tasks, &HashSet::new());
     // Orphan should not appear as root since it has parent_task set
     assert!(nodes.is_empty());
@@ -1393,10 +1448,7 @@ fn mouse_scroll_down_at_end_no_overflow() {
         swarm_selected: Some(1),
         ..Default::default()
     };
-    let nodes = vec![
-        make_tree_node("a-0", false),
-        make_tree_node("a-1", false),
-    ];
+    let nodes = vec![make_tree_node("a-0", false), make_tree_node("a-1", false)];
     handle_mouse(
         &mut ui,
         make_mouse(MouseEventKind::ScrollDown, 5, 5),
@@ -1469,9 +1521,12 @@ fn centered_rect_small_area() {
 
 #[test]
 fn agent_tree_many_agents() {
-    let mut agents = vec![
-        make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-    ];
+    let mut agents = vec![make_agent(
+        "coord",
+        AgentRole::Coordinator,
+        AgentStatus::Running,
+        None,
+    )];
     for i in 0..20 {
         agents.push(make_agent(
             &format!("lead-{i:02}"),
@@ -1491,8 +1546,18 @@ fn agent_tree_deep_nesting() {
     // coord → lead → worker (3 levels)
     let agents = vec![
         make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
-        make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
-        make_agent("w-1", AgentRole::Worker, AgentStatus::Running, Some("lead-1")),
+        make_agent(
+            "lead-1",
+            AgentRole::Lead,
+            AgentStatus::Running,
+            Some("coord"),
+        ),
+        make_agent(
+            "w-1",
+            AgentRole::Worker,
+            AgentStatus::Running,
+            Some("lead-1"),
+        ),
         make_agent("w-2", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
     ];
     let nodes = build_tree(&agents, &HashSet::new());
@@ -1540,6 +1605,10 @@ fn load_latest_actions_many_agents() {
     for i in 0..50 {
         let key = format!("worker-{i}");
         assert!(actions.contains_key(&key), "missing {key}");
-        assert!(actions[&key].contains("tool-2"), "wrong latest for {key}: {}", actions[&key]);
+        assert!(
+            actions[&key].contains("tool-2"),
+            "wrong latest for {key}: {}",
+            actions[&key]
+        );
     }
 }

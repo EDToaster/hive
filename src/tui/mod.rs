@@ -11,9 +11,7 @@ use crate::state::HiveState;
 use crate::types::*;
 use chrono::{DateTime, Utc};
 use crossterm::ExecutableCommand;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode,
-};
+use crossterm::event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };

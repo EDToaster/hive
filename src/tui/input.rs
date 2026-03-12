@@ -2,7 +2,7 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use std::time::Instant;
 
 use super::tree::{TaskTreeNode, TreeNode};
-use super::{pane_row_index, Overlay, Pane, TuiState, DOUBLE_CLICK_MS};
+use super::{DOUBLE_CLICK_MS, Overlay, Pane, TuiState, pane_row_index};
 
 pub(super) fn handle_mouse(
     ui: &mut TuiState,

@@ -4,8 +4,8 @@ use chrono::Utc;
 use ratatui::prelude::*;
 use ratatui::widgets::*;
 
-use super::helpers::{centered_rect, format_duration_short};
 use super::Overlay;
+use super::helpers::{centered_rect, format_duration_short};
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_overlay(

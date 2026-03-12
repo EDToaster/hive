@@ -13,7 +13,12 @@ use std::collections::HashSet;
 // Render: Title bar
 // ---------------------------------------------------------------------------
 
-pub(super) fn render_title_bar(frame: &mut Frame, area: Rect, run_id: &str, run_meta: &Option<RunMetadata>) {
+pub(super) fn render_title_bar(
+    frame: &mut Frame,
+    area: Rect,
+    run_id: &str,
+    run_meta: &Option<RunMetadata>,
+) {
     let uptime = run_meta
         .as_ref()
         .map(|m| {
@@ -371,7 +376,10 @@ pub(super) fn extract_arg<'a>(args: &'a str, key: &str) -> Option<&'a str> {
 ///
 /// Hive tools get `Color::Yellow`, standard Claude tools get `Color::Gray`.
 /// Returns (tool_display, args_display, color) for a tool call.
-pub(super) fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, String, Color) {
+pub(super) fn format_tool_display(
+    tool_name: &str,
+    args_summary: Option<&str>,
+) -> (String, String, Color) {
     let args = args_summary.unwrap_or("");
     // Strip MCP prefix: "mcp__<server>__<tool>" → "<tool>"
     let tool_name = if let Some(rest) = tool_name.strip_prefix("mcp__") {

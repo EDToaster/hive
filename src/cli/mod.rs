@@ -6,11 +6,13 @@ mod task_cmds;
 #[cfg(test)]
 mod tests;
 
-pub use agent_cmds::{cmd_agent_exit, cmd_agents, cmd_heartbeat, cmd_log_tool, cmd_logs, cmd_review_agent};
+pub use agent_cmds::{
+    cmd_agent_exit, cmd_agents, cmd_heartbeat, cmd_log_tool, cmd_logs, cmd_review_agent,
+};
 pub use memory_cmds::{cmd_memory, cmd_mind};
-pub use message_cmds::{cmd_messages, cmd_read_messages};
 #[cfg(test)]
 pub(crate) use message_cmds::read_messages_inner;
+pub use message_cmds::{cmd_messages, cmd_read_messages};
 pub use run_cmds::{
     cmd_cost, cmd_explore, cmd_history, cmd_init, cmd_mcp, cmd_start, cmd_status, cmd_stop,
     cmd_summary, cmd_tui, cmd_wait, cmd_watch,
