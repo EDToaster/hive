@@ -807,6 +807,7 @@ fn make_agent(id: &str, role: AgentRole, status: AgentStatus, parent: Option<&st
         last_completed_at: None,
         messages_read_at: None,
         retry_count: 0,
+        model: None,
     }
 }
 

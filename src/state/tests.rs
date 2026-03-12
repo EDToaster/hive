@@ -41,6 +41,7 @@ fn make_agent(id: &str, role: AgentRole, status: AgentStatus) -> Agent {
         last_completed_at: None,
         messages_read_at: None,
         retry_count: 0,
+        model: None,
     }
 }
 
@@ -713,6 +714,7 @@ fn agent_retry_count_serialization_roundtrip() {
         last_completed_at: None,
         messages_read_at: None,
         retry_count: 1,
+        model: None,
     };
     let json = serde_json::to_string(&agent).unwrap();
     let back: Agent = serde_json::from_str(&json).unwrap();
@@ -1877,4 +1879,83 @@ fn load_messages_for_agent_fails_on_corrupted_file() {
 
     let result = state.load_messages_for_agent("run-1", "worker-1", None);
     assert!(result.is_err());
+}
+
+#[test]
+fn load_config_parses_model_entries() {
+    let dir = TempDir::new().unwrap();
+    let state = HiveState::new(dir.path().to_path_buf());
+    std::fs::create_dir_all(state.hive_dir()).unwrap();
+    std::fs::write(
+        state.hive_dir().join("config.yaml"),
+        "model_worker: haiku\nmodel_lead: opus\nfallback_model: sonnet\n",
+    )
+    .unwrap();
+    let config = state.load_config();
+    assert_eq!(
+        config.models.model_for_role(AgentRole::Worker),
+        ModelTier::Haiku
+    );
+    assert_eq!(
+        config.models.model_for_role(AgentRole::Lead),
+        ModelTier::Opus
+    );
+    // Unset roles fall back to defaults
+    assert_eq!(
+        config.models.model_for_role(AgentRole::Coordinator),
+        ModelTier::Opus
+    );
+    assert_eq!(config.fallback_model, Some("sonnet".to_string()));
+}
+
+#[test]
+fn load_config_ignores_invalid_model_names() {
+    let dir = TempDir::new().unwrap();
+    let state = HiveState::new(dir.path().to_path_buf());
+    std::fs::create_dir_all(state.hive_dir()).unwrap();
+    std::fs::write(
+        state.hive_dir().join("config.yaml"),
+        "model_worker: gpt4\nmodel_lead: sonnet\n",
+    )
+    .unwrap();
+    let config = state.load_config();
+    // gpt4 is invalid, should fall back to default (sonnet)
+    assert_eq!(
+        config.models.model_for_role(AgentRole::Worker),
+        ModelTier::Sonnet
+    );
+    // sonnet is valid
+    assert_eq!(
+        config.models.model_for_role(AgentRole::Lead),
+        ModelTier::Sonnet
+    );
+}
+
+#[test]
+fn resolve_model_priority_chain() {
+    let dir = TempDir::new().unwrap();
+    let state = HiveState::new(dir.path().to_path_buf());
+    std::fs::create_dir_all(state.hive_dir()).unwrap();
+    std::fs::write(
+        state.hive_dir().join("config.yaml"),
+        "model_worker: haiku\n",
+    )
+    .unwrap();
+    let config = state.load_config();
+
+    // Per-spawn override wins
+    assert_eq!(
+        config.resolve_model(AgentRole::Worker, Some("opus")),
+        "opus"
+    );
+    // Role config wins over default
+    assert_eq!(
+        config.resolve_model(AgentRole::Worker, None),
+        "claude-haiku-4-5"
+    );
+    // No override, no config → role default
+    assert_eq!(
+        config.resolve_model(AgentRole::Lead, None),
+        "claude-sonnet-4-6"
+    );
 }

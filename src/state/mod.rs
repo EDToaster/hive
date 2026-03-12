@@ -17,6 +17,10 @@ pub struct HiveConfig {
     pub verify_command: Option<String>,
     pub max_retries: u32,
     pub budget_usd: Option<f64>,
+    /// Role-to-model mapping
+    pub models: ModelConfig,
+    /// Global fallback model when default is rate-limited
+    pub fallback_model: Option<String>,
 }
 
 impl Default for HiveConfig {
@@ -26,7 +30,21 @@ impl Default for HiveConfig {
             verify_command: None,
             max_retries: 2,
             budget_usd: None,
+            models: ModelConfig::default(),
+            fallback_model: None,
         }
+    }
+}
+
+impl HiveConfig {
+    /// Resolve the model to use for a given role.
+    /// Priority: per-spawn override > role config > role default.
+    /// Returns the model ID string to pass to `--model`.
+    pub fn resolve_model(&self, role: AgentRole, per_spawn_override: Option<&str>) -> String {
+        if let Some(ovr) = per_spawn_override {
+            return ovr.to_string();
+        }
+        self.models.model_for_role(role).model_id().to_string()
     }
 }
 
@@ -121,6 +139,24 @@ impl HiveState {
                     .unwrap_or(value);
                 if !value.is_empty() {
                     config.verify_command = Some(value.to_string());
+                }
+            }
+            if let Some(value) = line.strip_prefix("fallback_model:") {
+                let value = value.trim();
+                if !value.is_empty() {
+                    config.fallback_model = Some(value.to_string());
+                }
+            }
+            // Parse model_<role>: <model> entries (e.g. model_worker: haiku)
+            if let Some(rest) = line.strip_prefix("model_")
+                && let Some((role, model)) = rest.split_once(':')
+            {
+                let role = role.trim();
+                let model = model.trim();
+                if !model.is_empty()
+                    && let Some(tier) = ModelTier::from_str_loose(model)
+                {
+                    config.models.set_role(role, tier);
                 }
             }
         }

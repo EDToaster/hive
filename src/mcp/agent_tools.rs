@@ -89,13 +89,14 @@ impl HiveMcp {
             ))]));
         }
 
-        match crate::agent::AgentSpawner::spawn(
+        match crate::agent::AgentSpawner::spawn_with_model(
             &state,
             &self.run_id,
             &p.agent_id,
             role,
             Some(&self.agent_id),
             &p.task_description,
+            p.model.as_deref(),
         ) {
             Ok(agent) => {
                 // Bind agent to task
@@ -557,14 +558,15 @@ impl HiveMcp {
             ));
         }
 
-        // Re-spawn agent
-        match crate::agent::AgentSpawner::spawn(
+        // Re-spawn agent (preserve original model)
+        match crate::agent::AgentSpawner::spawn_with_model(
             &state,
             &self.run_id,
             &agent.id,
             agent.role,
             agent.parent.as_deref(),
             &enhanced_desc,
+            agent.model.as_deref(),
         ) {
             Ok(mut new_agent) => {
                 new_agent.retry_count = retry_num;

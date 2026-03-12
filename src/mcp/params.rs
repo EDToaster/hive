@@ -11,6 +11,8 @@ pub struct SpawnAgentParams {
     pub task_id: String,
     /// Task description for the agent
     pub task_description: String,
+    /// Optional model override (e.g. "sonnet", "haiku", "opus"). Overrides role-level config default.
+    pub model: Option<String>,
 }
 
 #[derive(Deserialize, JsonSchema)]

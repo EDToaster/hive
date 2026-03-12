@@ -106,15 +106,23 @@ impl HiveMcp {
             .append(true)
             .open(agent_output_dir.join("stderr.log"))
             .map_err(|e| format!("Failed to open stderr file: {e}"))?;
-        let child = std::process::Command::new("claude")
-            .arg("-p")
+        let config = state.load_config();
+        let mut cmd = std::process::Command::new("claude");
+        cmd.arg("-p")
             .arg(prompt)
             .arg("--resume")
             .arg(session_id)
             .arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--dangerously-skip-permissions")
+            .arg("--dangerously-skip-permissions");
+        if let Some(ref m) = agent.model {
+            cmd.arg("--model").arg(m);
+        }
+        if let Some(ref fb) = config.fallback_model {
+            cmd.arg("--fallback-model").arg(fb);
+        }
+        let child = cmd
             .env_remove("CLAUDECODE")
             .current_dir(worktree)
             .stdin(std::process::Stdio::null())
@@ -173,6 +181,7 @@ impl HiveMcp {
                 );
                 f
             });
+        let config = state.load_config();
         let mut cmd = std::process::Command::new("claude");
         cmd.arg("-p")
             .arg(body)
@@ -181,8 +190,14 @@ impl HiveMcp {
             .arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")
-            .arg("--dangerously-skip-permissions")
-            .env_remove("CLAUDECODE")
+            .arg("--dangerously-skip-permissions");
+        if let Some(ref m) = target_agent.model {
+            cmd.arg("--model").arg(m);
+        }
+        if let Some(ref fb) = config.fallback_model {
+            cmd.arg("--fallback-model").arg(fb);
+        }
+        cmd.env_remove("CLAUDECODE")
             .current_dir(&worktree)
             .stdin(std::process::Stdio::null())
             .stdout(output_file);

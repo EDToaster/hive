@@ -1,6 +1,48 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+// --- Model Types ---
+
+/// Claude model tier for agent assignment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelTier {
+    Opus,
+    Sonnet,
+    Haiku,
+}
+
+impl ModelTier {
+    /// Returns the Claude Code CLI model ID string.
+    pub fn model_id(&self) -> &'static str {
+        match self {
+            ModelTier::Opus => "claude-opus-4-6",
+            ModelTier::Sonnet => "claude-sonnet-4-6",
+            ModelTier::Haiku => "claude-haiku-4-5",
+        }
+    }
+
+    /// Parse from a string (alias or full model ID).
+    pub fn from_str_loose(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "opus" | "claude-opus-4-6" => Some(ModelTier::Opus),
+            "sonnet" | "claude-sonnet-4-6" => Some(ModelTier::Sonnet),
+            "haiku" | "claude-haiku-4-5" | "claude-haiku-4-5-20251001" => Some(ModelTier::Haiku),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ModelTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ModelTier::Opus => write!(f, "opus"),
+            ModelTier::Sonnet => write!(f, "sonnet"),
+            ModelTier::Haiku => write!(f, "haiku"),
+        }
+    }
+}
+
 // --- Agent Types ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -14,6 +56,67 @@ pub enum AgentRole {
     Postmortem,
     Explorer,
     Evaluator,
+}
+
+impl AgentRole {
+    /// Returns the default model tier for this role.
+    pub fn default_model(&self) -> ModelTier {
+        match self {
+            AgentRole::Coordinator => ModelTier::Opus,
+            AgentRole::Lead => ModelTier::Sonnet,
+            AgentRole::Worker => ModelTier::Sonnet,
+            AgentRole::Reviewer => ModelTier::Haiku,
+            AgentRole::Planner => ModelTier::Opus,
+            AgentRole::Postmortem => ModelTier::Haiku,
+            AgentRole::Explorer => ModelTier::Sonnet,
+            AgentRole::Evaluator => ModelTier::Sonnet,
+        }
+    }
+}
+
+/// Role-to-model mapping configuration.
+#[derive(Debug, Clone, Default)]
+pub struct ModelConfig {
+    pub coordinator: Option<ModelTier>,
+    pub lead: Option<ModelTier>,
+    pub worker: Option<ModelTier>,
+    pub reviewer: Option<ModelTier>,
+    pub planner: Option<ModelTier>,
+    pub postmortem: Option<ModelTier>,
+    pub explorer: Option<ModelTier>,
+    pub evaluator: Option<ModelTier>,
+}
+
+impl ModelConfig {
+    /// Get the model for a role, falling back to the role's default.
+    pub fn model_for_role(&self, role: AgentRole) -> ModelTier {
+        let override_model = match role {
+            AgentRole::Coordinator => self.coordinator,
+            AgentRole::Lead => self.lead,
+            AgentRole::Worker => self.worker,
+            AgentRole::Reviewer => self.reviewer,
+            AgentRole::Planner => self.planner,
+            AgentRole::Postmortem => self.postmortem,
+            AgentRole::Explorer => self.explorer,
+            AgentRole::Evaluator => self.evaluator,
+        };
+        override_model.unwrap_or_else(|| role.default_model())
+    }
+
+    /// Set the model for a role by name string.
+    pub fn set_role(&mut self, role: &str, tier: ModelTier) {
+        match role {
+            "coordinator" => self.coordinator = Some(tier),
+            "lead" => self.lead = Some(tier),
+            "worker" => self.worker = Some(tier),
+            "reviewer" => self.reviewer = Some(tier),
+            "planner" => self.planner = Some(tier),
+            "postmortem" => self.postmortem = Some(tier),
+            "explorer" => self.explorer = Some(tier),
+            "evaluator" => self.evaluator = Some(tier),
+            _ => {} // Unknown roles silently ignored
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +144,9 @@ pub struct Agent {
     pub messages_read_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub retry_count: u32,
+    /// Model used for this agent (persisted for resume/wake consistency)
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 // --- Task Types ---
@@ -366,6 +472,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             retry_count: 0,
+            model: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -389,6 +496,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             retry_count: 0,
+            model: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -776,6 +884,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             retry_count: 0,
+            model: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -797,6 +906,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             retry_count: 0,
+            model: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -819,6 +929,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             retry_count: 0,
+            model: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -893,6 +1004,7 @@ mod tests {
             last_completed_at: None,
             messages_read_at: None,
             retry_count: u32::MAX,
+            model: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -1029,5 +1141,100 @@ mod tests {
         assert!(!TaskStatus::Failed.is_success());
         assert!(!TaskStatus::Cancelled.is_success());
         assert!(!TaskStatus::Active.is_success());
+    }
+
+    // --- ModelTier ---
+
+    #[test]
+    fn model_tier_all_variants_roundtrip() {
+        for (variant, expected) in [
+            (ModelTier::Opus, "\"opus\""),
+            (ModelTier::Sonnet, "\"sonnet\""),
+            (ModelTier::Haiku, "\"haiku\""),
+        ] {
+            assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
+            let back: ModelTier = serde_json::from_str(expected).unwrap();
+            assert_eq!(variant, back);
+        }
+    }
+
+    #[test]
+    fn model_tier_model_id() {
+        assert_eq!(ModelTier::Opus.model_id(), "claude-opus-4-6");
+        assert_eq!(ModelTier::Sonnet.model_id(), "claude-sonnet-4-6");
+        assert_eq!(ModelTier::Haiku.model_id(), "claude-haiku-4-5");
+    }
+
+    #[test]
+    fn model_tier_display() {
+        assert_eq!(format!("{}", ModelTier::Opus), "opus");
+        assert_eq!(format!("{}", ModelTier::Sonnet), "sonnet");
+        assert_eq!(format!("{}", ModelTier::Haiku), "haiku");
+    }
+
+    #[test]
+    fn model_tier_from_str_loose() {
+        assert_eq!(ModelTier::from_str_loose("opus"), Some(ModelTier::Opus));
+        assert_eq!(
+            ModelTier::from_str_loose("claude-opus-4-6"),
+            Some(ModelTier::Opus)
+        );
+        assert_eq!(ModelTier::from_str_loose("sonnet"), Some(ModelTier::Sonnet));
+        assert_eq!(ModelTier::from_str_loose("haiku"), Some(ModelTier::Haiku));
+        assert_eq!(ModelTier::from_str_loose("gpt4"), None);
+        assert_eq!(ModelTier::from_str_loose("OPUS"), Some(ModelTier::Opus));
+    }
+
+    #[test]
+    fn invalid_model_tier_rejected() {
+        for bad in &["\"gpt4\"", "\"OPUS\"", "\"\"", "null", "42"] {
+            let result = serde_json::from_str::<ModelTier>(bad);
+            assert!(result.is_err(), "Expected error for ModelTier from {bad}");
+        }
+    }
+
+    #[test]
+    fn default_model_assignments() {
+        assert_eq!(AgentRole::Coordinator.default_model(), ModelTier::Opus);
+        assert_eq!(AgentRole::Planner.default_model(), ModelTier::Opus);
+        assert_eq!(AgentRole::Lead.default_model(), ModelTier::Sonnet);
+        assert_eq!(AgentRole::Worker.default_model(), ModelTier::Sonnet);
+        assert_eq!(AgentRole::Explorer.default_model(), ModelTier::Sonnet);
+        assert_eq!(AgentRole::Evaluator.default_model(), ModelTier::Sonnet);
+        assert_eq!(AgentRole::Reviewer.default_model(), ModelTier::Haiku);
+        assert_eq!(AgentRole::Postmortem.default_model(), ModelTier::Haiku);
+    }
+
+    #[test]
+    fn model_config_defaults_to_role_defaults() {
+        let config = ModelConfig::default();
+        for role in [
+            AgentRole::Coordinator,
+            AgentRole::Lead,
+            AgentRole::Worker,
+            AgentRole::Reviewer,
+            AgentRole::Planner,
+            AgentRole::Postmortem,
+            AgentRole::Explorer,
+            AgentRole::Evaluator,
+        ] {
+            assert_eq!(config.model_for_role(role), role.default_model());
+        }
+    }
+
+    #[test]
+    fn model_config_overrides_role_default() {
+        let config = ModelConfig {
+            worker: Some(ModelTier::Haiku),
+            reviewer: Some(ModelTier::Opus),
+            ..Default::default()
+        };
+        assert_eq!(config.model_for_role(AgentRole::Worker), ModelTier::Haiku);
+        assert_eq!(config.model_for_role(AgentRole::Reviewer), ModelTier::Opus);
+        assert_eq!(
+            config.model_for_role(AgentRole::Coordinator),
+            ModelTier::Opus
+        );
+        assert_eq!(config.model_for_role(AgentRole::Lead), ModelTier::Sonnet);
     }
 }

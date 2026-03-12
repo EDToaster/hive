@@ -171,6 +171,7 @@ pub fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), Strin
         last_completed_at: None,
         messages_read_at: None,
         retry_count: 0,
+        model: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 
@@ -428,6 +429,67 @@ pub fn cmd_cost(run: Option<String>) -> Result<(), String> {
     Ok(())
 }
 
+pub fn cmd_config() -> Result<(), String> {
+    let state = HiveState::discover()?;
+    let config = state.load_config();
+
+    println!("Hive Configuration (.hive/config.yaml)");
+    println!("{}", "-".repeat(45));
+    println!("stall_timeout_seconds: {}", config.stall_timeout_seconds);
+    println!("max_retries:           {}", config.max_retries);
+    println!(
+        "budget_usd:            {}",
+        config
+            .budget_usd
+            .map(|b| format!("${:.2}", b))
+            .unwrap_or_else(|| "(none)".to_string())
+    );
+    println!(
+        "verify_command:        {}",
+        config.verify_command.as_deref().unwrap_or("(none)")
+    );
+    println!(
+        "fallback_model:        {}",
+        config.fallback_model.as_deref().unwrap_or("(none)")
+    );
+
+    println!();
+    println!("Model Mapping (role → model)");
+    println!("{}", "-".repeat(45));
+    let roles = [
+        crate::types::AgentRole::Coordinator,
+        crate::types::AgentRole::Lead,
+        crate::types::AgentRole::Worker,
+        crate::types::AgentRole::Reviewer,
+        crate::types::AgentRole::Planner,
+        crate::types::AgentRole::Postmortem,
+        crate::types::AgentRole::Explorer,
+        crate::types::AgentRole::Evaluator,
+    ];
+    for role in roles {
+        let model = config.models.model_for_role(role);
+        let is_default = model == role.default_model();
+        let suffix = if is_default {
+            " (default)"
+        } else {
+            " (override)"
+        };
+        println!(
+            "  {:<15} → {}{}",
+            format!("{:?}", role).to_lowercase(),
+            model,
+            suffix
+        );
+    }
+    println!();
+    println!("Note: The coordinator model is set by the human when launching claude.");
+    println!(
+        "Per-spawn overrides via hive_spawn_agent(model=...) take priority over role defaults."
+    );
+
+    Ok(())
+}
+
 pub fn cmd_history() -> Result<(), String> {
     let state = HiveState::discover()?;
     let runs = state.list_runs()?;
@@ -668,6 +730,7 @@ pub fn cmd_explore(intent: &str) -> Result<(), String> {
         last_completed_at: None,
         messages_read_at: None,
         retry_count: 0,
+        model: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 

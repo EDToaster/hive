@@ -555,6 +555,7 @@ mod tests {
             messages_read_at: None,
             task_id: None,
             retry_count: 0,
+            model: None,
         };
         state.save_agent(run_id, &running_agent).unwrap();
 
@@ -571,6 +572,7 @@ mod tests {
             messages_read_at: None,
             task_id: None,
             retry_count: 0,
+            model: None,
         };
         state.save_agent(run_id, &done_agent).unwrap();
 
@@ -593,6 +595,7 @@ mod tests {
             messages_read_at: None,
             task_id: Some("task-1".into()),
             retry_count: 0,
+            model: None,
         }
     }
 
@@ -720,6 +723,7 @@ mod tests {
             messages_read_at: None,
             task_id: task_id.map(|s| s.into()),
             retry_count: 0,
+            model: None,
         }
     }
 

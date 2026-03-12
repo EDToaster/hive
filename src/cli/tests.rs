@@ -840,6 +840,7 @@ fn test_stop_hook_updates_read_cursor() {
         last_completed_at: None,
         messages_read_at: None,
         retry_count: 0,
+        model: None,
     };
     state.save_agent("test-run", &agent).unwrap();
 
@@ -897,6 +898,7 @@ fn test_non_stop_hook_does_not_update_cursor() {
         last_completed_at: None,
         messages_read_at: None,
         retry_count: 0,
+        model: None,
     };
     state.save_agent("test-run", &agent).unwrap();
 

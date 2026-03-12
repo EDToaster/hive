@@ -19,6 +19,28 @@ impl AgentSpawner {
         parent: Option<&str>,
         task_description: &str,
     ) -> Result<Agent, String> {
+        Self::spawn_with_model(
+            state,
+            run_id,
+            agent_id,
+            role,
+            parent,
+            task_description,
+            None,
+        )
+    }
+
+    /// Full spawn sequence with optional model override.
+    #[allow(clippy::too_many_arguments)]
+    pub fn spawn_with_model(
+        state: &HiveState,
+        run_id: &str,
+        agent_id: &str,
+        role: AgentRole,
+        parent: Option<&str>,
+        task_description: &str,
+        model_override: Option<&str>,
+    ) -> Result<Agent, String> {
         let worktree_path = state.worktree_path(run_id, agent_id);
         let branch = format!("hive/{run_id}/{agent_id}");
 
@@ -184,13 +206,23 @@ impl AgentSpawner {
             );
         }
 
-        let child = Command::new("claude")
-            .arg("-p")
+        // Resolve model: per-spawn override > role config > role default
+        let config = state.load_config();
+        let resolved_model = config.resolve_model(role, model_override);
+
+        let mut cmd = Command::new("claude");
+        cmd.arg("-p")
             .arg(&prompt)
             .arg("--verbose")
             .arg("--output-format")
             .arg("stream-json")
             .arg("--dangerously-skip-permissions")
+            .arg("--model")
+            .arg(&resolved_model);
+        if let Some(ref fb) = config.fallback_model {
+            cmd.arg("--fallback-model").arg(fb);
+        }
+        let child = cmd
             .env_remove("CLAUDECODE")
             .current_dir(&worktree_path)
             .stdin(std::process::Stdio::null())
@@ -213,6 +245,7 @@ impl AgentSpawner {
             messages_read_at: None,
             task_id: None,
             retry_count: 0,
+            model: Some(resolved_model),
         };
         state.save_agent(run_id, &agent)?;
 

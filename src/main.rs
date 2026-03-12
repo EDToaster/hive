@@ -58,6 +58,7 @@ fn main() {
         Commands::Explore { intent } => cli::cmd_explore(&intent),
         Commands::Mind { command } => cli::cmd_mind(command),
         Commands::AgentExit { run, agent } => cli::cmd_agent_exit(&run, &agent),
+        Commands::Config => cli::cmd_config(),
         Commands::Stop => cli::cmd_stop(),
         Commands::Watch { interval } => cli::cmd_watch(interval),
     };

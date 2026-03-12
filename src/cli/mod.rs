@@ -14,8 +14,8 @@ pub use memory_cmds::{cmd_memory, cmd_mind};
 pub(crate) use message_cmds::read_messages_inner;
 pub use message_cmds::{cmd_messages, cmd_read_messages};
 pub use run_cmds::{
-    cmd_cost, cmd_explore, cmd_history, cmd_init, cmd_mcp, cmd_start, cmd_status, cmd_stop,
-    cmd_summary, cmd_tui, cmd_wait, cmd_watch,
+    cmd_config, cmd_cost, cmd_explore, cmd_history, cmd_init, cmd_mcp, cmd_start, cmd_status,
+    cmd_stop, cmd_summary, cmd_tui, cmd_wait, cmd_watch,
 };
 pub use task_cmds::cmd_tasks;
 
@@ -180,6 +180,9 @@ pub enum Commands {
         #[arg(long)]
         agent: String,
     },
+
+    /// Show current hive configuration (model mappings, budget, etc.)
+    Config,
 
     /// Stop the current run and clean up worktrees
     Stop,
