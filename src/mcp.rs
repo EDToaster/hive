@@ -2236,7 +2236,7 @@ pub async fn run_mcp_server(run_id: &str, agent_id: &str) -> Result<(), String> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{Agent, AgentStatus};
+    use crate::types::{Agent, AgentStatus, RunStatus};
     use tempfile::TempDir;
 
     fn setup_mcp(role: AgentRole) -> (TempDir, HiveMcp) {
@@ -3201,5 +3201,845 @@ mod tests {
         let messages = state.list_messages("test-run").unwrap();
         let notify_msgs: Vec<_> = messages.iter().filter(|m| m.from == "solo-agent").collect();
         assert_eq!(notify_msgs.len(), 0, "No notification without a parent");
+    }
+
+    // ==========================================================================
+    // Integration tests: end-to-end flows across modules (state, types, mcp)
+    // ==========================================================================
+
+    /// Helper: set up a full coordinator + lead + worker hierarchy
+    fn setup_hierarchy() -> (TempDir, HiveMcp, HiveMcp, HiveMcp) {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        let state = HiveState::new(root.clone());
+        state.create_run("test-run").unwrap();
+
+        let coord = Agent {
+            id: "coordinator".into(),
+            role: AgentRole::Coordinator,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &coord).unwrap();
+
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-lead".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        let worker = Agent {
+            id: "worker-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-1".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-w1".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker).unwrap();
+
+        let root_str = root.to_string_lossy().to_string();
+        let coord_mcp = HiveMcp::new("test-run".into(), "coordinator".into(), root_str.clone());
+        let lead_mcp = HiveMcp::new("test-run".into(), "lead-1".into(), root_str.clone());
+        let worker_mcp = HiveMcp::new("test-run".into(), "worker-1".into(), root_str);
+
+        (dir, coord_mcp, lead_mcp, worker_mcp)
+    }
+
+    // --- Integration: Task lifecycle flows ---
+
+    #[tokio::test]
+    async fn integration_task_lifecycle_create_assign_update_complete() {
+        let (_dir, coord_mcp, lead_mcp, worker_mcp) = setup_hierarchy();
+        let state = coord_mcp.state();
+
+        // 1. Coordinator creates a top-level task
+        let params = Parameters(CreateTaskParams {
+            title: "Build feature X".into(),
+            description: "Implement the full feature".into(),
+            urgency: "high".into(),
+            domain: Some("backend".into()),
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = coord_mcp.hive_create_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        let task_id = text
+            .split("'")
+            .nth(1)
+            .unwrap()
+            .to_string();
+
+        // Verify task exists in state with correct initial values
+        let task = state.load_task("test-run", &task_id).unwrap();
+        assert_eq!(task.status, TaskStatus::Pending);
+        assert_eq!(task.urgency, Urgency::High);
+        assert_eq!(task.domain.as_deref(), Some("backend"));
+        assert_eq!(task.created_by, "coordinator");
+
+        // 2. Coordinator assigns task to lead (simulating what spawn does)
+        let mut task = task;
+        task.assigned_to = Some("lead-1".into());
+        task.status = TaskStatus::Active;
+        state.save_task("test-run", &task).unwrap();
+
+        // 3. Lead creates a subtask under its own task
+        let mut lead_agent = state.load_agent("test-run", "lead-1").unwrap();
+        lead_agent.task_id = Some(task_id.clone());
+        state.save_agent("test-run", &lead_agent).unwrap();
+
+        let params = Parameters(CreateTaskParams {
+            title: "Sub-feature Y".into(),
+            description: "Worker task".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: Some(task_id.clone()),
+        });
+        let result = lead_mcp.hive_create_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        let sub_task_id = text
+            .split("'")
+            .nth(1)
+            .unwrap()
+            .to_string();
+
+        // Verify subtask parent_task relationship
+        let sub_task = state.load_task("test-run", &sub_task_id).unwrap();
+        assert_eq!(sub_task.parent_task.as_deref(), Some(task_id.as_str()));
+        assert_eq!(sub_task.created_by, "lead-1");
+
+        // 4. Assign subtask to worker and worker updates it to review
+        let mut sub_task = sub_task;
+        sub_task.assigned_to = Some("worker-1".into());
+        sub_task.status = TaskStatus::Active;
+        state.save_task("test-run", &sub_task).unwrap();
+
+        let mut worker_agent = state.load_agent("test-run", "worker-1").unwrap();
+        worker_agent.task_id = Some(sub_task_id.clone());
+        state.save_agent("test-run", &worker_agent).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: sub_task_id.clone(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: Some("hive/test/worker-1".into()),
+            notes: Some("Implementation complete".into()),
+        });
+        let result = worker_mcp.hive_update_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        // 5. Verify final state across modules
+        let final_task = state.load_task("test-run", &sub_task_id).unwrap();
+        assert_eq!(final_task.status, TaskStatus::Review);
+        assert_eq!(final_task.branch.as_deref(), Some("hive/test/worker-1"));
+        assert!(final_task.description.contains("Implementation complete"));
+
+        // 6. Verify all tasks are listed correctly
+        let all_tasks = state.list_tasks("test-run").unwrap();
+        assert_eq!(all_tasks.len(), 2);
+    }
+
+    // --- Integration: Message passing flows ---
+
+    #[tokio::test]
+    async fn integration_message_flow_worker_to_lead_to_coordinator() {
+        let (_dir, coord_mcp, lead_mcp, worker_mcp) = setup_hierarchy();
+        let state = coord_mcp.state();
+
+        // Set up lead task for coordinator update
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // 1. Worker sends message to lead
+        let params = Parameters(SendMessageParams {
+            to: "lead-1".into(),
+            message_type: "status".into(),
+            body: "Subtask implementation complete".into(),
+            refs: vec!["task-w1".into()],
+        });
+        let result = worker_mcp.hive_send_message(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        // 2. Lead sends message to coordinator
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "status".into(),
+            body: "All workers complete, ready for review".into(),
+            refs: vec!["task-lead".into()],
+        });
+        let result = lead_mcp.hive_send_message(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        // 3. Verify message routing: both messages saved in state
+        let all_msgs = state.list_messages("test-run").unwrap();
+        assert_eq!(all_msgs.len(), 2);
+
+        // 4. Verify agent-specific filtering
+        let lead_msgs = state
+            .load_messages_for_agent("test-run", "lead-1", None)
+            .unwrap();
+        assert_eq!(lead_msgs.len(), 1);
+        assert_eq!(lead_msgs[0].from, "worker-1");
+
+        let coord_msgs = state
+            .load_messages_for_agent("test-run", "coordinator", None)
+            .unwrap();
+        assert_eq!(coord_msgs.len(), 1);
+        assert_eq!(coord_msgs[0].from, "lead-1");
+
+        // 5. Worker should have no messages
+        let worker_msgs = state
+            .load_messages_for_agent("test-run", "worker-1", None)
+            .unwrap();
+        assert!(worker_msgs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn integration_message_routing_enforces_hierarchy() {
+        let (_dir, coord_mcp, _lead_mcp, worker_mcp) = setup_hierarchy();
+
+        // Worker cannot message coordinator directly
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "info".into(),
+            body: "Trying to skip hierarchy".into(),
+            refs: vec![],
+        });
+        let result = worker_mcp.hive_send_message(params).await.unwrap();
+        assert!(
+            result.is_error.unwrap_or(false),
+            "Worker should not message coordinator"
+        );
+
+        // Coordinator cannot message worker directly
+        let params = Parameters(SendMessageParams {
+            to: "worker-1".into(),
+            message_type: "info".into(),
+            body: "Direct to worker".into(),
+            refs: vec![],
+        });
+        let result = coord_mcp.hive_send_message(params).await.unwrap();
+        assert!(
+            result.is_error.unwrap_or(false),
+            "Coordinator should not message worker"
+        );
+    }
+
+    // --- Integration: Blocked-by dependency chains ---
+
+    #[tokio::test]
+    async fn integration_blocked_by_chain_tracks_dependencies() {
+        let (_dir, coord_mcp, _lead_mcp, _worker_mcp) = setup_hierarchy();
+        let state = coord_mcp.state();
+
+        // Create chain: task-c blocked_by task-b blocked_by task-a
+        let params = Parameters(CreateTaskParams {
+            title: "Task A (foundation)".into(),
+            description: "First task".into(),
+            urgency: "high".into(),
+            domain: Some("backend".into()),
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = coord_mcp.hive_create_task(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        let task_a_id = text.split("'").nth(1).unwrap().to_string();
+
+        let params = Parameters(CreateTaskParams {
+            title: "Task B (depends on A)".into(),
+            description: "Second task".into(),
+            urgency: "normal".into(),
+            domain: Some("backend".into()),
+            blocking: vec![],
+            blocked_by: vec![task_a_id.clone()],
+            parent_task: None,
+        });
+        let result = coord_mcp.hive_create_task(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        let task_b_id = text.split("'").nth(1).unwrap().to_string();
+
+        let params = Parameters(CreateTaskParams {
+            title: "Task C (depends on B)".into(),
+            description: "Third task".into(),
+            urgency: "normal".into(),
+            domain: Some("backend".into()),
+            blocking: vec![],
+            blocked_by: vec![task_b_id.clone()],
+            parent_task: None,
+        });
+        let result = coord_mcp.hive_create_task(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        let task_c_id = text.split("'").nth(1).unwrap().to_string();
+
+        // Verify dependency chain is persisted correctly
+        let task_a = state.load_task("test-run", &task_a_id).unwrap();
+        let task_b = state.load_task("test-run", &task_b_id).unwrap();
+        let task_c = state.load_task("test-run", &task_c_id).unwrap();
+
+        assert!(task_a.blocked_by.is_empty());
+        assert_eq!(task_b.blocked_by, vec![task_a_id.clone()]);
+        assert_eq!(task_c.blocked_by, vec![task_b_id.clone()]);
+
+        // Verify status filtering: all should be pending
+        let params = Parameters(ListTasksParams {
+            status: Some("pending".into()),
+            assignee: None,
+            domain: Some("backend".into()),
+            parent_task: None,
+        });
+        let result = coord_mcp.hive_list_tasks(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains(&task_a_id));
+        assert!(text.contains(&task_b_id));
+        assert!(text.contains(&task_c_id));
+    }
+
+    // --- Integration: Merge queue with subtask completion gate ---
+
+    #[tokio::test]
+    async fn integration_subtask_completion_gate_blocks_then_allows_submit() {
+        let (_dir, _coord_mcp, lead_mcp, _worker_mcp) = setup_hierarchy();
+        let state = lead_mcp.state();
+
+        // Create parent task assigned to lead
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // Create two subtasks: one active, one merged
+        let mut sub1 = make_task("task-sub1", Some("task-lead"), TaskStatus::Active);
+        sub1.assigned_to = Some("worker-1".into());
+        state.save_task("test-run", &sub1).unwrap();
+
+        let mut sub2 = make_task("task-sub2", Some("task-lead"), TaskStatus::Merged);
+        sub2.assigned_to = Some("worker-2".into());
+        state.save_task("test-run", &sub2).unwrap();
+
+        // Submit should fail: sub1 is unresolved
+        let params = Parameters(SubmitToQueueParams {
+            task_id: "task-lead".into(),
+            branch: "hive/test/lead-1".into(),
+        });
+        let result = lead_mcp.hive_submit_to_queue(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("subtask(s) are not resolved"));
+        assert!(text.contains("task-sub1"));
+
+        // Mark sub1 as absorbed (resolved terminal state)
+        let mut sub1 = state.load_task("test-run", "task-sub1").unwrap();
+        sub1.status = TaskStatus::Absorbed;
+        state.save_task("test-run", &sub1).unwrap();
+
+        // Submit should now proceed (spawns reviewer, which will fail without
+        // claude binary, but the subtask gate itself should pass)
+        let params = Parameters(SubmitToQueueParams {
+            task_id: "task-lead".into(),
+            branch: "hive/test/lead-1".into(),
+        });
+        let _result = lead_mcp.hive_submit_to_queue(params).await.unwrap();
+        // The result should succeed (either reviewer spawned or fallback to queue)
+        // Either way, task should no longer be blocked by the gate
+        let task = state.load_task("test-run", "task-lead").unwrap();
+        assert!(
+            matches!(task.status, TaskStatus::Review | TaskStatus::Queued),
+            "Task should be in review or queued, got {:?}",
+            task.status
+        );
+    }
+
+    // --- Integration: Memory system across modules ---
+
+    #[tokio::test]
+    async fn integration_discovery_to_query_mind_roundtrip() {
+        let (_dir, _coord_mcp, _lead_mcp, worker_mcp) = setup_hierarchy();
+        let state = worker_mcp.state();
+
+        // Worker discovers something
+        let params = Parameters(DiscoverParams {
+            content: "The merge queue has a race condition when two leads submit simultaneously"
+                .into(),
+            confidence: "high".into(),
+            file_paths: vec!["src/state.rs".into(), "src/mcp.rs".into()],
+            tags: vec!["race-condition".into(), "merge-queue".into()],
+        });
+        let result = worker_mcp.hive_discover(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        // Another discovery
+        let params = Parameters(DiscoverParams {
+            content: "Task status transitions are not validated at the state layer".into(),
+            confidence: "medium".into(),
+            file_paths: vec!["src/state.rs".into()],
+            tags: vec!["validation".into(), "state".into()],
+        });
+        let result = worker_mcp.hive_discover(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        // Query mind for "merge" should find the first discovery
+        let params = Parameters(QueryMindParams {
+            query: "merge".into(),
+        });
+        let result = worker_mcp.hive_query_mind(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("race condition"));
+        assert!(!text.contains("status transitions"));
+
+        // Query mind for "state" should find the second discovery
+        let params = Parameters(QueryMindParams {
+            query: "state".into(),
+        });
+        let result = worker_mcp.hive_query_mind(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("status transitions"));
+
+        // Verify discoveries are persisted in state
+        let discoveries = state.load_discoveries("test-run");
+        assert_eq!(discoveries.len(), 2);
+        assert_eq!(discoveries[0].agent_id, "worker-1");
+        assert_eq!(discoveries[1].agent_id, "worker-1");
+    }
+
+    // --- Integration: Ownership enforcement across role hierarchy ---
+
+    #[tokio::test]
+    async fn integration_ownership_cross_domain_isolation() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        let state = HiveState::new(root.clone());
+        state.create_run("test-run").unwrap();
+        let root_str = root.to_string_lossy().to_string();
+
+        // Create two leads with separate tasks
+        for (id, task_id) in [("lead-a", "task-a"), ("lead-b", "task-b")] {
+            let agent = Agent {
+                id: id.into(),
+                role: AgentRole::Lead,
+                status: AgentStatus::Running,
+                parent: Some("coordinator".into()),
+                pid: None,
+                worktree: None,
+                heartbeat: None,
+                task_id: Some(task_id.into()),
+                session_id: None,
+                last_completed_at: None,
+                messages_read_at: None,
+                retry_count: 0,
+            };
+            state.save_agent("test-run", &agent).unwrap();
+
+            let mut task = make_task(task_id, None, TaskStatus::Active);
+            task.assigned_to = Some(id.into());
+            state.save_task("test-run", &task).unwrap();
+        }
+
+        let lead_a_mcp = HiveMcp::new("test-run".into(), "lead-a".into(), root_str.clone());
+        let lead_b_mcp = HiveMcp::new("test-run".into(), "lead-b".into(), root_str);
+
+        // Lead A cannot update Lead B's task
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-b".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = lead_a_mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            result.is_error.unwrap_or(false),
+            "Lead A should not update Lead B's task"
+        );
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("another lead"));
+
+        // Lead B can update its own task
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-b".into(),
+            status: Some("review".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = lead_b_mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Lead B should update own task"
+        );
+
+        // Verify state reflects the correct update
+        let task_b = state.load_task("test-run", "task-b").unwrap();
+        assert_eq!(task_b.status, TaskStatus::Review);
+        let task_a = state.load_task("test-run", "task-a").unwrap();
+        assert_eq!(task_a.status, TaskStatus::Active); // unchanged
+    }
+
+    // --- Integration: Read messages with since filter across operations ---
+
+    #[tokio::test]
+    async fn integration_read_messages_since_filter() {
+        let (_dir, _coord_mcp, lead_mcp, worker_mcp) = setup_hierarchy();
+        let state = lead_mcp.state();
+
+        // Set up lead task
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // Worker sends first message
+        let params = Parameters(SendMessageParams {
+            to: "lead-1".into(),
+            message_type: "info".into(),
+            body: "First update".into(),
+            refs: vec![],
+        });
+        worker_mcp.hive_send_message(params).await.unwrap();
+
+        // Lead reads messages (no filter — gets all)
+        let params = Parameters(ReadMessagesParams { since: None });
+        let result = lead_mcp.hive_read_messages(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("First update"));
+
+        // Lead's messages_read_at should now be updated
+        let lead_after = state.load_agent("test-run", "lead-1").unwrap();
+        assert!(lead_after.messages_read_at.is_some());
+        let read_at = lead_after.messages_read_at.unwrap();
+
+        // Small delay to ensure timestamps differ
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Worker sends second message
+        let params = Parameters(SendMessageParams {
+            to: "lead-1".into(),
+            message_type: "info".into(),
+            body: "Second update".into(),
+            refs: vec![],
+        });
+        worker_mcp.hive_send_message(params).await.unwrap();
+
+        // Lead reads only new messages (using since timestamp)
+        let since_str = read_at.to_rfc3339();
+        let params = Parameters(ReadMessagesParams {
+            since: Some(since_str),
+        });
+        let result = lead_mcp.hive_read_messages(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Second update"));
+        assert!(!text.contains("First update"));
+    }
+
+    // --- Integration: Terminal status transitions (absorbed/cancelled) ---
+
+    #[tokio::test]
+    async fn integration_absorbed_cancelled_permission_matrix() {
+        let (_dir, coord_mcp, lead_mcp, worker_mcp) = setup_hierarchy();
+        let state = coord_mcp.state();
+
+        // Set up lead task
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        lead_task.created_by = "coordinator".into();
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // Create worker task
+        let mut worker_task = make_task("task-w1", Some("task-lead"), TaskStatus::Active);
+        worker_task.assigned_to = Some("worker-1".into());
+        worker_task.created_by = "lead-1".into();
+        state.save_task("test-run", &worker_task).unwrap();
+
+        // Worker can cancel its own assigned task
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-w1".into(),
+            status: Some("cancelled".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = worker_mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Worker should cancel own task"
+        );
+        let task = state.load_task("test-run", "task-w1").unwrap();
+        assert_eq!(task.status, TaskStatus::Cancelled);
+        assert!(task.status.is_resolved());
+        assert!(!task.status.is_success());
+
+        // Reset for next test
+        let mut task = task;
+        task.status = TaskStatus::Active;
+        state.save_task("test-run", &task).unwrap();
+
+        // Lead (as creator) can set absorbed
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-w1".into(),
+            status: Some("absorbed".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = lead_mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Lead (creator) should set absorbed"
+        );
+        let task = state.load_task("test-run", "task-w1").unwrap();
+        assert_eq!(task.status, TaskStatus::Absorbed);
+        assert!(task.status.is_resolved());
+        assert!(task.status.is_success());
+
+        // Coordinator can update top-level task to cancelled
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-lead".into(),
+            status: Some("cancelled".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = coord_mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Coordinator should cancel top-level task"
+        );
+    }
+
+    // --- Integration: Review cycle count enforcement ---
+
+    #[tokio::test]
+    async fn integration_review_cycle_limit_fails_task() {
+        let (_dir, _coord_mcp, lead_mcp, _worker_mcp) = setup_hierarchy();
+        let state = lead_mcp.state();
+
+        // Create a task that's been reviewed 3 times already
+        let mut task = make_task("task-lead", None, TaskStatus::Active);
+        task.assigned_to = Some("lead-1".into());
+        task.review_count = 3;
+        state.save_task("test-run", &task).unwrap();
+
+        // Submit should fail and mark task as Failed
+        let params = Parameters(SubmitToQueueParams {
+            task_id: "task-lead".into(),
+            branch: "hive/test/lead-1".into(),
+        });
+        let result = lead_mcp.hive_submit_to_queue(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("exceeded the maximum review cycles"));
+
+        // Verify task is now failed in state
+        let task = state.load_task("test-run", "task-lead").unwrap();
+        assert_eq!(task.status, TaskStatus::Failed);
+        assert!(task.status.is_resolved());
+        assert!(!task.status.is_success());
+    }
+
+    // --- Integration: Memory system persistence across operations ---
+
+    #[test]
+    fn integration_memory_persistence_operations_and_conventions() {
+        let dir = TempDir::new().unwrap();
+        let state = HiveState::new(dir.path().to_path_buf());
+        std::fs::create_dir_all(dir.path().join(".hive")).unwrap();
+
+        // Save operations and conventions
+        let op = OperationalEntry {
+            run_id: "run-1".into(),
+            created_at: Utc::now(),
+            tasks_total: 5,
+            tasks_failed: 1,
+            agents_spawned: 8,
+            total_cost_usd: 12.50,
+            learnings: vec!["Domain grouping reduces conflicts".into()],
+            spec_quality: "good".into(),
+            team_sizing: "4 leads x 2 workers".into(),
+        };
+        state.save_operation(&op).unwrap();
+        state
+            .save_conventions("## Test Convention\n- Always run tests before merge\n")
+            .unwrap();
+
+        let failure = FailureEntry {
+            run_id: "run-1".into(),
+            created_at: Utc::now(),
+            pattern: "merge_conflict".into(),
+            context: "Two leads modified same file".into(),
+            run_number: 1,
+        };
+        state.save_failure(&failure).unwrap();
+
+        // Load memory for different roles and verify content
+        let coord_memory = state.load_memory_for_prompt(&AgentRole::Coordinator);
+        assert!(coord_memory.contains("run-1"));
+        assert!(coord_memory.contains("5 tasks"));
+        assert!(!coord_memory.contains("Test Convention")); // coordinator doesn't get conventions
+
+        let lead_memory = state.load_memory_for_prompt(&AgentRole::Lead);
+        assert!(lead_memory.contains("Test Convention"));
+        assert!(lead_memory.contains("merge_conflict"));
+        assert!(!lead_memory.contains("5 tasks")); // lead doesn't get operations
+
+        let worker_memory = state.load_memory_for_prompt(&AgentRole::Worker);
+        assert!(worker_memory.contains("Test Convention"));
+        assert!(worker_memory.contains("merge_conflict"));
+
+        // Postmortem gets nothing
+        let pm_memory = state.load_memory_for_prompt(&AgentRole::Postmortem);
+        assert!(pm_memory.is_empty());
+    }
+
+    // --- Integration: Concurrent task updates with locking ---
+
+    #[tokio::test]
+    async fn integration_task_notes_append_preserves_description() {
+        let (_dir, coord_mcp, lead_mcp, _worker_mcp) = setup_hierarchy();
+        let state = coord_mcp.state();
+
+        let mut task = make_task("task-lead", None, TaskStatus::Active);
+        task.assigned_to = Some("lead-1".into());
+        task.description = "Original description".into();
+        state.save_task("test-run", &task).unwrap();
+
+        // Lead appends notes
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-lead".into(),
+            status: None,
+            assigned_to: None,
+            branch: None,
+            notes: Some("First progress update".into()),
+        });
+        lead_mcp.hive_update_task(params).await.unwrap();
+
+        // Lead appends more notes
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-lead".into(),
+            status: None,
+            assigned_to: None,
+            branch: None,
+            notes: Some("Second progress update".into()),
+        });
+        lead_mcp.hive_update_task(params).await.unwrap();
+
+        // Verify both notes appended, original preserved
+        let task = state.load_task("test-run", "task-lead").unwrap();
+        assert!(task.description.contains("Original description"));
+        assert!(task.description.contains("First progress update"));
+        assert!(task.description.contains("Second progress update"));
+    }
+
+    // --- Integration: Heartbeat updates across state ---
+
+    #[test]
+    fn integration_heartbeat_and_agent_state_independence() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".hive")).unwrap();
+        let state = HiveState::new(dir.path().to_path_buf());
+        state.create_run("run-1").unwrap();
+
+        // Create two agents
+        for id in ["agent-a", "agent-b"] {
+            let agent = Agent {
+                id: id.into(),
+                role: AgentRole::Worker,
+                status: AgentStatus::Running,
+                parent: Some("lead-1".into()),
+                pid: None,
+                worktree: None,
+                heartbeat: None,
+                task_id: None,
+                session_id: None,
+                last_completed_at: None,
+                messages_read_at: None,
+                retry_count: 0,
+            };
+            state.save_agent("run-1", &agent).unwrap();
+        }
+
+        // Update heartbeat on agent-a only
+        state.update_agent_heartbeat("run-1", "agent-a").unwrap();
+
+        // Verify agent-a has heartbeat, agent-b does not
+        let a = state.load_agent("run-1", "agent-a").unwrap();
+        let b = state.load_agent("run-1", "agent-b").unwrap();
+        assert!(a.heartbeat.is_some());
+        assert!(b.heartbeat.is_none());
+
+        // Update heartbeat on agent-a again — should be newer
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let first_hb = a.heartbeat.unwrap();
+        state.update_agent_heartbeat("run-1", "agent-a").unwrap();
+        let a = state.load_agent("run-1", "agent-a").unwrap();
+        assert!(a.heartbeat.unwrap() > first_hb);
+    }
+
+    // --- Integration: Full run setup and state consistency ---
+
+    #[test]
+    fn integration_run_initialization_consistency() {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join(".hive")).unwrap();
+        let state = HiveState::new(dir.path().to_path_buf());
+
+        // Create a run and verify all subsystems initialized
+        state.create_run("run-test").unwrap();
+
+        // Active run is set
+        assert_eq!(state.active_run_id().unwrap(), "run-test");
+
+        // Run metadata exists and is correct
+        let meta = state.load_run_metadata("run-test").unwrap();
+        assert_eq!(meta.id, "run-test");
+        assert_eq!(meta.status, RunStatus::Active);
+
+        // Merge queue initialized empty
+        let queue = state.load_merge_queue("run-test").unwrap();
+        assert!(queue.entries.is_empty());
+
+        // All directories created
+        assert!(state.tasks_dir("run-test").is_dir());
+        assert!(state.agents_dir("run-test").is_dir());
+        assert!(state.messages_dir("run-test").is_dir());
+        assert!(state.worktrees_dir("run-test").is_dir());
+
+        // All lists start empty
+        assert!(state.list_tasks("run-test").unwrap().is_empty());
+        assert!(state.list_agents("run-test").unwrap().is_empty());
+        assert!(state.list_messages("run-test").unwrap().is_empty());
+
+        // Mind is empty
+        assert!(state.load_discoveries("run-test").is_empty());
+        assert!(state.load_insights("run-test").is_empty());
     }
 }
