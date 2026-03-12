@@ -3173,6 +3173,1266 @@ mod tests {
         assert_eq!(msg.refs, vec!["task-w1".to_string()]);
     }
 
+    // ---- send_message permission tests ----
+
+    #[tokio::test]
+    async fn send_message_worker_denied_non_parent() {
+        let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "worker-1").unwrap();
+        agent.parent = Some("lead-1".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        // Create lead-1 agent
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        // Worker tries to message coordinator (not their parent)
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "info".into(),
+            body: "test".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Workers can only send messages to their lead"));
+    }
+
+    #[tokio::test]
+    async fn send_message_worker_can_message_parent() {
+        let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "worker-1").unwrap();
+        agent.parent = Some("lead-1".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "lead-1".into(),
+            message_type: "info".into(),
+            body: "hello lead".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Worker should message parent lead"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_lead_denied_non_child() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        // Another lead's worker
+        let other_worker = Agent {
+            id: "worker-2".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-2".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &other_worker).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "worker-2".into(),
+            message_type: "info".into(),
+            body: "test".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Leads can only message their workers or the coordinator"));
+    }
+
+    #[tokio::test]
+    async fn send_message_lead_can_message_coordinator() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let coord = Agent {
+            id: "coordinator".into(),
+            role: AgentRole::Coordinator,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &coord).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "info".into(),
+            body: "status update".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Lead should message coordinator"
+        );
+    }
+
+    #[tokio::test]
+    async fn send_message_coordinator_denied_worker() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let worker = Agent {
+            id: "worker-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-1".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "worker-1".into(),
+            message_type: "info".into(),
+            body: "test".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Coordinator can only send messages to leads, explorers, and evaluators"));
+    }
+
+    #[tokio::test]
+    async fn send_message_explorer_can_only_message_coordinator() {
+        let (_dir, mcp) = setup_mcp_with_id("explorer-1", AgentRole::Explorer);
+        let state = mcp.state();
+
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "lead-1".into(),
+            message_type: "info".into(),
+            body: "test".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("This role can only send messages to the coordinator"));
+    }
+
+    #[tokio::test]
+    async fn send_message_explorer_can_message_coordinator() {
+        let (_dir, mcp) = setup_mcp_with_id("explorer-1", AgentRole::Explorer);
+        let state = mcp.state();
+
+        let coord = Agent {
+            id: "coordinator".into(),
+            role: AgentRole::Coordinator,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &coord).unwrap();
+
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "info".into(),
+            body: "discovery report".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Explorer should message coordinator"
+        );
+    }
+
+    // ---- spawn_agent permission and edge case tests ----
+
+    #[tokio::test]
+    async fn spawn_agent_worker_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "child".into(),
+            role: "worker".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_invalid_role() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "agent-1".into(),
+            role: "superadmin".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Invalid role"));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_coordinator_cannot_spawn_worker() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "worker-1".into(),
+            role: "worker".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+        assert!(text.contains("cannot spawn"));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_task_wrong_status() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Active);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "lead-1".into(),
+            role: "lead".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Active"));
+        assert!(text.contains("expected pending or blocked"));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_lead_cannot_spawn_lead() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+        let task = make_task("task-1", Some("parent"), TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "lead-2".into(),
+            role: "lead".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("cannot spawn"));
+    }
+
+    // ---- review_verdict tests ----
+
+    #[tokio::test]
+    async fn review_verdict_non_reviewer_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Lead);
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-1".into(),
+            verdict: "approve".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn review_verdict_invalid_verdict() {
+        let (_dir, mcp) = setup_mcp_with_id("reviewer-task1", AgentRole::Reviewer);
+        let state = mcp.state();
+        let mut task = make_task("task-1", None, TaskStatus::Review);
+        task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-1".into(),
+            verdict: "maybe".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Invalid verdict"));
+    }
+
+    #[tokio::test]
+    async fn review_verdict_approve_sets_queued() {
+        let (_dir, mcp) = setup_mcp_with_id("reviewer-task1", AgentRole::Reviewer);
+        let state = mcp.state();
+        let mut task = make_task("task-1", None, TaskStatus::Review);
+        task.assigned_to = Some("lead-1".into());
+        task.branch = Some("hive/test/lead-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-1".into(),
+            verdict: "approve".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        let task = state.load_task("test-run", "task-1").unwrap();
+        assert_eq!(task.status, TaskStatus::Queued);
+
+        // Verify merge queue entry was created
+        let queue = state.load_merge_queue("test-run").unwrap();
+        assert_eq!(queue.entries.len(), 1);
+        assert_eq!(queue.entries[0].task_id, "task-1");
+    }
+
+    #[tokio::test]
+    async fn review_verdict_reject_sets_failed() {
+        let (_dir, mcp) = setup_mcp_with_id("reviewer-task1", AgentRole::Reviewer);
+        let state = mcp.state();
+        let mut task = make_task("task-1", None, TaskStatus::Review);
+        task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        // Create lead agent with parent for notification path
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-1".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-1".into(),
+            verdict: "reject".into(),
+            feedback: Some("Fundamentally flawed approach".into()),
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        let task = state.load_task("test-run", "task-1").unwrap();
+        assert_eq!(task.status, TaskStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn review_verdict_task_not_found() {
+        let (_dir, mcp) = setup_mcp_with_id("reviewer-task1", AgentRole::Reviewer);
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "nonexistent".into(),
+            verdict: "approve".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    // ---- submit_to_queue tests ----
+
+    #[tokio::test]
+    async fn submit_to_queue_non_lead_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let params = Parameters(SubmitToQueueParams {
+            task_id: "task-1".into(),
+            branch: "branch".into(),
+        });
+        let result = mcp.hive_submit_to_queue(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn submit_to_queue_review_cycle_exceeded() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut task = make_task("task-maxrev", None, TaskStatus::Active);
+        task.assigned_to = Some("lead-1".into());
+        task.review_count = 3; // Max
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SubmitToQueueParams {
+            task_id: "task-maxrev".into(),
+            branch: "hive/test/lead-1".into(),
+        });
+        let result = mcp.hive_submit_to_queue(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("maximum review cycles"));
+
+        // Task should be marked failed
+        let task = state.load_task("test-run", "task-maxrev").unwrap();
+        assert_eq!(task.status, TaskStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn submit_to_queue_all_subtasks_resolved_ok() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // All resolved subtasks
+        let mut sub1 = make_task("task-sub1", Some("task-lead"), TaskStatus::Merged);
+        sub1.assigned_to = Some("worker-1".into());
+        state.save_task("test-run", &sub1).unwrap();
+
+        let mut sub2 = make_task("task-sub2", Some("task-lead"), TaskStatus::Absorbed);
+        sub2.assigned_to = Some("worker-2".into());
+        state.save_task("test-run", &sub2).unwrap();
+
+        let params = Parameters(SubmitToQueueParams {
+            task_id: "task-lead".into(),
+            branch: "hive/test/lead-1".into(),
+        });
+        // This may fail due to AgentSpawner trying to actually spawn, but
+        // it should NOT fail on the subtask gate
+        let result = mcp.hive_submit_to_queue(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(
+            !text.contains("subtask(s) are not resolved"),
+            "Should pass subtask gate when all resolved"
+        );
+    }
+
+    // ---- retry_agent permission tests ----
+
+    #[tokio::test]
+    async fn retry_agent_worker_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let params = Parameters(RetryAgentParams {
+            agent_id: "some-agent".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_retry_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn retry_agent_coordinator_denied_retry_worker() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let worker = Agent {
+            id: "worker-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Failed,
+            parent: Some("lead-1".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-w1".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker).unwrap();
+
+        let params = Parameters(RetryAgentParams {
+            agent_id: "worker-1".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_retry_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Coordinator can only retry lead agents"));
+    }
+
+    #[tokio::test]
+    async fn retry_agent_not_in_retriable_state() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running, // Not Failed or Stalled
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-1".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        let params = Parameters(RetryAgentParams {
+            agent_id: "lead-1".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_retry_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("not in Failed or Stalled state"));
+    }
+
+    #[tokio::test]
+    async fn retry_agent_lead_denied_other_leads_worker() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let worker = Agent {
+            id: "worker-2".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Failed,
+            parent: Some("lead-2".into()), // Different lead
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-w2".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker).unwrap();
+
+        let params = Parameters(RetryAgentParams {
+            agent_id: "worker-2".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_retry_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Leads can only retry their own workers"));
+    }
+
+    #[tokio::test]
+    async fn retry_agent_not_found() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+
+        let params = Parameters(RetryAgentParams {
+            agent_id: "nonexistent".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_retry_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    // ---- read_messages tests ----
+
+    #[tokio::test]
+    async fn read_messages_returns_messages_for_agent() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        // Save a message for lead-1
+        let msg = Message {
+            id: "msg-test1".into(),
+            from: "coordinator".into(),
+            to: "lead-1".into(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Info,
+            body: "Hello lead".into(),
+            refs: vec![],
+        };
+        state.save_message("test-run", &msg).unwrap();
+
+        let params = Parameters(ReadMessagesParams { since: None });
+        let result = mcp.hive_read_messages(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Hello lead"));
+        assert!(text.contains("msg-test1"));
+    }
+
+    #[tokio::test]
+    async fn read_messages_updates_cursor() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        // Create a message with a timestamp well in the past
+        let past = Utc::now() - chrono::Duration::seconds(10);
+        let msg = Message {
+            id: "msg-test1".into(),
+            from: "coordinator".into(),
+            to: "lead-1".into(),
+            timestamp: past,
+            message_type: MessageType::Info,
+            body: "First message".into(),
+            refs: vec![],
+        };
+        state.save_message("test-run", &msg).unwrap();
+
+        // First read should return the message
+        let params = Parameters(ReadMessagesParams { since: None });
+        let result = mcp.hive_read_messages(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("First message"));
+
+        // Second read should not return the old message (cursor was updated)
+        let params = Parameters(ReadMessagesParams { since: None });
+        let result = mcp.hive_read_messages(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(!text.contains("First message"), "Old message should be filtered out by cursor");
+    }
+
+    // ---- log_tool tests ----
+
+    #[tokio::test]
+    async fn log_tool_records_entry() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let params = Parameters(LogToolParams {
+            tool: "Read".into(),
+            status: "success".into(),
+            duration_ms: Some(42),
+            args_summary: Some("file.rs".into()),
+        });
+        let result = mcp.hive_log_tool(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "log_tool should succeed"
+        );
+    }
+
+    // ---- create_task edge cases ----
+
+    #[tokio::test]
+    async fn create_task_lead_denied_without_parent() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+
+        let params = Parameters(CreateTaskParams {
+            title: "Top level".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("leads can only create subtasks"));
+    }
+
+    #[tokio::test]
+    async fn create_task_lead_denied_wrong_parent() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut lead_agent = state.load_agent("test-run", "lead-1").unwrap();
+        lead_agent.task_id = Some("task-lead-1".into());
+        state.save_agent("test-run", &lead_agent).unwrap();
+
+        let params = Parameters(CreateTaskParams {
+            title: "Subtask".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: Some("task-lead-2".into()), // Not their own
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("task-lead-1")); // mentions their own task
+        assert!(text.contains("task-lead-2")); // mentions the wrong parent
+    }
+
+    #[tokio::test]
+    async fn create_task_explorer_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(CreateTaskParams {
+            title: "Task".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("cannot create tasks"));
+    }
+
+    #[tokio::test]
+    async fn create_task_reviewer_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Reviewer);
+        let params = Parameters(CreateTaskParams {
+            title: "Task".into(),
+            description: "desc".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("cannot create tasks"));
+    }
+
+    // ---- update_task edge cases ----
+
+    #[tokio::test]
+    async fn update_task_invalid_status() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let task = make_task("task-1", None, TaskStatus::Active);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-1".into(),
+            status: Some("invalid_status".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Invalid status"));
+    }
+
+    #[tokio::test]
+    async fn update_task_not_found() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "nonexistent".into(),
+            status: Some("active".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn update_task_notes_appended() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let task = make_task("task-1", None, TaskStatus::Active);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-1".into(),
+            status: None,
+            assigned_to: None,
+            branch: None,
+            notes: Some("Progress update: 50% done".into()),
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        let task = state.load_task("test-run", "task-1").unwrap();
+        assert!(task.description.contains("Progress update: 50% done"));
+    }
+
+    #[tokio::test]
+    async fn update_task_absorbed_denied_for_non_creator() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-2", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut lead_agent = state.load_agent("test-run", "lead-2").unwrap();
+        lead_agent.task_id = Some("task-lead-2".into());
+        state.save_agent("test-run", &lead_agent).unwrap();
+
+        // Task created by lead-1, not lead-2
+        let mut task = make_task("task-sub", Some("task-lead-2"), TaskStatus::Active);
+        task.created_by = "lead-1".into();
+        task.assigned_to = Some("worker-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        // Create worker agent parented to lead-2 so ownership check passes
+        let worker = Agent {
+            id: "worker-1".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-2".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-sub".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-sub".into(),
+            status: Some("absorbed".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+        assert!(text.contains("absorbed/cancelled"));
+    }
+
+    #[tokio::test]
+    async fn update_task_cancelled_allowed_for_assigned_agent() {
+        let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
+        let state = mcp.state();
+
+        let mut agent = state.load_agent("test-run", "worker-1").unwrap();
+        agent.task_id = Some("task-w1".into());
+        agent.parent = Some("lead-1".into());
+        state.save_agent("test-run", &agent).unwrap();
+
+        let mut task = make_task("task-w1", Some("task-lead"), TaskStatus::Active);
+        task.assigned_to = Some("worker-1".into());
+        task.created_by = "lead-1".into();
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-w1".into(),
+            status: Some("cancelled".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Assigned agent should cancel own task"
+        );
+
+        let task = state.load_task("test-run", "task-w1").unwrap();
+        assert_eq!(task.status, TaskStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn update_task_branch_set() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let task = make_task("task-1", None, TaskStatus::Active);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-1".into(),
+            status: None,
+            assigned_to: None,
+            branch: Some("hive/test/branch".into()),
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        let task = state.load_task("test-run", "task-1").unwrap();
+        assert_eq!(task.branch.as_deref(), Some("hive/test/branch"));
+    }
+
+    #[tokio::test]
+    async fn update_task_reviewer_can_update_own_reviewed_task() {
+        let (_dir, mcp) = setup_mcp_with_id("reviewer-task1", AgentRole::Reviewer);
+        let state = mcp.state();
+
+        let mut reviewer = state.load_agent("test-run", "reviewer-task1").unwrap();
+        reviewer.task_id = Some("task-1".into());
+        state.save_agent("test-run", &reviewer).unwrap();
+
+        let mut task = make_task("task-1", None, TaskStatus::Review);
+        task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-1".into(),
+            status: None,
+            assigned_to: None,
+            branch: None,
+            notes: Some("Reviewing...".into()),
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Reviewer should update task they are reviewing"
+        );
+    }
+
+    // ---- list_tasks filter tests ----
+
+    #[tokio::test]
+    async fn list_tasks_status_filter() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let active = make_task("task-active", None, TaskStatus::Active);
+        let pending = make_task("task-pending", None, TaskStatus::Pending);
+        state.save_task("test-run", &active).unwrap();
+        state.save_task("test-run", &pending).unwrap();
+
+        let params = Parameters(ListTasksParams {
+            status: Some("active".into()),
+            assignee: None,
+            domain: None,
+            parent_task: None,
+        });
+        let result = mcp.hive_list_tasks(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("task-active"));
+        assert!(!text.contains("task-pending"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_assignee_filter() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let mut t1 = make_task("task-1", None, TaskStatus::Active);
+        t1.assigned_to = Some("lead-1".into());
+        let mut t2 = make_task("task-2", None, TaskStatus::Active);
+        t2.assigned_to = Some("lead-2".into());
+        state.save_task("test-run", &t1).unwrap();
+        state.save_task("test-run", &t2).unwrap();
+
+        let params = Parameters(ListTasksParams {
+            status: None,
+            assignee: Some("lead-1".into()),
+            domain: None,
+            parent_task: None,
+        });
+        let result = mcp.hive_list_tasks(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("task-1"));
+        assert!(!text.contains("task-2"));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_domain_filter() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let mut t1 = make_task("task-1", None, TaskStatus::Active);
+        t1.domain = Some("backend".into());
+        let mut t2 = make_task("task-2", None, TaskStatus::Active);
+        t2.domain = Some("frontend".into());
+        state.save_task("test-run", &t1).unwrap();
+        state.save_task("test-run", &t2).unwrap();
+
+        let params = Parameters(ListTasksParams {
+            status: None,
+            assignee: None,
+            domain: Some("backend".into()),
+            parent_task: None,
+        });
+        let result = mcp.hive_list_tasks(params).await.unwrap();
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("task-1"));
+        assert!(!text.contains("task-2"));
+    }
+
+    // ---- merge_next permission test ----
+
+    #[tokio::test]
+    async fn merge_next_non_coordinator_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Lead);
+        let result = mcp.hive_merge_next().await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    // ---- synthesize full handler test ----
+
+    #[tokio::test]
+    async fn synthesize_creates_insight() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+        let state = mcp.state();
+
+        // Create a discovery first
+        let disc = Discovery {
+            id: "disc-1".into(),
+            run_id: "test-run".into(),
+            agent_id: "explorer-1".into(),
+            timestamp: Utc::now(),
+            content: "Found pattern X".into(),
+            file_paths: vec![],
+            confidence: Confidence::High,
+            tags: vec!["arch".into()],
+        };
+        state.save_discovery("test-run", &disc).unwrap();
+
+        let params = Parameters(SynthesizeParams {
+            content: "Pattern X is consistent across modules".into(),
+            discovery_ids: vec!["disc-1".into()],
+            tags: vec!["architecture".into()],
+        });
+        let result = mcp.hive_synthesize(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Coordinator should synthesize"
+        );
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("ins-"));
+    }
+
+    #[tokio::test]
+    async fn synthesize_worker_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let params = Parameters(SynthesizeParams {
+            content: "test".into(),
+            discovery_ids: vec![],
+            tags: vec![],
+        });
+        let result = mcp.hive_synthesize(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    // ---- establish_convention full handler test ----
+
+    #[tokio::test]
+    async fn establish_convention_creates_convention() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+
+        let params = Parameters(EstablishConventionParams {
+            content: "Always run tests before merging".into(),
+        });
+        let result = mcp.hive_establish_convention(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Convention added"));
+
+        // Verify stored
+        let conventions = mcp.state().load_conventions();
+        assert!(conventions.contains("Always run tests before merging"));
+    }
+
+    #[tokio::test]
+    async fn establish_convention_explorer_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(EstablishConventionParams {
+            content: "test".into(),
+        });
+        let result = mcp.hive_establish_convention(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    // ---- heartbeat test ----
+
+    #[tokio::test]
+    async fn heartbeat_updates_timestamp() {
+        let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
+        let state = mcp.state();
+
+        // Verify no heartbeat initially
+        let agent = state.load_agent("test-run", "worker-1").unwrap();
+        assert!(agent.heartbeat.is_none());
+
+        let result = mcp.hive_heartbeat().await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        // Verify heartbeat was set
+        let agent = state.load_agent("test-run", "worker-1").unwrap();
+        assert!(agent.heartbeat.is_some());
+    }
+
+    // ---- list_agents test ----
+
+    #[tokio::test]
+    async fn list_agents_returns_all() {
+        let (_dir, mcp) = setup_mcp_with_id("coordinator", AgentRole::Coordinator);
+        let state = mcp.state();
+
+        let lead = Agent {
+            id: "lead-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: Some("coordinator".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &lead).unwrap();
+
+        let result = mcp.hive_list_agents().await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("coordinator"));
+        assert!(text.contains("lead-1"));
+    }
+
+    // ---- check_agents permission test ----
+
+    #[tokio::test]
+    async fn check_agents_worker_denied() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let result = mcp.hive_check_agents().await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    // ---- discover edge cases ----
+
+    #[tokio::test]
+    async fn discover_low_confidence() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(DiscoverParams {
+            content: "Might be a pattern here".into(),
+            confidence: "low".into(),
+            file_paths: vec![],
+            tags: vec!["speculative".into()],
+        });
+        let result = mcp.hive_discover(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        let discoveries = mcp.state().load_discoveries("test-run");
+        assert_eq!(discoveries.len(), 1);
+        assert_eq!(discoveries[0].confidence, Confidence::Low);
+    }
+
+    // ---- query_mind no results ----
+
+    #[tokio::test]
+    async fn query_mind_no_results() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let params = Parameters(QueryMindParams {
+            query: "xyznonexistent".into(),
+        });
+        let result = mcp.hive_query_mind(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("No matching"));
+    }
+
+    // ---- save_memory convention type test ----
+
+    #[tokio::test]
+    async fn save_memory_convention_succeeds() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
+        let params = Parameters(SaveMemoryParams {
+            memory_type: "convention".into(),
+            content: "## Testing Conventions\n- Always test edge cases".into(),
+        });
+        let result = mcp.hive_save_memory(params).await.unwrap();
+        assert!(
+            !result.is_error.unwrap_or(false),
+            "Convention save should succeed"
+        );
+    }
+
     #[test]
     fn notify_parent_of_transition_no_parent_is_noop() {
         let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
