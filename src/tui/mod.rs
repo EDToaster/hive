@@ -38,11 +38,38 @@ pub(crate) enum Pane {
     Activity,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum FilterMode {
+    #[default]
+    All,
+    RunningOnly,
+    FailedOnly,
+}
+
+impl FilterMode {
+    pub(crate) fn next(self) -> Self {
+        match self {
+            Self::All => Self::RunningOnly,
+            Self::RunningOnly => Self::FailedOnly,
+            Self::FailedOnly => Self::All,
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::RunningOnly => "running",
+            Self::FailedOnly => "failed",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) enum Overlay {
     Agent(String),
     Task(String),
     AgentOutput(String),
+    Help,
 }
 
 pub(crate) struct TuiState {
@@ -59,6 +86,11 @@ pub(crate) struct TuiState {
     pub collapsed_agents: HashSet<String>,
     pub spec_scroll: usize,
     pub mouse_enabled: bool,
+    /// Incremental search/filter for the activity pane (vim-style /)
+    pub search_query: String,
+    pub search_active: bool,
+    /// Agent status filter preset
+    pub filter_mode: FilterMode,
     /// Cached pane areas for mouse hit-testing (updated each frame)
     pub swarm_area: Rect,
     pub tasks_area: Rect,
@@ -110,6 +142,9 @@ impl Default for TuiState {
             collapsed_tasks: HashSet::new(),
             collapsed_agents: HashSet::new(),
             mouse_enabled: true,
+            search_query: String::new(),
+            search_active: false,
+            filter_mode: FilterMode::All,
             swarm_area: Rect::default(),
             tasks_area: Rect::default(),
             activity_area: Rect::default(),
@@ -389,6 +424,8 @@ fn run_tui_loop(
         ui.overlay_area = if ui.overlay.is_some() {
             let pct = if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
                 (90, 90)
+            } else if matches!(ui.overlay, Some(Overlay::Help)) {
+                (70, 85)
             } else {
                 (60, 80)
             };
@@ -439,7 +476,7 @@ fn run_tui_loop(
                 }
 
                 // -- Activity stream --
-                render_activity_stream(frame, outer[3], &activity, &ui);
+                render_activity_stream(frame, outer[3], &activity, &agents, &ui);
 
                 // -- Overlay --
                 if let Some(ref overlay) = ui.overlay {
@@ -471,7 +508,7 @@ fn run_tui_loop(
 
             // --- Keyboard events ---
             if let Event::Key(key) = ev {
-                // Intercept keys when AgentOutput overlay is open
+                // 1. Intercept keys when AgentOutput overlay is open
                 if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => {
@@ -505,6 +542,41 @@ fn run_tui_loop(
                     continue;
                 }
 
+                // 2. Help overlay: any meaningful key closes it
+                if matches!(ui.overlay, Some(Overlay::Help)) {
+                    ui.overlay = None;
+                    if last_tick.elapsed() >= tick_rate {
+                        last_tick = Instant::now();
+                    }
+                    continue;
+                }
+
+                // 3. Search mode: capture text input
+                if ui.search_active {
+                    match key.code {
+                        KeyCode::Esc => {
+                            ui.search_active = false;
+                            ui.search_query.clear();
+                        }
+                        KeyCode::Enter => {
+                            // Commit search — keep filter active, exit typing mode
+                            ui.search_active = false;
+                        }
+                        KeyCode::Backspace => {
+                            ui.search_query.pop();
+                        }
+                        KeyCode::Char(c) => {
+                            ui.search_query.push(c);
+                        }
+                        _ => {}
+                    }
+                    if last_tick.elapsed() >= tick_rate {
+                        last_tick = Instant::now();
+                    }
+                    continue;
+                }
+
+                // 4. Normal key dispatch
                 match key.code {
                     KeyCode::Char('q') => {
                         if ui.overlay.is_none() {
@@ -514,10 +586,33 @@ fn run_tui_loop(
                     KeyCode::Esc => {
                         if ui.overlay.is_some() {
                             ui.overlay = None;
+                        } else if !ui.search_query.is_empty() {
+                            ui.search_query.clear();
                         } else if ui.selected_agent_filter.is_some() {
                             ui.selected_agent_filter = None;
                             ui.swarm_selected = None;
                         }
+                    }
+                    KeyCode::Char('?') => {
+                        if ui.overlay.is_none() {
+                            ui.overlay = Some(Overlay::Help);
+                        }
+                    }
+                    KeyCode::Char('/') => {
+                        ui.search_active = true;
+                        ui.focused_pane = Pane::Activity;
+                    }
+                    KeyCode::Char('f') => {
+                        ui.filter_mode = ui.filter_mode.next();
+                    }
+                    KeyCode::Char('1') => {
+                        ui.focused_pane = Pane::Swarm;
+                    }
+                    KeyCode::Char('2') => {
+                        ui.focused_pane = Pane::Tasks;
+                    }
+                    KeyCode::Char('3') => {
+                        ui.focused_pane = Pane::Activity;
                     }
                     KeyCode::Tab => {
                         ui.focused_pane = match ui.focused_pane {
