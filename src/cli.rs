@@ -341,7 +341,9 @@ mod tests {
     fn test_read_messages_bool_flags_default_false() {
         let cli = Cli::try_parse_from(["hive", "read-messages", "--agent", "x"]).unwrap();
         match cli.command {
-            Commands::ReadMessages { unread, stop_hook, .. } => {
+            Commands::ReadMessages {
+                unread, stop_hook, ..
+            } => {
                 assert!(!unread);
                 assert!(!stop_hook);
             }

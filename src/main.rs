@@ -1300,8 +1300,8 @@ fn cmd_stop() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use clap::Parser;
     use crate::cli::{Cli, Commands, MemoryCommands, MindCommands};
+    use clap::Parser;
 
     // ── Simple subcommands (no arguments) ──
 
@@ -1374,8 +1374,7 @@ mod tests {
 
     #[test]
     fn test_cli_start_with_goal_flag() {
-        let cli =
-            Cli::try_parse_from(["hive", "start", "--goal", "add a login page"]).unwrap();
+        let cli = Cli::try_parse_from(["hive", "start", "--goal", "add a login page"]).unwrap();
         match cli.command {
             Commands::Start { spec, goal } => {
                 assert_eq!(spec, None);
@@ -1451,7 +1450,12 @@ mod tests {
     #[test]
     fn test_cli_tasks_both_filters() {
         let cli = Cli::try_parse_from([
-            "hive", "tasks", "--status", "merged", "--assignee", "worker-2",
+            "hive",
+            "tasks",
+            "--status",
+            "merged",
+            "--assignee",
+            "worker-2",
         ])
         .unwrap();
         match cli.command {
@@ -1527,15 +1531,7 @@ mod tests {
     #[test]
     fn test_cli_log_tool_required_only() {
         let cli = Cli::try_parse_from([
-            "hive",
-            "log-tool",
-            "--run",
-            "r1",
-            "--agent",
-            "a1",
-            "--tool",
-            "Bash",
-            "--status",
+            "hive", "log-tool", "--run", "r1", "--agent", "a1", "--tool", "Bash", "--status",
             "error",
         ])
         .unwrap();
@@ -1556,14 +1552,7 @@ mod tests {
     fn test_cli_log_tool_missing_required() {
         // Missing --tool
         let result = Cli::try_parse_from([
-            "hive",
-            "log-tool",
-            "--run",
-            "r1",
-            "--agent",
-            "a1",
-            "--status",
-            "ok",
+            "hive", "log-tool", "--run", "r1", "--agent", "a1", "--status", "ok",
         ]);
         assert!(result.is_err());
     }
@@ -1572,15 +1561,9 @@ mod tests {
 
     #[test]
     fn test_cli_heartbeat() {
-        let cli = Cli::try_parse_from([
-            "hive",
-            "heartbeat",
-            "--run",
-            "run1",
-            "--agent",
-            "worker-3",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["hive", "heartbeat", "--run", "run1", "--agent", "worker-3"])
+                .unwrap();
         match cli.command {
             Commands::Heartbeat { run, agent } => {
                 assert_eq!(run, "run1");
@@ -1620,10 +1603,8 @@ mod tests {
 
     #[test]
     fn test_cli_mcp() {
-        let cli = Cli::try_parse_from([
-            "hive", "mcp", "--run", "run1", "--agent", "coordinator",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["hive", "mcp", "--run", "run1", "--agent", "coordinator"])
+            .unwrap();
         match cli.command {
             Commands::Mcp { run, agent } => {
                 assert_eq!(run, "run1");
@@ -1667,8 +1648,7 @@ mod tests {
 
     #[test]
     fn test_cli_wait_with_run() {
-        let cli =
-            Cli::try_parse_from(["hive", "wait", "--run", "abc", "--timeout", "30"]).unwrap();
+        let cli = Cli::try_parse_from(["hive", "wait", "--run", "abc", "--timeout", "30"]).unwrap();
         match cli.command {
             Commands::Wait { run, timeout } => {
                 assert_eq!(run, Some("abc".to_string()));
@@ -1714,14 +1694,7 @@ mod tests {
 
     #[test]
     fn test_cli_review_agent_with_run() {
-        let cli = Cli::try_parse_from([
-            "hive",
-            "review-agent",
-            "lead-2",
-            "--run",
-            "abc",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["hive", "review-agent", "lead-2", "--run", "abc"]).unwrap();
         match cli.command {
             Commands::ReviewAgent { agent_id, run } => {
                 assert_eq!(agent_id, "lead-2");
@@ -1741,8 +1714,7 @@ mod tests {
 
     #[test]
     fn test_cli_read_messages_defaults() {
-        let cli =
-            Cli::try_parse_from(["hive", "read-messages", "--agent", "worker-1"]).unwrap();
+        let cli = Cli::try_parse_from(["hive", "read-messages", "--agent", "worker-1"]).unwrap();
         match cli.command {
             Commands::ReadMessages {
                 agent,
@@ -1838,15 +1810,9 @@ mod tests {
 
     #[test]
     fn test_cli_agent_exit_command() {
-        let cli = Cli::try_parse_from([
-            "hive",
-            "agent-exit",
-            "--run",
-            "abc",
-            "--agent",
-            "worker-1",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["hive", "agent-exit", "--run", "abc", "--agent", "worker-1"])
+                .unwrap();
         match cli.command {
             Commands::AgentExit { run, agent } => {
                 assert_eq!(run, "abc");
@@ -1875,8 +1841,7 @@ mod tests {
 
     #[test]
     fn test_cli_mind_query_command() {
-        let cli =
-            Cli::try_parse_from(["hive", "mind", "query", "search term"]).unwrap();
+        let cli = Cli::try_parse_from(["hive", "mind", "query", "search term"]).unwrap();
         match cli.command {
             Commands::Mind { command } => match command {
                 Some(MindCommands::Query { query }) => assert_eq!(query, "search term"),
@@ -1977,17 +1942,14 @@ mod tests {
 
     #[test]
     fn test_cli_kebab_case_read_messages() {
-        let cli =
-            Cli::try_parse_from(["hive", "read-messages", "--agent", "a1"]).unwrap();
+        let cli = Cli::try_parse_from(["hive", "read-messages", "--agent", "a1"]).unwrap();
         assert!(matches!(cli.command, Commands::ReadMessages { .. }));
     }
 
     #[test]
     fn test_cli_kebab_case_agent_exit() {
-        let cli = Cli::try_parse_from([
-            "hive", "agent-exit", "--run", "r", "--agent", "a",
-        ])
-        .unwrap();
+        let cli =
+            Cli::try_parse_from(["hive", "agent-exit", "--run", "r", "--agent", "a"]).unwrap();
         assert!(matches!(cli.command, Commands::AgentExit { .. }));
     }
 
@@ -1995,10 +1957,10 @@ mod tests {
 
     #[test]
     fn test_stop_hook_updates_read_cursor() {
-        use chrono::Utc;
-        use tempfile::TempDir;
         use crate::state::HiveState;
         use crate::types::{Agent, AgentRole, AgentStatus, Message, MessageType};
+        use chrono::Utc;
+        use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let root = dir.path().to_path_buf();
@@ -2052,10 +2014,10 @@ mod tests {
 
     #[test]
     fn test_non_stop_hook_does_not_update_cursor() {
-        use chrono::Utc;
-        use tempfile::TempDir;
         use crate::state::HiveState;
         use crate::types::{Agent, AgentRole, AgentStatus, Message, MessageType};
+        use chrono::Utc;
+        use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let root = dir.path().to_path_buf();
