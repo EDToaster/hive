@@ -759,22 +759,23 @@ fn run_tui_loop(
                         ui.overlay = None;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
-                        if ui.output_auto_scroll {
-                            // Sync scroll position before leaving follow mode
-                            ui.output_scroll = usize::MAX; // will be clamped to max_scroll in render
+                        // output_scroll is offset from bottom: 0 = bottom
+                        if ui.output_scroll > 0 {
+                            ui.output_auto_scroll = false;
+                            ui.output_scroll = ui.output_scroll.saturating_sub(1);
+                            if ui.output_scroll == 0 {
+                                ui.output_auto_scroll = true;
+                            }
                         }
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        // output_scroll is offset from bottom: increase to scroll up
                         ui.output_auto_scroll = false;
                         ui.output_scroll = ui.output_scroll.saturating_add(1);
                     }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        if ui.output_auto_scroll {
-                            ui.output_scroll = usize::MAX;
-                        }
-                        ui.output_auto_scroll = false;
-                        ui.output_scroll = ui.output_scroll.saturating_sub(1);
-                    }
                     KeyCode::Char('G') => {
                         ui.output_auto_scroll = true;
+                        ui.output_scroll = 0;
                     }
                     _ => {}
                 }
@@ -904,9 +905,11 @@ fn run_tui_loop(
             }
         }
 
-        // Auto-scroll activity to bottom
+        // Auto-scroll activity to bottom, or clamp manual scroll to valid range
         if ui.activity_auto_scroll {
             ui.activity_scroll = activity_len.saturating_sub(1);
+        } else {
+            ui.activity_scroll = ui.activity_scroll.min(activity_len.saturating_sub(1));
         }
 
         if last_tick.elapsed() >= tick_rate {
@@ -1560,6 +1563,7 @@ fn render_overlay(
                 output_scroll,
                 output_auto_scroll,
             );
+
         }
     }
 }
@@ -1794,13 +1798,6 @@ fn render_agent_output_overlay(
         lines.push(Line::from(""));
     }
 
-    // Footer
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " [j/k] scroll  [G] follow  [Esc] close",
-        Style::default().fg(Color::Gray),
-    )));
-
     let logical_lines = lines.len();
     // Visible height inside the block (subtract 2 for top/bottom border)
     let visible = area.height.saturating_sub(2) as usize;
@@ -1815,14 +1812,16 @@ fn render_agent_output_overlay(
         })
         .sum();
     let max_scroll = (logical_lines + wrap_extra).saturating_sub(visible);
+    // scroll is offset from bottom: 0 = bottom, N = N lines up
     let effective_scroll = if auto_scroll {
         max_scroll
     } else {
-        scroll.min(max_scroll)
+        max_scroll.saturating_sub(scroll)
     };
 
     let block = Block::default()
         .title(format!(" Output: {} ", agent_id))
+        .title_bottom(Line::from(" [j/k] scroll  [G] follow  [Esc] close ").right_aligned())
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
     let paragraph = Paragraph::new(lines)
