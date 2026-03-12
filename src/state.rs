@@ -1898,4 +1898,693 @@ mod tests {
         assert!(prompt.contains("timeout"));
         assert!(!prompt.contains("### Recent Operations"));
     }
+
+    // =================================================================
+    // Adversarial tests: corrupted state, malformed JSON, edge cases
+    // =================================================================
+
+    #[test]
+    fn load_task_with_corrupted_json_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Write garbage to a task file
+        let task_path = state.tasks_dir("run-1").join("task-corrupt.json");
+        std::fs::write(&task_path, "{{not valid json}}").unwrap();
+
+        let result = state.load_task("run-1", "task-corrupt");
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err();
+        assert!(
+            err_msg.contains("task-corrupt"),
+            "Error should mention the task ID: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn list_tasks_with_one_corrupted_file_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Save a valid task
+        state
+            .save_task("run-1", &make_task("task-good", TaskStatus::Pending))
+            .unwrap();
+
+        // Write a corrupted task file
+        let task_path = state.tasks_dir("run-1").join("task-bad.json");
+        std::fs::write(&task_path, "not json").unwrap();
+
+        // list_tasks should fail because it doesn't skip corrupted files
+        let result = state.list_tasks("run-1");
+        assert!(
+            result.is_err(),
+            "list_tasks should propagate JSON parse errors"
+        );
+    }
+
+    #[test]
+    fn load_agent_with_corrupted_json_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Create agent dir with corrupted agent.json
+        let agent_dir = state.agents_dir("run-1").join("agent-corrupt");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("agent.json"), "CORRUPTED").unwrap();
+
+        let result = state.load_agent("run-1", "agent-corrupt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn list_agents_with_one_corrupted_file_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Save a valid agent
+        state
+            .save_agent(
+                "run-1",
+                &make_agent("agent-good", AgentRole::Worker, AgentStatus::Running),
+            )
+            .unwrap();
+
+        // Create corrupted agent
+        let agent_dir = state.agents_dir("run-1").join("agent-bad");
+        std::fs::create_dir_all(&agent_dir).unwrap();
+        std::fs::write(agent_dir.join("agent.json"), "not json").unwrap();
+
+        let result = state.list_agents("run-1");
+        assert!(
+            result.is_err(),
+            "list_agents should propagate JSON parse errors"
+        );
+    }
+
+    #[test]
+    fn list_messages_with_corrupted_file_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let msg_path = state.messages_dir("run-1").join("msg-bad.json");
+        std::fs::write(&msg_path, "{{bad json}}").unwrap();
+
+        let result = state.list_messages("run-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_merge_queue_with_corrupted_json() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Overwrite merge-queue.json with garbage
+        let queue_path = state.run_dir("run-1").join("merge-queue.json");
+        std::fs::write(&queue_path, "GARBAGE").unwrap();
+
+        let result = state.load_merge_queue("run-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_run_metadata_with_corrupted_json() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Overwrite run.json with garbage
+        let run_path = state.run_dir("run-1").join("run.json");
+        std::fs::write(&run_path, "not-json").unwrap();
+
+        let result = state.load_run_metadata("run-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_task_nonexistent_run_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let result = state.load_task("nonexistent-run", "task-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_agent_nonexistent_run_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let result = state.load_agent("nonexistent-run", "agent-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn update_heartbeat_nonexistent_agent_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let result = state.update_agent_heartbeat("run-1", "ghost-agent");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_spec_nonexistent_fails() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        // No spec saved
+        let result = state.load_spec("run-1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_planner_spec_nonexistent_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        assert!(state.load_planner_spec("run-1").is_none());
+    }
+
+    // --- Special characters in IDs ---
+
+    #[test]
+    fn task_with_special_chars_in_id() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Forward slashes in task IDs would create subdirectories
+        let task = make_task("task/with/slashes", TaskStatus::Pending);
+        let result = state.save_task("run-1", &task);
+        // This might succeed or fail depending on OS filesystem behavior
+        // On Unix, it would try to create subdirectories
+        // The important thing is it doesn't panic
+        if result.is_ok() {
+            // If save succeeds, load should also succeed
+            let loaded = state.load_task("run-1", "task/with/slashes");
+            assert!(loaded.is_ok());
+        }
+    }
+
+    #[test]
+    fn agent_with_dot_dot_in_id() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Path traversal attempt in agent ID
+        let agent = make_agent("../../etc/passwd", AgentRole::Worker, AgentStatus::Running);
+        // This creates a directory at agents/../../etc/passwd/ which is actually
+        // a traversal. The test verifies the code doesn't prevent this.
+        let result = state.save_agent("run-1", &agent);
+        // Whether this succeeds depends on the path resolution, but it shouldn't panic.
+        let _ = result;
+    }
+
+    #[test]
+    fn task_with_empty_id() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let task = make_task("", TaskStatus::Pending);
+        // Empty ID creates ".json" file — save should succeed
+        let result = state.save_task("run-1", &task);
+        assert!(result.is_ok());
+
+        let loaded = state.load_task("run-1", "");
+        assert!(loaded.is_ok());
+        assert_eq!(loaded.unwrap().id, "");
+    }
+
+    #[test]
+    fn agent_with_empty_id() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("", AgentRole::Worker, AgentStatus::Running);
+        // Empty ID creates agents// directory
+        let result = state.save_agent("run-1", &agent);
+        // On most systems this will create an agent at agents//agent.json
+        // which resolves to agents/agent.json
+        let _ = result;
+    }
+
+    // --- Config edge cases ---
+
+    #[test]
+    fn load_config_with_negative_stall_timeout() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            "stall_timeout_seconds: -100\n",
+        )
+        .unwrap();
+        let config = state.load_config();
+        // Negative value parses fine into i64
+        assert_eq!(config.stall_timeout_seconds, -100);
+    }
+
+    #[test]
+    fn load_config_with_zero_max_retries() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(state.hive_dir().join("config.yaml"), "max_retries: 0\n").unwrap();
+        let config = state.load_config();
+        assert_eq!(config.max_retries, 0);
+    }
+
+    #[test]
+    fn load_config_with_empty_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(state.hive_dir().join("config.yaml"), "").unwrap();
+        let config = state.load_config();
+        // Should return all defaults
+        assert_eq!(config.stall_timeout_seconds, 300);
+        assert_eq!(config.max_retries, 2);
+        assert!(config.budget_usd.is_none());
+        assert!(config.verify_command.is_none());
+    }
+
+    #[test]
+    fn load_config_with_binary_content() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(
+            state.hive_dir().join("config.yaml"),
+            &[0xFF, 0xFE, 0x00, 0x01, 0x02],
+        )
+        .unwrap();
+        // Should not panic, just return defaults (file may or may not be readable as UTF-8)
+        let config = state.load_config();
+        assert_eq!(config.stall_timeout_seconds, 300);
+    }
+
+    #[test]
+    fn load_config_with_negative_budget() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(state.hive_dir().join("config.yaml"), "budget_usd: -50.0\n").unwrap();
+        let config = state.load_config();
+        // Negative budget parses fine — no validation
+        assert_eq!(config.budget_usd, Some(-50.0));
+    }
+
+    #[test]
+    fn load_config_verify_command_empty_string_treated_as_none() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::write(state.hive_dir().join("config.yaml"), "verify_command: \n").unwrap();
+        let config = state.load_config();
+        assert!(config.verify_command.is_none());
+    }
+
+    // --- JSONL corruption resilience ---
+
+    #[test]
+    fn load_operations_with_corrupted_lines_skips_bad() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::create_dir_all(state.memory_dir()).unwrap();
+
+        let valid_op = serde_json::to_string(&make_operation("run-1", 5)).unwrap();
+        let content = format!("{valid_op}\nBAD LINE\n{valid_op}\n\n");
+        std::fs::write(state.memory_dir().join("operations.jsonl"), &content).unwrap();
+
+        let ops = state.load_operations();
+        // filter_map(|l| serde_json::from_str(l).ok()) skips bad lines
+        assert_eq!(ops.len(), 2);
+    }
+
+    #[test]
+    fn load_failures_with_corrupted_lines_skips_bad() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        std::fs::create_dir_all(state.memory_dir()).unwrap();
+
+        let valid_fail = serde_json::to_string(&make_failure("pattern-1")).unwrap();
+        let content = format!("{valid_fail}\n{{bad}}\n{valid_fail}\n");
+        std::fs::write(state.memory_dir().join("failures.jsonl"), &content).unwrap();
+
+        let fails = state.load_failures();
+        assert_eq!(fails.len(), 2);
+    }
+
+    #[test]
+    fn load_discoveries_with_corrupted_lines_skips_bad() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        std::fs::create_dir_all(state.mind_dir("run-1")).unwrap();
+
+        let valid_disc = serde_json::to_string(&make_discovery("d1", "Found something")).unwrap();
+        let content = format!("{valid_disc}\nGARBAGE\n{valid_disc}\n");
+        std::fs::write(state.mind_dir("run-1").join("discoveries.jsonl"), &content).unwrap();
+
+        let discoveries = state.load_discoveries("run-1");
+        assert_eq!(discoveries.len(), 2);
+    }
+
+    #[test]
+    fn load_insights_with_corrupted_lines_skips_bad() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        std::fs::create_dir_all(state.mind_dir("run-1")).unwrap();
+
+        let valid_ins = serde_json::to_string(&make_insight("i1", "Key insight")).unwrap();
+        let content = format!("{valid_ins}\n{{broken json\n{valid_ins}\n");
+        std::fs::write(state.mind_dir("run-1").join("insights.jsonl"), &content).unwrap();
+
+        let insights = state.load_insights("run-1");
+        assert_eq!(insights.len(), 2);
+    }
+
+    // --- Cost tracking edge cases ---
+
+    #[test]
+    fn load_agent_cost_empty_output_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("agent-1", AgentRole::Worker, AgentStatus::Done);
+        state.save_agent("run-1", &agent).unwrap();
+
+        // Empty output.jsonl
+        std::fs::write(
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.jsonl"),
+            "",
+        )
+        .unwrap();
+
+        let cost = state.load_agent_cost("run-1", "agent-1");
+        assert!(cost.is_none());
+    }
+
+    #[test]
+    fn load_agent_cost_no_token_lines() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("agent-1", AgentRole::Worker, AgentStatus::Done);
+        state.save_agent("run-1", &agent).unwrap();
+
+        // output.jsonl with no token count lines
+        std::fs::write(
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.jsonl"),
+            "{\"type\":\"assistant\",\"message\":\"hello\"}\n{\"type\":\"done\"}\n",
+        )
+        .unwrap();
+
+        let cost = state.load_agent_cost("run-1", "agent-1");
+        assert!(cost.is_none());
+    }
+
+    #[test]
+    fn load_agent_cost_with_corrupted_output_lines() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("agent-1", AgentRole::Worker, AgentStatus::Done);
+        state.save_agent("run-1", &agent).unwrap();
+
+        // Mix of valid and invalid JSON lines, with token data early
+        let content = "not json at all\n{\"num_input_tokens\": 100, \"num_output_tokens\": 50}\nmore garbage\n";
+        std::fs::write(
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.jsonl"),
+            content,
+        )
+        .unwrap();
+
+        // Should still find the valid token line
+        let cost = state.load_agent_cost("run-1", "agent-1");
+        assert!(cost.is_some());
+        let cost = cost.unwrap();
+        assert_eq!(cost.input_tokens, 100);
+        assert_eq!(cost.output_tokens, 50);
+    }
+
+    #[test]
+    fn load_agent_cost_missing_output_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let agent = make_agent("agent-1", AgentRole::Worker, AgentStatus::Done);
+        state.save_agent("run-1", &agent).unwrap();
+        // Don't create output.jsonl
+
+        let cost = state.load_agent_cost("run-1", "agent-1");
+        assert!(cost.is_none());
+    }
+
+    #[test]
+    fn total_run_cost_nonexistent_run_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        let cost = state.total_run_cost("nonexistent-run");
+        assert_eq!(cost, 0.0);
+    }
+
+    #[test]
+    fn total_run_cost_agents_with_no_output_returns_zero() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Save agents without output files
+        state
+            .save_agent(
+                "run-1",
+                &make_agent("agent-1", AgentRole::Worker, AgentStatus::Done),
+            )
+            .unwrap();
+
+        let cost = state.total_run_cost("run-1");
+        assert_eq!(cost, 0.0);
+    }
+
+    // --- list_runs edge cases ---
+
+    #[test]
+    fn list_runs_with_no_runs_dir() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        // Don't create any runs
+        let runs = state.list_runs().unwrap();
+        assert!(runs.is_empty());
+    }
+
+    #[test]
+    fn list_runs_skips_corrupted_run_json() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("good-run").unwrap();
+
+        // Create a corrupted run
+        let bad_run_dir = state.runs_dir().join("bad-run");
+        std::fs::create_dir_all(&bad_run_dir).unwrap();
+        std::fs::write(bad_run_dir.join("run.json"), "NOT JSON").unwrap();
+
+        let runs = state.list_runs().unwrap();
+        // list_runs uses `if let Ok(meta)` so it silently skips corrupted runs
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].id, "good-run");
+    }
+
+    #[test]
+    fn list_runs_skips_dir_without_run_json() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("good-run").unwrap();
+
+        // Create a dir without run.json
+        std::fs::create_dir_all(state.runs_dir().join("empty-dir")).unwrap();
+
+        let runs = state.list_runs().unwrap();
+        assert_eq!(runs.len(), 1);
+    }
+
+    // --- query_mind edge cases ---
+
+    #[test]
+    fn query_mind_empty_query_matches_nothing() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        state
+            .save_discovery("run-1", &make_discovery("d1", "some content"))
+            .unwrap();
+
+        let result = state.query_mind("run-1", "");
+        // Empty query has no words, so nothing matches
+        assert!(result.discoveries.is_empty());
+    }
+
+    #[test]
+    fn query_mind_nonexistent_run_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+
+        let result = state.query_mind("nonexistent-run", "test");
+        assert!(result.discoveries.is_empty());
+        assert!(result.insights.is_empty());
+    }
+
+    // --- Non-JSON files in task/message dirs ---
+
+    #[test]
+    fn list_tasks_ignores_non_json_files() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        // Save a valid task
+        state
+            .save_task("run-1", &make_task("task-1", TaskStatus::Pending))
+            .unwrap();
+
+        // Add non-JSON files
+        std::fs::write(state.tasks_dir("run-1").join("README.md"), "ignore me").unwrap();
+        std::fs::write(state.tasks_dir("run-1").join(".gitkeep"), "").unwrap();
+        std::fs::write(
+            state.tasks_dir("run-1").join("task-1.json.tmp"),
+            "temp file",
+        )
+        .unwrap();
+
+        let tasks = state.list_tasks("run-1").unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "task-1");
+    }
+
+    #[test]
+    fn list_messages_ignores_non_json_files() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let msg = make_message("msg-1", "a", "b", chrono::Utc::now());
+        state.save_message("run-1", &msg).unwrap();
+
+        // Add non-JSON files
+        std::fs::write(state.messages_dir("run-1").join("not-a-message.txt"), "x").unwrap();
+
+        let messages = state.list_messages("run-1").unwrap();
+        assert_eq!(messages.len(), 1);
+    }
+
+    // --- Atomic write edge cases ---
+
+    #[test]
+    fn atomic_write_to_nonexistent_directory_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir
+            .path()
+            .join("nonexistent")
+            .join("deep")
+            .join("file.json");
+        let result = atomic_write(&path, "content");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn atomic_write_overwrites_existing_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.json");
+        atomic_write(&path, "first").unwrap();
+        atomic_write(&path, "second").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "second");
+    }
+
+    #[test]
+    fn atomic_write_with_empty_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("empty.json");
+        atomic_write(&path, "").unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content, "");
+    }
+
+    #[test]
+    fn atomic_write_with_large_content() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("large.json");
+        let large = "x".repeat(1_000_000);
+        atomic_write(&path, &large).unwrap();
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(content.len(), 1_000_000);
+    }
+
+    // --- Prune with no memory dir ---
+
+    #[test]
+    fn prune_memory_with_no_memory_dir_succeeds() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        // No memory dir exists
+        let result = state.prune_memory();
+        assert!(result.is_ok());
+    }
+
+    // --- Multiple create_run ---
+
+    #[test]
+    fn create_run_twice_with_same_id_overwrites() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+        // Save a task
+        state
+            .save_task("run-1", &make_task("task-1", TaskStatus::Active))
+            .unwrap();
+
+        // Create same run again — it recreates the dirs but doesn't clear existing files
+        state.create_run("run-1").unwrap();
+
+        // The task file should still exist (create_run uses create_dir_all which is idempotent)
+        let tasks = state.list_tasks("run-1").unwrap();
+        assert_eq!(tasks.len(), 1);
+
+        // But the run.json and merge-queue.json are overwritten
+        let meta = state.load_run_metadata("run-1").unwrap();
+        assert_eq!(meta.status, RunStatus::Active);
+    }
+
+    // --- load_messages_for_agent with corrupted messages ---
+
+    #[test]
+    fn load_messages_for_agent_fails_on_corrupted_file() {
+        let dir = TempDir::new().unwrap();
+        let state = make_state(dir.path());
+        state.create_run("run-1").unwrap();
+
+        let msg_path = state.messages_dir("run-1").join("msg-bad.json");
+        std::fs::write(&msg_path, "NOT JSON").unwrap();
+
+        let result = state.load_messages_for_agent("run-1", "worker-1", None);
+        assert!(result.is_err());
+    }
 }

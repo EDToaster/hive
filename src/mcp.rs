@@ -4531,6 +4531,524 @@ mod tests {
         (dir, coord_mcp, lead_mcp, worker_mcp)
     }
 
+    // =================================================================
+    // Adversarial tests: invalid params, empty strings, boundary cases
+    // =================================================================
+
+    #[tokio::test]
+    async fn create_task_with_empty_title_succeeds() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(CreateTaskParams {
+            title: "".into(),
+            description: "".into(),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        // No validation on empty strings — this succeeds
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn create_task_with_invalid_urgency_defaults() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        // Invalid urgency strings — check how they're handled
+        let params = Parameters(CreateTaskParams {
+            title: "Test task".into(),
+            description: "desc".into(),
+            urgency: "URGENT".into(), // not a valid urgency
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        // check if this succeeds or fails — helps discover validation gaps
+        // The code does: match urgency_str "low"|"normal"|"high"|"critical" -> _ defaults to Normal
+        // So invalid urgency silently becomes Normal
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn create_task_with_special_chars_in_title() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(CreateTaskParams {
+            title: "Task with <html>&\"quotes'</html> and \n newlines \t tabs".into(),
+            description: "描述 with unicode 🚀 and \0 null bytes".into(),
+            urgency: "normal".into(),
+            domain: Some("domaine-spécial".into()),
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn create_task_with_very_long_title() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let long_title = "x".repeat(10_000);
+        let params = Parameters(CreateTaskParams {
+            title: long_title,
+            description: "y".repeat(100_000),
+            urgency: "normal".into(),
+            domain: None,
+            blocking: vec![],
+            blocked_by: vec![],
+            parent_task: None,
+        });
+        let result = mcp.hive_create_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn discover_with_empty_content_succeeds() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(DiscoverParams {
+            content: "".into(),
+            confidence: "medium".into(),
+            file_paths: vec![],
+            tags: vec![],
+        });
+        let result = mcp.hive_discover(params).await.unwrap();
+        // No validation on empty content
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn discover_with_invalid_confidence_defaults_to_medium() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(DiscoverParams {
+            content: "test finding".into(),
+            confidence: "EXTREMELY_HIGH".into(),
+            file_paths: vec![],
+            tags: vec![],
+        });
+        let result = mcp.hive_discover(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        // Invalid confidence defaults to Medium (the _ match arm)
+    }
+
+    #[tokio::test]
+    async fn establish_convention_non_coordinator_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Lead);
+        let params = Parameters(EstablishConventionParams {
+            content: "use snake_case".into(),
+        });
+        let result = mcp.hive_establish_convention(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn list_tasks_with_invalid_status_filter() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        state
+            .save_task("test-run", &make_task("task-1", None, TaskStatus::Active))
+            .unwrap();
+
+        let params = Parameters(ListTasksParams {
+            status: Some("INVALID_STATUS".into()),
+            assignee: None,
+            domain: None,
+            parent_task: None,
+        });
+        let result = mcp.hive_list_tasks(params).await.unwrap();
+        // Invalid status filter returns empty list (no tasks match the invalid status)
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        // The output is "[]" since no tasks match the invalid status
+        assert!(text.contains("[]"));
+    }
+
+    #[tokio::test]
+    async fn query_mind_with_empty_query() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(QueryMindParams { query: "".into() });
+        let result = mcp.hive_query_mind(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("No matching"));
+    }
+
+    #[tokio::test]
+    async fn query_mind_with_special_chars() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(QueryMindParams {
+            query: "SELECT * FROM users; DROP TABLE--".into(),
+        });
+        let result = mcp.hive_query_mind(params).await.unwrap();
+        // Should not panic, just return no results
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn review_verdict_empty_verdict_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Reviewer);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Review);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-1".into(),
+            verdict: "".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn review_verdict_invalid_verdict_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Reviewer);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Review);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-1".into(),
+            verdict: "thumbs-up".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Invalid verdict"));
+    }
+
+    #[tokio::test]
+    async fn review_verdict_non_reviewer_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Review);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-1".into(),
+            verdict: "approve".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn review_verdict_nonexistent_task_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Reviewer);
+        let params = Parameters(ReviewVerdictParams {
+            task_id: "task-nonexistent".into(),
+            verdict: "approve".into(),
+            feedback: None,
+        });
+        let result = mcp.hive_review_verdict(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn save_memory_invalid_type_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
+        let params = Parameters(SaveMemoryParams {
+            memory_type: "invalid_type".into(),
+            content: "test".into(),
+        });
+        let result = mcp.hive_save_memory(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn save_memory_non_postmortem_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SaveMemoryParams {
+            memory_type: "convention".into(),
+            content: "test".into(),
+        });
+        let result = mcp.hive_save_memory(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn save_spec_non_planner_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SaveSpecParams {
+            spec: "# My Spec".into(),
+        });
+        let result = mcp.hive_save_spec(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn send_message_empty_body_succeeds() {
+        let (_dir, mcp) = setup_mcp_with_id("explorer-1", AgentRole::Explorer);
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "info".into(),
+            body: "".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        // No validation on empty body
+        assert!(!result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn send_message_invalid_type_defaults_to_info() {
+        let (_dir, mcp) = setup_mcp_with_id("explorer-1", AgentRole::Explorer);
+        let state = mcp.state();
+
+        // Explorer can only send to coordinator
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "INVALID_TYPE".into(),
+            body: "test".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        // Invalid message_type silently defaults to "info" — this should succeed
+        assert!(!result.is_error.unwrap_or(false));
+
+        let messages = state.list_messages("test-run").unwrap();
+        let msg = messages.iter().find(|m| m.from == "explorer-1").unwrap();
+        assert_eq!(msg.message_type, MessageType::Info);
+    }
+
+    #[tokio::test]
+    async fn send_message_to_nonexistent_agent() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(SendMessageParams {
+            to: "ghost-agent-that-does-not-exist".into(),
+            message_type: "info".into(),
+            body: "hello".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        // Coordinator can only message leads/explorers/evaluators — nonexistent agent is rejected
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn send_message_worker_to_non_parent_rejected() {
+        let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
+        let state = mcp.state();
+
+        let mut worker = state.load_agent("test-run", "worker-1").unwrap();
+        worker.parent = Some("lead-1".into());
+        state.save_agent("test-run", &worker).unwrap();
+
+        // Try to message another agent (not lead-1)
+        let params = Parameters(SendMessageParams {
+            to: "coordinator".into(),
+            message_type: "info".into(),
+            body: "trying to bypass hierarchy".into(),
+            refs: vec![],
+        });
+        let result = mcp.hive_send_message(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_empty_role_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "empty-role".into(),
+            role: "".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_invalid_role_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "bad-role-agent".into(),
+            role: "superadmin".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Invalid role"));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_task_already_active_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Active);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "lead-1".into(),
+            role: "lead".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Active"));
+    }
+
+    #[tokio::test]
+    async fn spawn_agent_wrong_hierarchy_rejected() {
+        // Worker tries to spawn
+        let (_dir, mcp) = setup_mcp(AgentRole::Worker);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(SpawnAgentParams {
+            agent_id: "spawned-agent".into(),
+            role: "worker".into(),
+            task_id: "task-1".into(),
+            task_description: "test".into(),
+        });
+        let result = mcp.hive_spawn_agent(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+        let text = serde_json::to_string(&result.content).unwrap();
+        assert!(text.contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn synthesize_non_coordinator_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
+        let params = Parameters(SynthesizeParams {
+            content: "synthesized".into(),
+            discovery_ids: vec!["disc-1".into()],
+            tags: vec![],
+        });
+        let result = mcp.hive_synthesize(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn update_task_absorbed_by_non_creator_rejected() {
+        let (_dir, mcp) = setup_mcp_with_id("lead-1", AgentRole::Lead);
+        let state = mcp.state();
+
+        let mut lead = state.load_agent("test-run", "lead-1").unwrap();
+        lead.task_id = Some("task-lead".into());
+        state.save_agent("test-run", &lead).unwrap();
+
+        // Lead's own task
+        let mut lead_task = make_task("task-lead", None, TaskStatus::Active);
+        lead_task.assigned_to = Some("lead-1".into());
+        state.save_task("test-run", &lead_task).unwrap();
+
+        // Task created by someone else, but lead has access
+        let mut other_task = make_task("task-other", Some("task-lead"), TaskStatus::Active);
+        other_task.created_by = "coordinator".into();
+        other_task.assigned_to = Some("worker-99".into());
+        state.save_task("test-run", &other_task).unwrap();
+
+        // Worker agent parented to this lead
+        let worker = Agent {
+            id: "worker-99".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: Some("lead-1".into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: Some("task-other".into()),
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &worker).unwrap();
+
+        // Lead tries to set "absorbed" on a task it didn't create
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-other".into(),
+            status: Some("absorbed".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(
+            result.is_error.unwrap_or(false),
+            "Non-creator should not be able to set absorbed"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_task_invalid_status_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Pending);
+        state.save_task("test-run", &task).unwrap();
+
+        for bad_status in &["PENDING", "Done", "running", "complete", "", "null", "42"] {
+            let params = Parameters(UpdateTaskParams {
+                task_id: "task-1".into(),
+                status: Some(bad_status.to_string()),
+                assigned_to: None,
+                branch: None,
+                notes: None,
+            });
+            let result = mcp.hive_update_task(params).await.unwrap();
+            assert!(
+                result.is_error.unwrap_or(false),
+                "Expected error for status '{bad_status}'"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn update_task_nonexistent_task_rejected() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let params = Parameters(UpdateTaskParams {
+            task_id: "nonexistent-task-12345".into(),
+            status: Some("active".into()),
+            assigned_to: None,
+            branch: None,
+            notes: None,
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(result.is_error.unwrap_or(false));
+    }
+
+    #[tokio::test]
+    async fn update_task_with_notes_appends_correctly() {
+        let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
+        let state = mcp.state();
+        let task = make_task("task-1", None, TaskStatus::Active);
+        state.save_task("test-run", &task).unwrap();
+
+        let params = Parameters(UpdateTaskParams {
+            task_id: "task-1".into(),
+            status: None,
+            assigned_to: None,
+            branch: None,
+            notes: Some("This is a note with <html> and \"quotes\"".into()),
+        });
+        let result = mcp.hive_update_task(params).await.unwrap();
+        assert!(!result.is_error.unwrap_or(false));
+
+        let loaded = state.load_task("test-run", "task-1").unwrap();
+        assert!(loaded.description.contains("<html>"));
+        assert!(loaded.description.contains("\"quotes\""));
+    }
+
     // --- Integration: Task lifecycle flows ---
 
     #[tokio::test]
