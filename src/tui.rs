@@ -2945,4 +2945,758 @@ mod tests {
             );
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Helper: make_agent
+    // -----------------------------------------------------------------------
+
+    fn make_agent(
+        id: &str,
+        role: AgentRole,
+        status: AgentStatus,
+        parent: Option<&str>,
+    ) -> Agent {
+        Agent {
+            id: id.into(),
+            role,
+            status,
+            parent: parent.map(|s| s.into()),
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Empty state tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn task_tree_empty_input() {
+        let nodes = build_task_tree(&[], &HashSet::new());
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn agent_tree_empty_input() {
+        let nodes = build_tree(&[], &HashSet::new());
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn aggregate_child_status_empty_children() {
+        let children: Vec<&Task> = vec![];
+        let result = aggregate_child_status(&children);
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn aggregate_agent_status_no_descendants() {
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+        ];
+        let result = aggregate_agent_status(&agents, "coord");
+        assert_eq!(result, "");
+    }
+
+    #[test]
+    fn load_latest_actions_empty_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tool_calls (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                args_summary TEXT,
+                status TEXT NOT NULL DEFAULT 'ok',
+                duration_ms INTEGER,
+                timestamp TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        let db = Some(conn);
+        let actions = load_latest_actions(&db, "nonexistent-run");
+        assert!(actions.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Formatting helper edge case tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_duration_short_zero() {
+        assert_eq!(format_duration_short(0), "0s");
+    }
+
+    #[test]
+    fn format_duration_short_boundary_59() {
+        assert_eq!(format_duration_short(59), "59s");
+    }
+
+    #[test]
+    fn format_duration_short_boundary_60() {
+        assert_eq!(format_duration_short(60), "1m");
+    }
+
+    #[test]
+    fn format_duration_short_boundary_3599() {
+        assert_eq!(format_duration_short(3599), "59m");
+    }
+
+    #[test]
+    fn format_duration_short_boundary_3600() {
+        assert_eq!(format_duration_short(3600), "1h");
+    }
+
+    #[test]
+    fn format_duration_short_large_value() {
+        assert_eq!(format_duration_short(86400), "24h");
+    }
+
+    #[test]
+    fn format_duration_short_negative() {
+        // Negative seconds (possible with clock skew)
+        assert_eq!(format_duration_short(-5), "-5s");
+    }
+
+    #[test]
+    fn heartbeat_color_fresh() {
+        assert_eq!(heartbeat_color(0, 300), Color::White);
+        assert_eq!(heartbeat_color(119, 300), Color::White);
+    }
+
+    #[test]
+    fn heartbeat_color_warning() {
+        assert_eq!(heartbeat_color(120, 300), Color::Yellow);
+        assert_eq!(heartbeat_color(299, 300), Color::Yellow);
+    }
+
+    #[test]
+    fn heartbeat_color_stalled() {
+        assert_eq!(heartbeat_color(300, 300), Color::Red);
+        assert_eq!(heartbeat_color(1000, 300), Color::Red);
+    }
+
+    #[test]
+    fn heartbeat_color_zero_timeout() {
+        // Edge: stall_timeout=0 means everything >= 120 is red
+        assert_eq!(heartbeat_color(0, 0), Color::White);
+        assert_eq!(heartbeat_color(120, 0), Color::Red);
+    }
+
+    #[test]
+    fn truncate_spans_zero_width() {
+        let spans = vec![Span::raw("hello")];
+        let result = truncate_spans(spans, 0);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn truncate_spans_width_1() {
+        let spans = vec![Span::raw("hello")];
+        let result = truncate_spans(spans, 1);
+        // Should just be the ellipsis
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content.as_ref(), "\u{2026}");
+    }
+
+    #[test]
+    fn truncate_spans_exact_fit() {
+        let spans = vec![Span::raw("hello")];
+        let result = truncate_spans(spans, 5);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content.as_ref(), "hello");
+    }
+
+    #[test]
+    fn truncate_spans_multi_span_truncation() {
+        let spans = vec![Span::raw("abc"), Span::raw("defgh")];
+        // Total: 8 chars, max_width=6 → target=5 chars + ellipsis
+        let result = truncate_spans(spans, 6);
+        // "abc" (3) + "de" (2) + "…" (1)
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].content.as_ref(), "abc");
+        assert_eq!(result[1].content.as_ref(), "de");
+        assert_eq!(result[2].content.as_ref(), "\u{2026}");
+    }
+
+    #[test]
+    fn truncate_spans_under_limit() {
+        let spans = vec![Span::raw("hi")];
+        let result = truncate_spans(spans, 100);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].content.as_ref(), "hi");
+    }
+
+    #[test]
+    fn border_color_focused_vs_unfocused() {
+        assert_eq!(border_color(Pane::Swarm, Pane::Swarm), Color::Cyan);
+        assert_eq!(border_color(Pane::Swarm, Pane::Tasks), Color::Gray);
+        assert_eq!(border_color(Pane::Activity, Pane::Activity), Color::Cyan);
+    }
+
+    #[test]
+    fn status_abbrev_all_variants() {
+        assert_eq!(status_abbrev(AgentStatus::Running), "run");
+        assert_eq!(status_abbrev(AgentStatus::Idle), "idle");
+        assert_eq!(status_abbrev(AgentStatus::Done), "done");
+        assert_eq!(status_abbrev(AgentStatus::Failed), "fail");
+        assert_eq!(status_abbrev(AgentStatus::Stalled), "stal");
+    }
+
+    #[test]
+    fn agent_status_color_all_variants() {
+        assert_eq!(agent_status_color(AgentStatus::Running), Color::Green);
+        assert_eq!(agent_status_color(AgentStatus::Idle), Color::Cyan);
+        assert_eq!(agent_status_color(AgentStatus::Done), Color::LightBlue);
+        assert_eq!(agent_status_color(AgentStatus::Failed), Color::Red);
+        assert_eq!(agent_status_color(AgentStatus::Stalled), Color::Yellow);
+    }
+
+    #[test]
+    fn task_status_color_all_variants() {
+        assert_eq!(task_status_color(TaskStatus::Active), Color::Green);
+        assert_eq!(task_status_color(TaskStatus::Approved), Color::Green);
+        assert_eq!(task_status_color(TaskStatus::Merged), Color::LightBlue);
+        assert_eq!(task_status_color(TaskStatus::Queued), Color::Yellow);
+        assert_eq!(task_status_color(TaskStatus::Review), Color::Yellow);
+        assert_eq!(task_status_color(TaskStatus::Blocked), Color::Yellow);
+        assert_eq!(task_status_color(TaskStatus::Pending), Color::Gray);
+        assert_eq!(task_status_color(TaskStatus::Failed), Color::Red);
+        assert_eq!(task_status_color(TaskStatus::Absorbed), Color::Cyan);
+        assert_eq!(task_status_color(TaskStatus::Cancelled), Color::DarkGray);
+    }
+
+    #[test]
+    fn task_status_bullet_all_variants() {
+        // Ensure every variant returns a non-empty string with expected status name
+        assert!(task_status_bullet(TaskStatus::Active).contains("active"));
+        assert!(task_status_bullet(TaskStatus::Merged).contains("merged"));
+        assert!(task_status_bullet(TaskStatus::Queued).contains("queued"));
+        assert!(task_status_bullet(TaskStatus::Review).contains("review"));
+        assert!(task_status_bullet(TaskStatus::Pending).contains("pending"));
+        assert!(task_status_bullet(TaskStatus::Blocked).contains("blocked"));
+        assert!(task_status_bullet(TaskStatus::Approved).contains("approved"));
+        assert!(task_status_bullet(TaskStatus::Failed).contains("failed"));
+        assert!(task_status_bullet(TaskStatus::Absorbed).contains("absorbed"));
+        assert!(task_status_bullet(TaskStatus::Cancelled).contains("cancelled"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Overflow / truncation / long string tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn format_action_summary_very_long_tool_name() {
+        let long_name = "a".repeat(100);
+        let result = format_action_summary(&long_name, None);
+        assert_eq!(result, long_name);
+    }
+
+    #[test]
+    fn format_action_summary_empty_tool_name() {
+        assert_eq!(format_action_summary("", None), "");
+    }
+
+    #[test]
+    fn format_action_summary_empty_args() {
+        assert_eq!(format_action_summary("Read", Some("")), "Read");
+    }
+
+    #[test]
+    fn format_action_summary_exactly_30_char_args() {
+        let args = "a".repeat(30);
+        let result = format_action_summary("Read", Some(&args));
+        assert_eq!(result, format!("Read {}", args));
+    }
+
+    #[test]
+    fn format_action_summary_31_char_args_truncated() {
+        let args = "a".repeat(31);
+        let result = format_action_summary("Read", Some(&args));
+        assert!(result.ends_with('…'));
+        assert!(result.len() < 40);
+    }
+
+    #[test]
+    fn format_tool_display_with_empty_args() {
+        // Empty args string → extract_arg returns None → falls back to "?"
+        let (tool, args, _color) = format_tool_display("Read", Some(""));
+        assert_eq!(tool, "Read");
+        assert_eq!(args, "?");
+    }
+
+    #[test]
+    fn format_tool_display_hive_tool_no_match_in_args() {
+        // send_message with missing "to=" field → falls back to "?"
+        let (tool, args, color) = format_tool_display("hive_send_message", Some("body=hello"));
+        assert_eq!(tool, "SendMessage");
+        assert_eq!(args, "\u{2192} ?"); // → ?
+        assert_eq!(color, Color::Yellow);
+    }
+
+    #[test]
+    fn extract_arg_value_with_spaces() {
+        assert_eq!(
+            extract_arg("title=Add feature X, status=pending", "title"),
+            Some("Add feature X")
+        );
+    }
+
+    #[test]
+    fn extract_arg_last_key() {
+        assert_eq!(
+            extract_arg("a=1, b=2, c=3", "c"),
+            Some("3")
+        );
+    }
+
+    #[test]
+    fn extract_arg_key_substring_no_false_match() {
+        // "file_path" should not match "path"
+        assert_eq!(
+            extract_arg("file_path=/src/main.rs", "path"),
+            None
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Agent tree edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agent_tree_single_coordinator() {
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+        ];
+        let nodes = build_tree(&agents, &HashSet::new());
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].agent_id, "coord");
+        assert!(!nodes[0].has_children);
+    }
+
+    #[test]
+    fn agent_tree_coordinator_sorts_first() {
+        let agents = vec![
+            make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, None),
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+        ];
+        let nodes = build_tree(&agents, &HashSet::new());
+        assert_eq!(nodes[0].agent_id, "coord");
+        assert_eq!(nodes[1].agent_id, "lead-1");
+    }
+
+    #[test]
+    fn agent_tree_with_children() {
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+            make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+            make_agent("worker-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
+        ];
+        let nodes = build_tree(&agents, &HashSet::new());
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(nodes[0].agent_id, "coord");
+        assert!(nodes[0].has_children);
+        assert_eq!(nodes[1].agent_id, "lead-1");
+        assert!(nodes[1].has_children);
+        assert_eq!(nodes[2].agent_id, "worker-1");
+    }
+
+    #[test]
+    fn agent_tree_collapse_hides_children() {
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+            make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+            make_agent("worker-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
+        ];
+        let mut collapsed = HashSet::new();
+        collapsed.insert("coord".to_string());
+        let nodes = build_tree(&agents, &collapsed);
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].agent_id, "coord");
+        assert!(nodes[0].indicator.contains('\u{25B6}')); // ▶
+    }
+
+    #[test]
+    fn agent_tree_collapse_inner_node_only() {
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+            make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+            make_agent("worker-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
+            make_agent("worker-2", AgentRole::Worker, AgentStatus::Running, Some("lead-1")),
+        ];
+        // Collapse lead-1 but not coord
+        let mut collapsed = HashSet::new();
+        collapsed.insert("lead-1".to_string());
+        let nodes = build_tree(&agents, &collapsed);
+        // coord + lead-1 visible, workers hidden
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0].agent_id, "coord");
+        assert_eq!(nodes[1].agent_id, "lead-1");
+        assert!(nodes[1].indicator.contains('\u{25B6}')); // ▶ collapsed
+    }
+
+    #[test]
+    fn aggregate_agent_status_mixed() {
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+            make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+            make_agent("lead-2", AgentRole::Lead, AgentStatus::Done, Some("coord")),
+            make_agent("w-1", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
+            make_agent("w-2", AgentRole::Worker, AgentStatus::Failed, Some("lead-1")),
+        ];
+        let result = aggregate_agent_status(&agents, "coord");
+        assert!(result.contains("1 run"));
+        assert!(result.contains("2 done"));
+        assert!(result.contains("1 fail"));
+    }
+
+    #[test]
+    fn agent_children_sorted_by_id() {
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+            make_agent("lead-b", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+            make_agent("lead-a", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+        ];
+        let children = agent_children(&agents, "coord");
+        assert_eq!(children[0].id, "lead-a");
+        assert_eq!(children[1].id, "lead-b");
+    }
+
+    // -----------------------------------------------------------------------
+    // Task tree edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn task_tree_all_status_types_in_aggregate() {
+        let mut tasks = vec![
+            make_task("p", "Parent", None, TaskStatus::Active),
+        ];
+        let statuses = [
+            TaskStatus::Active,
+            TaskStatus::Review,
+            TaskStatus::Queued,
+            TaskStatus::Approved,
+            TaskStatus::Merged,
+            TaskStatus::Absorbed,
+            TaskStatus::Pending,
+            TaskStatus::Blocked,
+            TaskStatus::Failed,
+            TaskStatus::Cancelled,
+        ];
+        for (i, status) in statuses.iter().enumerate() {
+            tasks.push(make_task(&format!("c{i}"), &format!("Child {i}"), Some("p"), *status));
+        }
+        let mut collapsed = HashSet::new();
+        collapsed.insert("p".to_string());
+        let nodes = build_task_tree(&tasks, &collapsed);
+        assert_eq!(nodes.len(), 1);
+        let title = &nodes[0].title;
+        assert!(title.contains("1 active"));
+        assert!(title.contains("1 review"));
+        assert!(title.contains("1 queued"));
+        assert!(title.contains("1 approved"));
+        assert!(title.contains("1 merged"));
+        assert!(title.contains("1 absorbed"));
+        assert!(title.contains("1 pending"));
+        assert!(title.contains("1 blocked"));
+        assert!(title.contains("1 failed"));
+        assert!(title.contains("1 cancelled"));
+    }
+
+    #[test]
+    fn task_tree_review_count_on_root() {
+        let mut task = make_task("t1", "My Task", None, TaskStatus::Review);
+        task.review_count = 3;
+        let tasks = vec![task];
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(nodes[0].title, "My Task (review cycle 3)");
+    }
+
+    #[test]
+    fn task_tree_review_count_on_child() {
+        let parent = make_task("p", "Parent", None, TaskStatus::Active);
+        let mut child = make_task("c", "Child", Some("p"), TaskStatus::Review);
+        child.review_count = 2;
+        let tasks = vec![parent, child];
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(nodes[1].title, "Child (review cycle 2)");
+    }
+
+    #[test]
+    fn task_tree_orphan_child_treated_as_root() {
+        // Child references a parent that doesn't exist — treated as standalone
+        let tasks = vec![
+            make_task("orphan", "Orphan Task", Some("nonexistent"), TaskStatus::Active),
+        ];
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        // Orphan should not appear as root since it has parent_task set
+        assert!(nodes.is_empty());
+    }
+
+    #[test]
+    fn task_tree_many_children() {
+        let mut tasks = vec![make_task("p", "Parent", None, TaskStatus::Active)];
+        for i in 0..50 {
+            tasks.push(make_task(
+                &format!("c-{i:03}"),
+                &format!("Child {i}"),
+                Some("p"),
+                TaskStatus::Pending,
+            ));
+        }
+        let nodes = build_task_tree(&tasks, &HashSet::new());
+        assert_eq!(nodes.len(), 51); // 1 parent + 50 children
+        // Last child should have └ prefix
+        assert!(nodes[50].prefix.contains('\u{2514}'));
+        // Non-last children should have ├ prefix
+        assert!(nodes[1].prefix.contains('\u{251C}'));
+    }
+
+    // -----------------------------------------------------------------------
+    // Mouse handling edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn pane_row_index_zero_height() {
+        let area = Rect::new(0, 0, 40, 0);
+        assert_eq!(pane_row_index(area, 0), None);
+    }
+
+    #[test]
+    fn pane_row_index_height_1() {
+        let area = Rect::new(0, 0, 40, 1);
+        // Only border rows, no inner content
+        assert_eq!(pane_row_index(area, 0), None);
+    }
+
+    #[test]
+    fn pane_row_index_height_2() {
+        let area = Rect::new(0, 0, 40, 2);
+        // Top border at y=0, bottom border at y=1, no inner content
+        assert_eq!(pane_row_index(area, 0), None);
+        assert_eq!(pane_row_index(area, 1), None);
+    }
+
+    #[test]
+    fn pane_row_index_height_3() {
+        let area = Rect::new(0, 0, 40, 3);
+        assert_eq!(pane_row_index(area, 0), None); // top border
+        assert_eq!(pane_row_index(area, 1), Some(0)); // inner row
+        assert_eq!(pane_row_index(area, 2), None); // bottom border
+    }
+
+    #[test]
+    fn mouse_click_empty_swarm_no_crash() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            ..Default::default()
+        };
+        // Click in swarm area with no agents
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 4),
+            &[],
+            &[],
+        );
+        assert_eq!(ui.swarm_selected, None);
+        assert_eq!(ui.focused_pane, Pane::Swarm);
+    }
+
+    #[test]
+    fn mouse_click_empty_tasks_no_crash() {
+        let mut ui = TuiState {
+            tasks_area: Rect::new(40, 2, 60, 10),
+            ..Default::default()
+        };
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 5),
+            &[],
+            &[],
+        );
+        assert_eq!(ui.tasks_selected, None);
+        assert_eq!(ui.focused_pane, Pane::Tasks);
+    }
+
+    #[test]
+    fn mouse_scroll_up_at_zero_no_underflow() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            swarm_selected: Some(0),
+            ..Default::default()
+        };
+        let nodes = vec![make_tree_node("a-0", false)];
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::ScrollUp, 5, 5),
+            &nodes,
+            &[],
+        );
+        assert_eq!(ui.swarm_selected, Some(0)); // should not go below 0
+    }
+
+    #[test]
+    fn mouse_scroll_down_at_end_no_overflow() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            swarm_selected: Some(1),
+            ..Default::default()
+        };
+        let nodes = vec![
+            make_tree_node("a-0", false),
+            make_tree_node("a-1", false),
+        ];
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::ScrollDown, 5, 5),
+            &nodes,
+            &[],
+        );
+        assert_eq!(ui.swarm_selected, Some(1)); // already at last, stays
+    }
+
+    #[test]
+    fn mouse_scroll_activity_up_at_zero_no_underflow() {
+        let mut ui = TuiState {
+            activity_area: Rect::new(0, 15, 100, 10),
+            activity_scroll: 0,
+            activity_auto_scroll: false,
+            ..Default::default()
+        };
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::ScrollUp, 10, 18),
+            &[],
+            &[],
+        );
+        assert_eq!(ui.activity_scroll, 0); // saturating_sub should prevent underflow
+    }
+
+    #[test]
+    fn mouse_click_outside_all_panes() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            tasks_area: Rect::new(40, 2, 40, 10),
+            activity_area: Rect::new(0, 15, 80, 10),
+            ..Default::default()
+        };
+        let original_pane = ui.focused_pane;
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 90, 30),
+            &[],
+            &[],
+        );
+        // Should not crash; pane focus unchanged
+        assert_eq!(ui.focused_pane, original_pane);
+    }
+
+    // -----------------------------------------------------------------------
+    // centered_rect edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn centered_rect_100_percent() {
+        let r = Rect::new(0, 0, 100, 50);
+        let result = centered_rect(100, 100, r);
+        // Should approximately cover the whole area
+        assert!(result.width > 0);
+        assert!(result.height > 0);
+    }
+
+    #[test]
+    fn centered_rect_small_area() {
+        let r = Rect::new(0, 0, 10, 5);
+        let result = centered_rect(80, 80, r);
+        assert!(result.width <= 10);
+        assert!(result.height <= 5);
+    }
+
+    // -----------------------------------------------------------------------
+    // Large dataset tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn agent_tree_many_agents() {
+        let mut agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+        ];
+        for i in 0..20 {
+            agents.push(make_agent(
+                &format!("lead-{i:02}"),
+                AgentRole::Lead,
+                AgentStatus::Running,
+                Some("coord"),
+            ));
+        }
+        let nodes = build_tree(&agents, &HashSet::new());
+        assert_eq!(nodes.len(), 21);
+        assert_eq!(nodes[0].agent_id, "coord");
+        assert!(nodes[0].has_children);
+    }
+
+    #[test]
+    fn agent_tree_deep_nesting() {
+        // coord → lead → worker (3 levels)
+        let agents = vec![
+            make_agent("coord", AgentRole::Coordinator, AgentStatus::Running, None),
+            make_agent("lead-1", AgentRole::Lead, AgentStatus::Running, Some("coord")),
+            make_agent("w-1", AgentRole::Worker, AgentStatus::Running, Some("lead-1")),
+            make_agent("w-2", AgentRole::Worker, AgentStatus::Done, Some("lead-1")),
+        ];
+        let nodes = build_tree(&agents, &HashSet::new());
+        assert_eq!(nodes.len(), 4);
+        // Workers should have nested prefixes with box-drawing chars
+        assert!(nodes[2].prefix.contains('\u{251C}') || nodes[2].prefix.contains('\u{2514}'));
+        assert!(nodes[3].prefix.contains('\u{251C}') || nodes[3].prefix.contains('\u{2514}'));
+    }
+
+    #[test]
+    fn load_latest_actions_many_agents() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tool_calls (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                args_summary TEXT,
+                status TEXT NOT NULL DEFAULT 'ok',
+                duration_ms INTEGER,
+                timestamp TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+        // Insert 50 agents with 3 tool calls each
+        for i in 0..50 {
+            for j in 0..3 {
+                conn.execute(
+                    "INSERT INTO tool_calls (run_id, agent_id, tool_name, args_summary, status, timestamp) VALUES (?1, ?2, ?3, ?4, 'ok', ?5)",
+                    rusqlite::params![
+                        "run1",
+                        format!("worker-{i}"),
+                        format!("tool-{j}"),
+                        format!("arg-{j}"),
+                        format!("2025-01-01T00:00:{:02}Z", j),
+                    ],
+                ).unwrap();
+            }
+        }
+        let db = Some(conn);
+        let actions = load_latest_actions(&db, "run1");
+        assert_eq!(actions.len(), 50);
+        // Each agent should have their latest tool call (tool-2)
+        for i in 0..50 {
+            let key = format!("worker-{i}");
+            assert!(actions.contains_key(&key), "missing {key}");
+            assert!(actions[&key].contains("tool-2"), "wrong latest for {key}: {}", actions[&key]);
+        }
+    }
 }
