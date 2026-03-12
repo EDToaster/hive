@@ -1,3 +1,4 @@
+mod gantt;
 mod helpers;
 mod input;
 mod overlay;
@@ -21,6 +22,7 @@ use std::collections::HashSet;
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
+use gantt::render_gantt_view;
 use helpers::centered_rect;
 use input::handle_mouse;
 use overlay::render_overlay;
@@ -38,6 +40,12 @@ pub(crate) enum Pane {
     Activity,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ViewMode {
+    Normal,
+    Gantt,
+}
+
 #[derive(Clone)]
 pub(crate) enum Overlay {
     Agent(String),
@@ -47,6 +55,7 @@ pub(crate) enum Overlay {
 
 pub(crate) struct TuiState {
     pub focused_pane: Pane,
+    pub view_mode: ViewMode,
     pub swarm_selected: Option<usize>,
     pub tasks_selected: Option<usize>,
     pub activity_scroll: usize,
@@ -58,6 +67,7 @@ pub(crate) struct TuiState {
     pub collapsed_tasks: HashSet<String>,
     pub collapsed_agents: HashSet<String>,
     pub spec_scroll: usize,
+    pub gantt_scroll: usize,
     pub mouse_enabled: bool,
     /// Cached pane areas for mouse hit-testing (updated each frame)
     pub swarm_area: Rect,
@@ -99,6 +109,7 @@ impl Default for TuiState {
     fn default() -> Self {
         Self {
             focused_pane: Pane::Swarm,
+            view_mode: ViewMode::Normal,
             swarm_selected: None,
             tasks_selected: None,
             activity_scroll: 0,
@@ -116,6 +127,7 @@ impl Default for TuiState {
             overlay_area: Rect::default(),
             spec_area: Rect::default(),
             spec_scroll: 0,
+            gantt_scroll: 0,
             last_click: None,
             inside_multiplexer: detect_multiplexer(),
         }
@@ -266,6 +278,37 @@ fn format_action_summary(tool_name: &str, args_summary: Option<&str>) -> String 
     }
 }
 
+/// Load the first tool call timestamp per agent from log.db as approximate spawn time.
+fn load_agent_spawn_times(
+    log_db: &Option<Connection>,
+    run_id: &str,
+) -> std::collections::HashMap<String, DateTime<Utc>> {
+    let conn = match log_db {
+        Some(c) => c,
+        None => return std::collections::HashMap::new(),
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT agent_id, MIN(timestamp) FROM tool_calls WHERE run_id = ?1 GROUP BY agent_id",
+    ) {
+        Ok(s) => s,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    let rows = match stmt.query_map(rusqlite::params![run_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) {
+        Ok(r) => r,
+        Err(_) => return std::collections::HashMap::new(),
+    };
+    rows.filter_map(|r| r.ok())
+        .filter_map(|(agent_id, ts_str)| {
+            ts_str
+                .parse::<DateTime<Utc>>()
+                .ok()
+                .map(|ts| (agent_id, ts))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Terminal guard (RAII)
 // ---------------------------------------------------------------------------
@@ -339,6 +382,9 @@ fn run_tui_loop(
         // Load latest action per agent for swarm pane display
         let latest_actions = load_latest_actions(log_db, run_id);
 
+        // Load agent spawn times from log.db for gantt view
+        let spawn_times = load_agent_spawn_times(log_db, run_id);
+
         // Build activity entries
         let mut activity: Vec<ActivityEntry> = messages
             .iter()
@@ -406,8 +452,18 @@ fn run_tui_loop(
                 // -- Stats bar --
                 render_stats_bar(frame, outer[1], &agents, &tasks, state, &ui);
 
-                // -- Main content: planning view or normal swarm+tasks --
-                if let Some(planner) = planner_agent {
+                // -- Main content: gantt, planning view, or normal swarm+tasks --
+                if ui.view_mode == ViewMode::Gantt {
+                    render_gantt_view(
+                        frame,
+                        outer[2],
+                        &agents,
+                        &queue,
+                        &run_meta,
+                        &spawn_times,
+                        ui.gantt_scroll,
+                    );
+                } else if let Some(planner) = planner_agent {
                     render_planning_view(frame, outer[2], planner);
                 } else {
                     // -- Swarm pane --
@@ -526,6 +582,13 @@ fn run_tui_loop(
                             Pane::Activity => Pane::Swarm,
                         };
                     }
+                    KeyCode::Char('t') => {
+                        ui.view_mode = match ui.view_mode {
+                            ViewMode::Normal => ViewMode::Gantt,
+                            ViewMode::Gantt => ViewMode::Normal,
+                        };
+                        ui.gantt_scroll = 0;
+                    }
                     KeyCode::Char('m') => {
                         ui.mouse_enabled = !ui.mouse_enabled;
                         if ui.mouse_enabled {
@@ -534,43 +597,55 @@ fn run_tui_loop(
                             let _ = stdout().execute(DisableMouseCapture);
                         }
                     }
-                    KeyCode::Char('j') | KeyCode::Down => match ui.focused_pane {
-                        Pane::Swarm => {
-                            let max = tree_nodes.len().saturating_sub(1);
-                            let next = ui.swarm_selected.map_or(0, |i| (i + 1).min(max));
-                            ui.swarm_selected = Some(next);
-                            ui.selected_agent_filter =
-                                tree_nodes.get(next).map(|n| n.agent_id.clone());
-                        }
-                        Pane::Tasks => {
-                            let max = task_tree_len.saturating_sub(1);
-                            let next = ui.tasks_selected.map_or(0, |i| (i + 1).min(max));
-                            ui.tasks_selected = Some(next);
-                        }
-                        Pane::Activity => {
-                            ui.activity_auto_scroll = false;
-                            ui.activity_scroll = ui.activity_scroll.saturating_add(1);
-                        }
-                    },
-                    KeyCode::Char('k') | KeyCode::Up => match ui.focused_pane {
-                        Pane::Swarm => {
-                            if let Some(i) = ui.swarm_selected {
-                                let next = i.saturating_sub(1);
-                                ui.swarm_selected = Some(next);
-                                ui.selected_agent_filter =
-                                    tree_nodes.get(next).map(|n| n.agent_id.clone());
+                    KeyCode::Char('j') | KeyCode::Down => {
+                        if ui.view_mode == ViewMode::Gantt {
+                            ui.gantt_scroll = ui.gantt_scroll.saturating_add(1);
+                        } else {
+                            match ui.focused_pane {
+                                Pane::Swarm => {
+                                    let max = tree_nodes.len().saturating_sub(1);
+                                    let next = ui.swarm_selected.map_or(0, |i| (i + 1).min(max));
+                                    ui.swarm_selected = Some(next);
+                                    ui.selected_agent_filter =
+                                        tree_nodes.get(next).map(|n| n.agent_id.clone());
+                                }
+                                Pane::Tasks => {
+                                    let max = task_tree_len.saturating_sub(1);
+                                    let next = ui.tasks_selected.map_or(0, |i| (i + 1).min(max));
+                                    ui.tasks_selected = Some(next);
+                                }
+                                Pane::Activity => {
+                                    ui.activity_auto_scroll = false;
+                                    ui.activity_scroll = ui.activity_scroll.saturating_add(1);
+                                }
                             }
                         }
-                        Pane::Tasks => {
-                            if let Some(i) = ui.tasks_selected {
-                                ui.tasks_selected = Some(i.saturating_sub(1));
+                    }
+                    KeyCode::Char('k') | KeyCode::Up => {
+                        if ui.view_mode == ViewMode::Gantt {
+                            ui.gantt_scroll = ui.gantt_scroll.saturating_sub(1);
+                        } else {
+                            match ui.focused_pane {
+                                Pane::Swarm => {
+                                    if let Some(i) = ui.swarm_selected {
+                                        let next = i.saturating_sub(1);
+                                        ui.swarm_selected = Some(next);
+                                        ui.selected_agent_filter =
+                                            tree_nodes.get(next).map(|n| n.agent_id.clone());
+                                    }
+                                }
+                                Pane::Tasks => {
+                                    if let Some(i) = ui.tasks_selected {
+                                        ui.tasks_selected = Some(i.saturating_sub(1));
+                                    }
+                                }
+                                Pane::Activity => {
+                                    ui.activity_auto_scroll = false;
+                                    ui.activity_scroll = ui.activity_scroll.saturating_sub(1);
+                                }
                             }
                         }
-                        Pane::Activity => {
-                            ui.activity_auto_scroll = false;
-                            ui.activity_scroll = ui.activity_scroll.saturating_sub(1);
-                        }
-                    },
+                    }
                     KeyCode::Char('G') => {
                         ui.activity_auto_scroll = true;
                     }
