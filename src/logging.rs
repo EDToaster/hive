@@ -467,4 +467,190 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].tool_name, "tool_a");
     }
+
+    // =================================================================
+    // Adversarial tests: special chars, empty strings, large inputs
+    // =================================================================
+
+    #[test]
+    fn log_tool_call_with_special_chars() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-with-'quotes'",
+            "worker",
+            "mcp",
+            "tool_with_\"doublequotes\"",
+            Some("args with\nnewlines\tand\ttabs; DROP TABLE tool_calls;--"),
+            "success",
+            Some(100),
+        )
+        .unwrap();
+
+        let results = db.recent_tool_calls("run-1", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].agent_id, "agent-with-'quotes'");
+        assert_eq!(results[0].tool_name, "tool_with_\"doublequotes\"");
+        assert!(
+            results[0]
+                .args_summary
+                .as_ref()
+                .unwrap()
+                .contains("DROP TABLE")
+        );
+    }
+
+    #[test]
+    fn log_tool_call_with_unicode() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-日本語",
+            "agent-🚀",
+            "探索者",
+            "mcp",
+            "outil_français",
+            Some("描述 with émojis 🎉"),
+            "succès",
+            Some(42),
+        )
+        .unwrap();
+
+        let results = db.recent_tool_calls("run-日本語", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].agent_id, "agent-🚀");
+    }
+
+    #[test]
+    fn log_tool_call_with_empty_strings() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call("", "", "", "", "", Some(""), "", Some(0))
+            .unwrap();
+
+        let results = db.recent_tool_calls("", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].agent_id, "");
+        assert_eq!(results[0].tool_name, "");
+    }
+
+    #[test]
+    fn log_tool_call_with_very_long_args() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        let long_args = "x".repeat(100_000);
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_a",
+            Some(&long_args),
+            "success",
+            Some(100),
+        )
+        .unwrap();
+
+        let results = db.recent_tool_calls("run-1", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].args_summary.as_ref().unwrap().len(), 100_000);
+    }
+
+    #[test]
+    fn log_tool_call_with_negative_duration() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_a",
+            None,
+            "success",
+            Some(-999),
+        )
+        .unwrap();
+
+        let results = db.recent_tool_calls("run-1", 10, None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].duration_ms, Some(-999));
+    }
+
+    #[test]
+    fn agent_tool_summary_with_null_durations() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        // All calls with None duration
+        for _ in 0..3 {
+            db.log_tool_call(
+                "run-1", "agent-1", "worker", "mcp", "tool_a", None, "success", None,
+            )
+            .unwrap();
+        }
+
+        let results = db.agent_tool_summary("run-1").unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].2, 3); // count
+        assert_eq!(results[0].3, 0); // avg duration defaults to 0 for NULLs
+    }
+
+    #[test]
+    fn recent_tool_calls_with_zero_limit() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        db.log_tool_call(
+            "run-1",
+            "agent-1",
+            "worker",
+            "mcp",
+            "tool_a",
+            None,
+            "success",
+            Some(100),
+        )
+        .unwrap();
+
+        let results = db.recent_tool_calls("run-1", 0, None).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn open_in_nonexistent_directory_fails() {
+        let result = LogDb::open(Path::new("/nonexistent/deep/path/log.db"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn log_many_tool_calls_in_sequence() {
+        let dir = TempDir::new().unwrap();
+        let db = LogDb::open(&dir.path().join("log.db")).unwrap();
+
+        for i in 0..100 {
+            db.log_tool_call(
+                "run-1",
+                &format!("agent-{}", i % 5),
+                "worker",
+                "mcp",
+                &format!("tool_{}", i % 10),
+                None,
+                "success",
+                Some(i as i64),
+            )
+            .unwrap();
+        }
+
+        let summary = db.agent_tool_summary("run-1").unwrap();
+        assert!(!summary.is_empty());
+        let total_count: i64 = summary.iter().map(|s| s.2).sum();
+        assert_eq!(total_count, 100);
+    }
 }

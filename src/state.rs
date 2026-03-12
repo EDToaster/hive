@@ -1916,7 +1916,10 @@ mod tests {
         let result = state.load_task("run-1", "task-corrupt");
         assert!(result.is_err());
         let err_msg = result.unwrap_err();
-        assert!(err_msg.contains("task-corrupt"), "Error should mention the task ID: {err_msg}");
+        assert!(
+            err_msg.contains("task-corrupt"),
+            "Error should mention the task ID: {err_msg}"
+        );
     }
 
     #[test]
@@ -1936,7 +1939,10 @@ mod tests {
 
         // list_tasks should fail because it doesn't skip corrupted files
         let result = state.list_tasks("run-1");
-        assert!(result.is_err(), "list_tasks should propagate JSON parse errors");
+        assert!(
+            result.is_err(),
+            "list_tasks should propagate JSON parse errors"
+        );
     }
 
     #[test]
@@ -1974,7 +1980,10 @@ mod tests {
         std::fs::write(agent_dir.join("agent.json"), "not json").unwrap();
 
         let result = state.list_agents("run-1");
-        assert!(result.is_err(), "list_agents should propagate JSON parse errors");
+        assert!(
+            result.is_err(),
+            "list_agents should propagate JSON parse errors"
+        );
     }
 
     #[test]
@@ -2148,11 +2157,7 @@ mod tests {
     fn load_config_with_zero_max_retries() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "max_retries: 0\n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "max_retries: 0\n").unwrap();
         let config = state.load_config();
         assert_eq!(config.max_retries, 0);
     }
@@ -2188,11 +2193,7 @@ mod tests {
     fn load_config_with_negative_budget() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "budget_usd: -50.0\n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "budget_usd: -50.0\n").unwrap();
         let config = state.load_config();
         // Negative budget parses fine — no validation
         assert_eq!(config.budget_usd, Some(-50.0));
@@ -2202,11 +2203,7 @@ mod tests {
     fn load_config_verify_command_empty_string_treated_as_none() {
         let dir = TempDir::new().unwrap();
         let state = make_state(dir.path());
-        std::fs::write(
-            state.hive_dir().join("config.yaml"),
-            "verify_command: \n",
-        )
-        .unwrap();
+        std::fs::write(state.hive_dir().join("config.yaml"), "verify_command: \n").unwrap();
         let config = state.load_config();
         assert!(config.verify_command.is_none());
     }
@@ -2251,11 +2248,7 @@ mod tests {
 
         let valid_disc = serde_json::to_string(&make_discovery("d1", "Found something")).unwrap();
         let content = format!("{valid_disc}\nGARBAGE\n{valid_disc}\n");
-        std::fs::write(
-            state.mind_dir("run-1").join("discoveries.jsonl"),
-            &content,
-        )
-        .unwrap();
+        std::fs::write(state.mind_dir("run-1").join("discoveries.jsonl"), &content).unwrap();
 
         let discoveries = state.load_discoveries("run-1");
         assert_eq!(discoveries.len(), 2);
@@ -2270,11 +2263,7 @@ mod tests {
 
         let valid_ins = serde_json::to_string(&make_insight("i1", "Key insight")).unwrap();
         let content = format!("{valid_ins}\n{{broken json\n{valid_ins}\n");
-        std::fs::write(
-            state.mind_dir("run-1").join("insights.jsonl"),
-            &content,
-        )
-        .unwrap();
+        std::fs::write(state.mind_dir("run-1").join("insights.jsonl"), &content).unwrap();
 
         let insights = state.load_insights("run-1");
         assert_eq!(insights.len(), 2);
@@ -2293,7 +2282,10 @@ mod tests {
 
         // Empty output.jsonl
         std::fs::write(
-            state.agents_dir("run-1").join("agent-1").join("output.jsonl"),
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.jsonl"),
             "",
         )
         .unwrap();
@@ -2313,7 +2305,10 @@ mod tests {
 
         // output.jsonl with no token count lines
         std::fs::write(
-            state.agents_dir("run-1").join("agent-1").join("output.jsonl"),
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.jsonl"),
             "{\"type\":\"assistant\",\"message\":\"hello\"}\n{\"type\":\"done\"}\n",
         )
         .unwrap();
@@ -2334,7 +2329,10 @@ mod tests {
         // Mix of valid and invalid JSON lines, with token data early
         let content = "not json at all\n{\"num_input_tokens\": 100, \"num_output_tokens\": 50}\nmore garbage\n";
         std::fs::write(
-            state.agents_dir("run-1").join("agent-1").join("output.jsonl"),
+            state
+                .agents_dir("run-1")
+                .join("agent-1")
+                .join("output.jsonl"),
             content,
         )
         .unwrap();
@@ -2470,7 +2468,11 @@ mod tests {
         // Add non-JSON files
         std::fs::write(state.tasks_dir("run-1").join("README.md"), "ignore me").unwrap();
         std::fs::write(state.tasks_dir("run-1").join(".gitkeep"), "").unwrap();
-        std::fs::write(state.tasks_dir("run-1").join("task-1.json.tmp"), "temp file").unwrap();
+        std::fs::write(
+            state.tasks_dir("run-1").join("task-1.json.tmp"),
+            "temp file",
+        )
+        .unwrap();
 
         let tasks = state.list_tasks("run-1").unwrap();
         assert_eq!(tasks.len(), 1);
@@ -2498,7 +2500,11 @@ mod tests {
     #[test]
     fn atomic_write_to_nonexistent_directory_fails() {
         let dir = TempDir::new().unwrap();
-        let path = dir.path().join("nonexistent").join("deep").join("file.json");
+        let path = dir
+            .path()
+            .join("nonexistent")
+            .join("deep")
+            .join("file.json");
         let result = atomic_write(&path, "content");
         assert!(result.is_err());
     }

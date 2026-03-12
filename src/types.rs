@@ -628,7 +628,14 @@ mod tests {
 
     #[test]
     fn invalid_task_status_rejected() {
-        for bad in &["\"done\"", "\"running\"", "\"PENDING\"", "\"\"", "null", "0"] {
+        for bad in &[
+            "\"done\"",
+            "\"running\"",
+            "\"PENDING\"",
+            "\"\"",
+            "null",
+            "0",
+        ] {
             let result = serde_json::from_str::<TaskStatus>(bad);
             assert!(result.is_err(), "Expected error for TaskStatus from {bad}");
         }
@@ -670,10 +677,7 @@ mod tests {
     fn invalid_agent_status_rejected() {
         for bad in &["\"active\"", "\"RUNNING\"", "\"pending\"", "\"\"", "null"] {
             let result = serde_json::from_str::<AgentStatus>(bad);
-            assert!(
-                result.is_err(),
-                "Expected error for AgentStatus from {bad}"
-            );
+            assert!(result.is_err(), "Expected error for AgentStatus from {bad}");
         }
     }
 

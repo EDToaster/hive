@@ -660,6 +660,201 @@ mod tests {
         assert_eq!(sid, None);
     }
 
+    // =================================================================
+    // Adversarial tests: malformed NDJSON, boundary cases
+    // =================================================================
+
+    #[test]
+    fn test_truncate_zero_max() {
+        // Max of 0 should produce "..."
+        assert_eq!(truncate("hello", 0), "...");
+    }
+
+    #[test]
+    fn test_truncate_one_char() {
+        assert_eq!(truncate("hello", 1), "h...");
+    }
+
+    #[test]
+    fn test_truncate_with_multibyte_at_boundary() {
+        // 🚀 is 4 bytes in UTF-8
+        let s = "ab🚀cd";
+        // Truncating at 3 would split the emoji — should back up to 2
+        let result = truncate(s, 3);
+        assert_eq!(result, "ab...");
+    }
+
+    #[test]
+    fn test_summarize_json_null() {
+        let v: Value = serde_json::from_str("null").unwrap();
+        assert_eq!(summarize_json(&v, 100), "null");
+    }
+
+    #[test]
+    fn test_summarize_json_boolean() {
+        let v: Value = serde_json::from_str("true").unwrap();
+        assert_eq!(summarize_json(&v, 100), "true");
+    }
+
+    #[test]
+    fn test_summarize_json_number() {
+        let v: Value = serde_json::from_str("42").unwrap();
+        assert_eq!(summarize_json(&v, 100), "42");
+    }
+
+    #[test]
+    fn test_summarize_json_empty_object() {
+        let v: Value = serde_json::from_str("{}").unwrap();
+        assert_eq!(summarize_json(&v, 100), "");
+    }
+
+    #[test]
+    fn test_summarize_json_empty_array() {
+        let v: Value = serde_json::from_str("[]").unwrap();
+        assert_eq!(summarize_json(&v, 100), "[0 items]");
+    }
+
+    #[test]
+    fn test_summarize_json_deeply_nested() {
+        let v: Value = serde_json::from_str(r#"{"a":{"b":{"c":"deep"}}}"#).unwrap();
+        let summary = summarize_json(&v, 100);
+        assert!(summary.contains("a={...}"));
+    }
+
+    #[test]
+    fn test_parse_output_all_garbage_lines() {
+        let lines = vec![
+            "completely invalid".to_string(),
+            "{{broken json".to_string(),
+            "".to_string(),
+            "null".to_string(),
+            "42".to_string(),
+            "[]".to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_output_json_without_type() {
+        let lines = vec![
+            r#"{"message":"no type field"}"#.to_string(),
+            r#"{"data":"something"}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        // Lines without "type" get type="" which doesn't match any case → skipped
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_output_assistant_no_content() {
+        let lines = vec![
+            r#"{"type":"assistant","message":{}}"#.to_string(),
+            r#"{"type":"assistant","message":{"content":null}}"#.to_string(),
+            r#"{"type":"assistant","message":{"content":"not_array"}}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_output_assistant_unknown_block_type() {
+        let lines = vec![
+            r#"{"type":"assistant","message":{"content":[{"type":"image","url":"http://example.com"}]}}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_output_tool_result_with_json_content() {
+        let lines = vec![
+            r#"{"type":"tool_result","content":{"nested":"object"},"tool_use_id":"t1"}"#
+                .to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            OutputEntry::ToolResult { content } => {
+                assert!(content.contains("nested"));
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_output_tool_result_with_null_content() {
+        let lines = vec![r#"{"type":"tool_result","tool_use_id":"t1"}"#.to_string()];
+        let entries = parse_output_lines(&lines);
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            OutputEntry::ToolResult { content } => {
+                assert!(content.is_empty());
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_output_result_with_negative_values() {
+        let lines = vec![
+            r#"{"type":"result","duration_ms":-1,"total_cost_usd":-0.5,"num_turns":-10,"result":"error"}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        assert_eq!(entries.len(), 1);
+        match &entries[0] {
+            OutputEntry::Result {
+                duration_ms,
+                cost_usd,
+                num_turns,
+                result,
+            } => {
+                // Negative values for u64 → as_u64() returns None → defaults to 0
+                assert_eq!(*duration_ms, 0);
+                assert!(*cost_usd < 0.0); // f64 accepts negatives
+                assert_eq!(*num_turns, 0);
+                assert_eq!(result, "error");
+            }
+            other => panic!("Expected Result, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_load_output_file_empty_file() {
+        let dir = std::env::temp_dir().join("hive_test_empty_output");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("output.jsonl");
+        fs::write(&path, "").unwrap();
+        let lines = load_output_file(&path);
+        assert!(lines.is_empty());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_load_output_file_with_only_empty_lines() {
+        let dir = std::env::temp_dir().join("hive_test_empty_lines");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("output.jsonl");
+        fs::write(&path, "\n\n\n\n").unwrap();
+        let lines = load_output_file(&path);
+        assert!(lines.is_empty());
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
+    #[test]
+    fn test_parse_session_id_with_all_garbage() {
+        let dir = std::env::temp_dir().join("hive_test_garbage_sid");
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("output.jsonl");
+        fs::write(&path, "not json\nalso not json\n{\"no\":\"session_id\"}\n").unwrap();
+        let sid = parse_session_id_from_output(&path);
+        assert_eq!(sid, None);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_dir(&dir);
+    }
+
     #[test]
     fn test_parse_early_session_id_no_init() {
         let dir = std::env::temp_dir().join("hive_test_early_no_init");
