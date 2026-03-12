@@ -46,12 +46,14 @@ struct TuiState {
     selected_agent_filter: Option<String>,
     collapsed_tasks: HashSet<String>,
     collapsed_agents: HashSet<String>,
+    spec_scroll: usize,
     mouse_enabled: bool,
     /// Cached pane areas for mouse hit-testing (updated each frame)
     swarm_area: Rect,
     tasks_area: Rect,
     activity_area: Rect,
     overlay_area: Rect,
+    spec_area: Rect,
     /// Double-click detection
     last_click: Option<(u16, u16, Instant)>,
     /// Whether running inside a terminal multiplexer
@@ -101,6 +103,8 @@ impl Default for TuiState {
             tasks_area: Rect::default(),
             activity_area: Rect::default(),
             overlay_area: Rect::default(),
+            spec_area: Rect::default(),
+            spec_scroll: 0,
             last_click: None,
             inside_multiplexer: detect_multiplexer(),
         }
@@ -793,8 +797,10 @@ fn run_tui_loop(
                             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
                             .split(tasks_area);
                         render_tasks_pane(frame, tasks_and_spec[0], &task_tree_nodes, &tasks, &ui);
-                        render_spec_viewer(frame, tasks_and_spec[1], spec);
+                        ui.spec_area = tasks_and_spec[1];
+                        render_spec_viewer(frame, tasks_and_spec[1], spec, ui.spec_scroll);
                     } else {
+                        ui.spec_area = Rect::default();
                         render_tasks_pane(frame, tasks_area, &task_tree_nodes, &tasks, &ui);
                     }
                 }
@@ -1024,7 +1030,7 @@ fn handle_mouse(
     let row = mouse.row;
 
     match mouse.kind {
-        // --- Scroll wheel: target pane under cursor, 3-line steps ---
+        // --- Scroll wheel: target pane under cursor ---
         MouseEventKind::ScrollDown => {
             if ui.overlay.is_some() && ui.overlay_area.contains((col, row).into()) {
                 // Scroll down in overlay (toward bottom)
@@ -1037,12 +1043,14 @@ fn handle_mouse(
                 }
             } else if ui.swarm_area.contains((col, row).into()) {
                 let max = tree_nodes.len().saturating_sub(1);
-                let next = ui.swarm_selected.map_or(0, |i| (i + 3).min(max));
+                let next = ui.swarm_selected.map_or(0, |i| (i + 1).min(max));
                 ui.swarm_selected = Some(next);
                 ui.selected_agent_filter = tree_nodes.get(next).map(|n| n.agent_id.clone());
+            } else if ui.spec_area.width > 0 && ui.spec_area.contains((col, row).into()) {
+                ui.spec_scroll = ui.spec_scroll.saturating_add(3);
             } else if ui.tasks_area.contains((col, row).into()) {
                 let max = task_tree_nodes.len().saturating_sub(1);
-                let next = ui.tasks_selected.map_or(0, |i| (i + 3).min(max));
+                let next = ui.tasks_selected.map_or(0, |i| (i + 1).min(max));
                 ui.tasks_selected = Some(next);
             } else if ui.activity_area.contains((col, row).into()) {
                 ui.activity_auto_scroll = false;
@@ -1055,13 +1063,15 @@ fn handle_mouse(
                 ui.output_scroll = ui.output_scroll.saturating_add(3);
             } else if ui.swarm_area.contains((col, row).into()) {
                 if let Some(i) = ui.swarm_selected {
-                    let next = i.saturating_sub(3);
+                    let next = i.saturating_sub(1);
                     ui.swarm_selected = Some(next);
                     ui.selected_agent_filter = tree_nodes.get(next).map(|n| n.agent_id.clone());
                 }
+            } else if ui.spec_area.width > 0 && ui.spec_area.contains((col, row).into()) {
+                ui.spec_scroll = ui.spec_scroll.saturating_sub(3);
             } else if ui.tasks_area.contains((col, row).into()) {
                 if let Some(i) = ui.tasks_selected {
-                    ui.tasks_selected = Some(i.saturating_sub(3));
+                    ui.tasks_selected = Some(i.saturating_sub(1));
                 }
             } else if ui.activity_area.contains((col, row).into()) {
                 ui.activity_auto_scroll = false;
@@ -1119,12 +1129,14 @@ fn handle_mouse(
                     }
                 }
             }
-            // Click in Tasks pane
+            // Click in Tasks pane (extra -1 for table header row)
             else if ui.tasks_area.contains((col, row).into()) {
                 ui.focused_pane = Pane::Tasks;
-                if let Some(idx) = pane_row_index(ui.tasks_area, row)
-                    && idx < task_tree_nodes.len()
+                if let Some(raw) = pane_row_index(ui.tasks_area, row)
+                    && raw > 0
+                    && (raw - 1) < task_tree_nodes.len()
                 {
+                    let idx = raw - 1;
                     ui.tasks_selected = Some(idx);
 
                     let node = &task_tree_nodes[idx];
@@ -1274,16 +1286,16 @@ fn render_stats_bar(
 
     // Mouse indicator with subtle multiplexer warning
     if ui.mouse_enabled {
-        if let Some(mux) = ui.inside_multiplexer {
-            spans.push(Span::styled(
-                format!("    \u{1F5B1} [m] ({mux})"),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
+        let label = if let Some(mux) = ui.inside_multiplexer {
+            format!("    [m] Mouse mode ON ({mux})")
+        } else {
+            "    [m] Mouse mode ON".to_string()
+        };
+        spans.push(Span::styled(label, Style::default().fg(Color::Green)));
     } else {
         spans.push(Span::styled(
-            "    mouse off [m]",
-            Style::default().fg(Color::DarkGray),
+            "    [m] Mouse mode OFF",
+            Style::default().fg(Color::Gray),
         ));
     }
 
@@ -1768,7 +1780,7 @@ fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agent) {
 // Render: Spec viewer
 // ---------------------------------------------------------------------------
 
-fn render_spec_viewer(frame: &mut Frame, area: Rect, spec: &str) {
+fn render_spec_viewer(frame: &mut Frame, area: Rect, spec: &str, scroll: usize) {
     let lines: Vec<Line> = spec.lines().map(|l| Line::from(l.to_string())).collect();
     let block = Block::default()
         .title(" Spec ")
@@ -1776,7 +1788,8 @@ fn render_spec_viewer(frame: &mut Frame, area: Rect, spec: &str) {
         .border_style(Style::default().fg(Color::Cyan));
     let paragraph = Paragraph::new(lines)
         .block(block)
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll as u16, 0));
     frame.render_widget(paragraph, area);
 }
 
@@ -2619,10 +2632,19 @@ mod tests {
             make_task_tree_node("task-1", false),
         ];
 
-        // Click on first inner row (y=3) → index 0
+        // Click on header row (y=3) → no selection (header)
         handle_mouse(
             &mut ui,
             make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 3),
+            &tree_nodes,
+            &task_nodes,
+        );
+        assert_eq!(ui.tasks_selected, None);
+
+        // Click on first data row (y=4) → index 0
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 4),
             &tree_nodes,
             &task_nodes,
         );
@@ -2647,7 +2669,7 @@ mod tests {
     }
 
     #[test]
-    fn mouse_scroll_down_in_swarm_advances_by_3() {
+    fn mouse_scroll_down_in_swarm_advances_by_1() {
         let mut ui = TuiState {
             swarm_area: Rect::new(0, 2, 40, 10),
             swarm_selected: Some(0),
@@ -2667,7 +2689,7 @@ mod tests {
             &nodes,
             &[],
         );
-        assert_eq!(ui.swarm_selected, Some(3)); // 0 + 3
+        assert_eq!(ui.swarm_selected, Some(1)); // 0 + 1
     }
 
     #[test]
@@ -2723,17 +2745,17 @@ mod tests {
         };
         let task_nodes = vec![make_task_tree_node("task-y", false)];
 
-        // First click
+        // First click (y=4: first data row, past header at y=3)
         handle_mouse(
             &mut ui,
-            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 3),
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 4),
             &[],
             &task_nodes,
         );
         // Second click (double-click)
         handle_mouse(
             &mut ui,
-            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 3),
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 4),
             &[],
             &task_nodes,
         );
@@ -2829,9 +2851,10 @@ mod tests {
         let task_nodes = vec![make_task_tree_node("task-p", true)]; // has_children=true
 
         // Toggle indicator at col = tasks_area.x + 1 + prefix.len() = 40 + 1 + 0 = 41
+        // y=4: first data row (y=3 is header)
         handle_mouse(
             &mut ui,
-            make_mouse(MouseEventKind::Down(MouseButton::Left), 41, 3),
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 41, 4),
             &[],
             &task_nodes,
         );
@@ -2840,7 +2863,7 @@ mod tests {
         // Click again to expand
         handle_mouse(
             &mut ui,
-            make_mouse(MouseEventKind::Down(MouseButton::Left), 41, 3),
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 41, 4),
             &[],
             &task_nodes,
         );
