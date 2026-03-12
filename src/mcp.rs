@@ -3692,9 +3692,7 @@ mod tests {
     #[tokio::test]
     async fn query_mind_with_empty_query() {
         let (_dir, mcp) = setup_mcp(AgentRole::Explorer);
-        let params = Parameters(QueryMindParams {
-            query: "".into(),
-        });
+        let params = Parameters(QueryMindParams { query: "".into() });
         let result = mcp.hive_query_mind(params).await.unwrap();
         assert!(!result.is_error.unwrap_or(false));
         let text = serde_json::to_string(&result.content).unwrap();

@@ -1547,17 +1547,29 @@ fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, 
         // --- Hive MCP tools ---
         "hive_wait_for_activity" => {
             let timeout = extract_arg(args, "timeout_secs").unwrap_or("?");
-            ("WaitForActivity".into(), format!("timeout: {timeout}s"), Color::Yellow)
+            (
+                "WaitForActivity".into(),
+                format!("timeout: {timeout}s"),
+                Color::Yellow,
+            )
         }
         "hive_spawn_agent" => {
             let agent = extract_arg(args, "agent_id").unwrap_or("?");
             let role = extract_arg(args, "role").unwrap_or("?");
-            ("SpawnAgent".into(), format!("{agent} {role}"), Color::Yellow)
+            (
+                "SpawnAgent".into(),
+                format!("{agent} {role}"),
+                Color::Yellow,
+            )
         }
         "hive_check_agents" => ("CheckAgents".into(), String::new(), Color::Yellow),
         "hive_send_message" => {
             let target = extract_arg(args, "to").unwrap_or("?");
-            ("SendMessage".into(), format!("\u{2192} {target}"), Color::Yellow)
+            (
+                "SendMessage".into(),
+                format!("\u{2192} {target}"),
+                Color::Yellow,
+            )
         }
         "hive_create_task" => {
             let title = extract_arg(args, "title").unwrap_or("?");
@@ -1566,7 +1578,11 @@ fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, 
         "hive_update_task" => {
             let task = extract_arg(args, "task_id").unwrap_or("?");
             let status = extract_arg(args, "status").unwrap_or("?");
-            ("UpdateTask".into(), format!("{task} \u{2192} {status}"), Color::Yellow)
+            (
+                "UpdateTask".into(),
+                format!("{task} \u{2192} {status}"),
+                Color::Yellow,
+            )
         }
         "hive_submit_to_queue" => {
             let task = extract_arg(args, "task_id").unwrap_or("?");
@@ -1576,7 +1592,11 @@ fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, 
         "hive_review_verdict" => {
             let task = extract_arg(args, "task_id").unwrap_or("?");
             let verdict = extract_arg(args, "verdict").unwrap_or("?");
-            ("ReviewVerdict".into(), format!("{task}: {verdict}"), Color::Yellow)
+            (
+                "ReviewVerdict".into(),
+                format!("{task}: {verdict}"),
+                Color::Yellow,
+            )
         }
         "hive_list_agents" => ("ListAgents".into(), String::new(), Color::Yellow),
         "hive_list_tasks" => {
@@ -1734,11 +1754,32 @@ fn render_activity_stream(
                     let dur = duration_ms.map(|d| format!(" {d}ms")).unwrap_or_default();
                     let mut spans = vec![
                         Span::styled(format!("{ts} {icon}  "), Style::default().fg(icon_color)),
-                        Span::styled(format!("{agent_id}  "), Style::default().fg(if is_dimmed { Color::Rgb(110, 110, 120) } else { Color::DarkGray })),
-                        Span::styled(format!("{tool_display}"), Style::default().fg(if is_dimmed { Color::Rgb(110, 110, 120) } else { tool_color })),
+                        Span::styled(
+                            format!("{agent_id}  "),
+                            Style::default().fg(if is_dimmed {
+                                Color::Rgb(110, 110, 120)
+                            } else {
+                                Color::DarkGray
+                            }),
+                        ),
+                        Span::styled(
+                            format!("{tool_display}"),
+                            Style::default().fg(if is_dimmed {
+                                Color::Rgb(110, 110, 120)
+                            } else {
+                                tool_color
+                            }),
+                        ),
                     ];
                     if !args_display.is_empty() {
-                        spans.push(Span::styled(format!(" {args_display}"), Style::default().fg(if is_dimmed { Color::Rgb(110, 110, 120) } else { Color::Gray })));
+                        spans.push(Span::styled(
+                            format!(" {args_display}"),
+                            Style::default().fg(if is_dimmed {
+                                Color::Rgb(110, 110, 120)
+                            } else {
+                                Color::Gray
+                            }),
+                        ));
                     }
                     if !dur.is_empty() {
                         spans.push(Span::styled(dur, Style::default().fg(Color::DarkGray)));
@@ -2481,7 +2522,8 @@ mod tests {
 
     #[test]
     fn format_hive_create_task() {
-        let (tool, args, color) = format_tool_display("hive_create_task", Some("title=Add feature X"));
+        let (tool, args, color) =
+            format_tool_display("hive_create_task", Some("title=Add feature X"));
         assert_eq!(tool, "CreateTask");
         assert_eq!(args, "Add feature X");
         assert_eq!(color, Color::Yellow);
