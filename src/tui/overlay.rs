@@ -48,6 +48,11 @@ pub(super) fn render_overlay(
                 output_expanded_entries,
             );
         }
+        Overlay::Help => {
+            let area = centered_rect(70, 85, frame.area());
+            frame.render_widget(Clear, area);
+            render_help_overlay(frame, area);
+        }
     }
 }
 
@@ -466,4 +471,88 @@ fn render_agent_output_overlay(
         .track_style(Style::default().fg(Color::DarkGray))
         .thumb_style(Style::default().fg(Color::Gray));
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
+}
+
+fn render_help_overlay(frame: &mut Frame, area: Rect) {
+    fn section(title: &str) -> Line<'static> {
+        Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                title.to_string(),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ])
+    }
+    fn key(keys: &str, desc: &str) -> Line<'static> {
+        let pad = 18usize.saturating_sub(keys.len());
+        Line::from(vec![
+            Span::styled(
+                format!("  {keys}"),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" ".repeat(pad)),
+            Span::styled(desc.to_string(), Style::default().fg(Color::White)),
+        ])
+    }
+    fn blank() -> Line<'static> {
+        Line::from("")
+    }
+
+    let lines: Vec<Line> = vec![
+        blank(),
+        section("Navigation"),
+        key("Tab", "Cycle panes (Swarm → Tasks → Activity)"),
+        key("1 / 2 / 3", "Jump to Swarm / Tasks / Activity pane"),
+        key("j / ↓", "Move selection down"),
+        key("k / ↑", "Move selection up"),
+        key("Enter", "Open detail overlay for selected item"),
+        key("Space", "Collapse / expand selected node"),
+        key("G", "Activity: jump to bottom (follow mode)"),
+        blank(),
+        section("Search & Filter  (Activity pane)"),
+        key("/", "Open search bar — type to filter incrementally"),
+        key("Esc", "Clear search query / close overlay"),
+        key("Enter", "Commit search — keep filter, exit typing mode"),
+        key("Backspace", "Delete last character from search query"),
+        key("f", "Cycle filter preset: all → running → failed"),
+        blank(),
+        section("Swarm pane"),
+        key("Enter", "Open agent detail overlay"),
+        key("o", "Open agent output viewer"),
+        key("Space", "Collapse / expand agent children"),
+        blank(),
+        section("Agent output viewer"),
+        key("j / ↓", "Scroll down"),
+        key("k / ↑", "Scroll up"),
+        key("G", "Jump to bottom (follow mode)"),
+        key("Esc / q / o", "Close viewer"),
+        blank(),
+        section("Mouse (when enabled)"),
+        key("Click", "Focus pane / select item"),
+        key("Double-click", "Open detail overlay"),
+        key("Scroll wheel", "Scroll within the pane under cursor"),
+        blank(),
+        section("Other"),
+        key("m", "Toggle mouse capture on / off"),
+        key("?", "Show this help overlay"),
+        key("q", "Quit"),
+        blank(),
+        Line::from(Span::styled(
+            "                           [any key] close ",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+
+    let block = Block::default()
+        .title(" \u{2b21} Hive Keyboard Reference ")
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
 }

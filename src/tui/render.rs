@@ -6,7 +6,7 @@ use ratatui::widgets::*;
 
 use super::helpers::*;
 use super::tree::{TaskTreeNode, TreeNode};
-use super::{ActivityEntry, Pane, TuiState};
+use super::{ActivityEntry, FilterMode, Pane, TuiState};
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
@@ -625,10 +625,83 @@ pub(super) fn render_activity_stream(
     frame: &mut Frame,
     area: Rect,
     activity: &[ActivityEntry],
+    agents: &[Agent],
     ui: &TuiState,
 ) {
+    // Build set of visible agent IDs for filter_mode preset
+    let filter_ids: Option<HashSet<&str>> = match ui.filter_mode {
+        FilterMode::All => None,
+        FilterMode::RunningOnly => Some(
+            agents
+                .iter()
+                .filter(|a| a.status == AgentStatus::Running)
+                .map(|a| a.id.as_str())
+                .collect(),
+        ),
+        FilterMode::FailedOnly => Some(
+            agents
+                .iter()
+                .filter(|a| {
+                    a.status == AgentStatus::Failed || a.status == AgentStatus::Stalled
+                })
+                .map(|a| a.id.as_str())
+                .collect(),
+        ),
+    };
+
+    let query = ui.search_query.to_lowercase();
+
     let collapsed = collapse_activity(activity);
-    let items: Vec<ListItem> = collapsed
+
+    // Apply filter_mode and search_query to collapsed entries
+    let filtered: Vec<&CollapsedEntry<'_>> = collapsed
+        .iter()
+        .filter(|ce| {
+            let entry = ce.entry;
+            // Filter by agent status preset
+            if let Some(ref ids) = filter_ids {
+                let passes = match entry {
+                    ActivityEntry::Message { from, to, .. } => {
+                        ids.contains(from.as_str()) || ids.contains(to.as_str())
+                    }
+                    ActivityEntry::ToolCall { agent_id, .. } => ids.contains(agent_id.as_str()),
+                };
+                if !passes {
+                    return false;
+                }
+            }
+            // Filter by search query (incremental, case-insensitive)
+            if !query.is_empty() {
+                let matches = match entry {
+                    ActivityEntry::Message { from, to, body, .. } => {
+                        from.to_lowercase().contains(&query)
+                            || to.to_lowercase().contains(&query)
+                            || body.to_lowercase().contains(&query)
+                    }
+                    ActivityEntry::ToolCall {
+                        agent_id,
+                        tool_name,
+                        args_summary,
+                        ..
+                    } => {
+                        agent_id.to_lowercase().contains(&query)
+                            || tool_name.to_lowercase().contains(&query)
+                            || args_summary
+                                .as_deref()
+                                .unwrap_or("")
+                                .to_lowercase()
+                                .contains(&query)
+                    }
+                };
+                if !matches {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect();
+
+    let items: Vec<ListItem> = filtered
         .iter()
         .map(|collapsed_entry| {
             let entry = collapsed_entry.entry;
@@ -729,13 +802,48 @@ pub(super) fn render_activity_stream(
         .collect();
 
     let bc = border_color(ui.focused_pane, Pane::Activity);
+
+    // Build bottom title: show search bar or filter hints
+    let bottom_title = if ui.search_active {
+        Line::from(vec![
+            Span::styled(" /", Style::default().fg(Color::Yellow).bold()),
+            Span::styled(ui.search_query.clone(), Style::default().fg(Color::White)),
+            Span::styled("\u{258c} ", Style::default().fg(Color::Yellow)),
+        ])
+    } else if !ui.search_query.is_empty() {
+        Line::from(vec![
+            Span::styled(
+                format!(" /{}", ui.search_query),
+                Style::default().fg(Color::Yellow),
+            ),
+            Span::styled(
+                format!(
+                    "  [f] {}  [Esc] clear ",
+                    ui.filter_mode.label()
+                ),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])
+    } else if ui.filter_mode != FilterMode::All {
+        Line::from(Span::styled(
+            format!(" filter: {}  [f] cycle  [/] search ", ui.filter_mode.label()),
+            Style::default().fg(Color::Cyan),
+        ))
+    } else {
+        Line::from(Span::styled(
+            " [/] search  [f] filter  [?] help ",
+            Style::default().fg(Color::DarkGray),
+        ))
+    };
+
     let block = Block::default()
         .title(" Activity ")
+        .title_bottom(bottom_title)
         .borders(Borders::ALL)
         .border_style(Style::default().fg(bc));
 
     // Compute visible height (area height minus borders)
-    let num_items = collapsed.len();
+    let num_items = filtered.len();
     let visible_height = area.height.saturating_sub(2) as usize;
     let mut list_state = ListState::default();
     if ui.activity_auto_scroll {
@@ -764,6 +872,7 @@ pub(super) fn render_activity_stream(
         .thumb_style(Style::default().fg(Color::Gray));
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
+
 
 // ---------------------------------------------------------------------------
 // Render: Planning view
