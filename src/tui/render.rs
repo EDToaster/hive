@@ -6,7 +6,7 @@ use ratatui::widgets::*;
 
 use super::helpers::*;
 use super::tree::{TaskTreeNode, TreeNode};
-use super::{ActivityEntry, Pane, TuiState};
+use super::{ActivityEntry, Notification, NotificationSeverity, Pane, TuiState};
 use std::collections::HashSet;
 
 // ---------------------------------------------------------------------------
@@ -18,6 +18,7 @@ pub(super) fn render_title_bar(
     area: Rect,
     run_id: &str,
     run_meta: &Option<RunMetadata>,
+    flash: bool,
 ) {
     let uptime = run_meta
         .as_ref()
@@ -37,12 +38,21 @@ pub(super) fn render_title_bar(
     let content_width = left_text.len() + right.len();
     let gap = total_width.saturating_sub(content_width);
 
+    let (left_style, bg) = if flash {
+        (Style::default().fg(Color::White).bold(), Color::Red)
+    } else {
+        (Style::default().fg(Color::Cyan).bold(), Color::Reset)
+    };
+
     let line = Line::from(vec![
-        Span::styled(left_text, Style::default().fg(Color::Cyan).bold()),
+        Span::styled(left_text, left_style),
         Span::raw(" ".repeat(gap)),
-        Span::styled(right, Style::default().fg(Color::Gray)),
+        Span::styled(right, Style::default().fg(if flash { Color::White } else { Color::Gray })),
     ]);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().bg(bg)),
+        area,
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -795,5 +805,114 @@ pub(super) fn render_spec_viewer(frame: &mut Frame, area: Rect, spec: &str, scro
         .block(block)
         .wrap(Wrap { trim: false })
         .scroll((scroll as u16, 0));
+    frame.render_widget(paragraph, area);
+}
+
+// ---------------------------------------------------------------------------
+// Render: Toast notifications (top-right corner)
+// ---------------------------------------------------------------------------
+
+fn notification_color(severity: NotificationSeverity) -> Color {
+    match severity {
+        NotificationSeverity::Info => Color::Cyan,
+        NotificationSeverity::Warning => Color::Yellow,
+        NotificationSeverity::Error => Color::Red,
+    }
+}
+
+fn notification_icon(severity: NotificationSeverity) -> &'static str {
+    match severity {
+        NotificationSeverity::Info => "\u{2139} ",    // ℹ
+        NotificationSeverity::Warning => "\u{26A0} ", // ⚠
+        NotificationSeverity::Error => "\u{2717} ",   // ✗
+    }
+}
+
+pub(super) fn render_toasts(frame: &mut Frame, notifications: &[Notification]) {
+    let term_area = frame.area();
+    // Show at most 5 toasts
+    let visible: Vec<&Notification> = notifications.iter().rev().take(5).collect();
+    if visible.is_empty() {
+        return;
+    }
+
+    let toast_width = 42u16;
+    let x = term_area.width.saturating_sub(toast_width + 1);
+    // Start from row 1 (below title bar), one per line
+    for (i, notif) in visible.iter().enumerate() {
+        let y = 1 + i as u16;
+        if y >= term_area.height {
+            break;
+        }
+        let area = Rect::new(x, y, toast_width, 1);
+
+        let color = notification_color(notif.severity);
+        // Fade: dimmer as ticks_remaining decreases
+        let style = if notif.ticks_remaining <= 1 {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(color)
+        };
+
+        let icon = notification_icon(notif.severity);
+        let msg = if notif.message.len() > (toast_width as usize - 4) {
+            format!("{}…", &notif.message[..(toast_width as usize - 5)])
+        } else {
+            notif.message.clone()
+        };
+        let text = format!("{icon}{msg}");
+
+        frame.render_widget(Clear, area);
+        frame.render_widget(Paragraph::new(Span::styled(text, style)), area);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Render: Notification log overlay
+// ---------------------------------------------------------------------------
+
+pub(super) fn render_notification_log(
+    frame: &mut Frame,
+    log: &[Notification],
+    scroll: usize,
+) {
+    use super::helpers::centered_rect;
+
+    let area = centered_rect(70, 80, frame.area());
+    frame.render_widget(Clear, area);
+
+    let lines: Vec<Line> = if log.is_empty() {
+        vec![Line::from(Span::styled(
+            " (no notifications yet)",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        log.iter()
+            .rev()
+            .map(|n| {
+                let color = notification_color(n.severity);
+                let icon = notification_icon(n.severity);
+                let ts = n.timestamp.format("%H:%M:%S");
+                Line::from(vec![
+                    Span::styled(
+                        format!("{ts} {icon}"),
+                        Style::default().fg(Color::Gray),
+                    ),
+                    Span::styled(n.message.clone(), Style::default().fg(color)),
+                ])
+            })
+            .collect()
+    };
+
+    let block = Block::default()
+        .title(" Notification Log ")
+        .title_bottom(Line::from(" [j/k] scroll  [n/Esc] close ").right_aligned())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let clamped_scroll = scroll.min(lines.len().saturating_sub(1));
+    let paragraph = Paragraph::new(lines)
+        .block(block)
+        .scroll((clamped_scroll as u16, 0));
     frame.render_widget(paragraph, area);
 }

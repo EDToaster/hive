@@ -17,7 +17,7 @@ use crossterm::terminal::{
 };
 use ratatui::prelude::*;
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -26,6 +26,42 @@ use input::handle_mouse;
 use overlay::render_overlay;
 use render::*;
 use tree::{build_task_tree, build_tree};
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum NotificationSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Notification {
+    pub severity: NotificationSeverity,
+    pub message: String,
+    pub timestamp: DateTime<Utc>,
+    /// Ticks remaining before the toast dismisses itself (0 = dismissed)
+    pub ticks_remaining: u8,
+}
+
+impl Notification {
+    fn new(severity: NotificationSeverity, message: impl Into<String>) -> Self {
+        let ticks = match severity {
+            NotificationSeverity::Error => 8,
+            NotificationSeverity::Warning => 6,
+            NotificationSeverity::Info => 4,
+        };
+        Self {
+            severity,
+            message: message.into(),
+            timestamp: Utc::now(),
+            ticks_remaining: ticks,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // State
@@ -69,6 +105,20 @@ pub(crate) struct TuiState {
     pub last_click: Option<(u16, u16, Instant)>,
     /// Whether running inside a terminal multiplexer
     pub inside_multiplexer: Option<&'static str>,
+    /// Active toast notifications (auto-dismiss after ticks_remaining ticks)
+    pub notifications: Vec<Notification>,
+    /// All past notifications (log, unbounded)
+    pub notification_log: Vec<Notification>,
+    /// Show notification log overlay
+    pub show_notification_log: bool,
+    /// Scroll position in notification log
+    pub notification_log_scroll: usize,
+    /// Ticks remaining for title-bar flash on agent failure (0 = no flash)
+    pub title_flash_ticks: u8,
+    /// Previous agent statuses for change detection
+    pub prev_agent_statuses: HashMap<String, AgentStatus>,
+    /// Previous task statuses for change detection
+    pub prev_task_statuses: HashMap<String, TaskStatus>,
 }
 
 /// Detect if running inside a known terminal multiplexer.
@@ -118,8 +168,113 @@ impl Default for TuiState {
             spec_scroll: 0,
             last_click: None,
             inside_multiplexer: detect_multiplexer(),
+            notifications: Vec::new(),
+            notification_log: Vec::new(),
+            show_notification_log: false,
+            notification_log_scroll: 0,
+            title_flash_ticks: 0,
+            prev_agent_statuses: HashMap::new(),
+            prev_task_statuses: HashMap::new(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// State-change detection
+// ---------------------------------------------------------------------------
+
+/// Compare current agents/tasks against stored snapshots, generate notifications.
+/// Returns new notifications and whether any critical event occurred (for bell).
+pub(crate) fn detect_state_changes(
+    agents: &[Agent],
+    tasks: &[Task],
+    prev_agents: &HashMap<String, AgentStatus>,
+    prev_tasks: &HashMap<String, TaskStatus>,
+) -> (Vec<Notification>, bool) {
+    let mut notifs: Vec<Notification> = Vec::new();
+    let mut ring_bell = false;
+
+    // Agent state changes
+    for agent in agents {
+        match prev_agents.get(&agent.id) {
+            None => {
+                // New agent spawned
+                notifs.push(Notification::new(
+                    NotificationSeverity::Info,
+                    format!("Agent spawned: {}", agent.id),
+                ));
+            }
+            Some(&prev_status) if prev_status != agent.status => {
+                match agent.status {
+                    AgentStatus::Done => {
+                        notifs.push(Notification::new(
+                            NotificationSeverity::Info,
+                            format!("Agent done: {}", agent.id),
+                        ));
+                    }
+                    AgentStatus::Failed => {
+                        notifs.push(Notification::new(
+                            NotificationSeverity::Error,
+                            format!("Agent FAILED: {}", agent.id),
+                        ));
+                        ring_bell = true;
+                    }
+                    AgentStatus::Stalled => {
+                        notifs.push(Notification::new(
+                            NotificationSeverity::Warning,
+                            format!("Agent stalled: {}", agent.id),
+                        ));
+                        ring_bell = true;
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Task state changes
+    for task in tasks {
+        if let Some(&prev_status) = prev_tasks.get(&task.id)
+            && prev_status != task.status
+        {
+            match task.status {
+                TaskStatus::Merged => {
+                    notifs.push(Notification::new(
+                        NotificationSeverity::Info,
+                        format!("Task merged: {}", task.id),
+                    ));
+                }
+                TaskStatus::Failed => {
+                    notifs.push(Notification::new(
+                        NotificationSeverity::Error,
+                        format!("Task FAILED: {}", task.id),
+                    ));
+                    ring_bell = true;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // All tasks complete?
+    let total = tasks.len();
+    if total > 0 && !prev_tasks.is_empty() {
+        let done_before = prev_tasks
+            .values()
+            .all(|s| matches!(s, TaskStatus::Merged | TaskStatus::Absorbed | TaskStatus::Cancelled | TaskStatus::Failed));
+        let done_now = tasks
+            .iter()
+            .all(|t| matches!(t.status, TaskStatus::Merged | TaskStatus::Absorbed | TaskStatus::Cancelled | TaskStatus::Failed));
+        if !done_before && done_now {
+            notifs.push(Notification::new(
+                NotificationSeverity::Info,
+                "All tasks complete!".to_string(),
+            ));
+        }
+    }
+
+    (notifs, ring_bell)
 }
 
 // ---------------------------------------------------------------------------
@@ -354,6 +509,39 @@ fn run_tui_loop(
 
         let activity_len = activity.len();
 
+        // ---- State-change detection and notifications ----
+        if last_tick.elapsed() >= tick_rate {
+            let (new_notifs, ring_bell) = detect_state_changes(
+                &agents,
+                &tasks,
+                &ui.prev_agent_statuses,
+                &ui.prev_task_statuses,
+            );
+            if ring_bell {
+                // Terminal bell: write BEL to stderr (safe in alternate-screen raw mode)
+                let _ = std::io::Write::write_all(&mut std::io::stderr(), b"\x07");
+                ui.title_flash_ticks = 3;
+            }
+            for notif in new_notifs {
+                ui.notification_log.push(notif.clone());
+                ui.notifications.push(notif);
+            }
+            // Tick down active notifications
+            ui.notifications.retain_mut(|n| {
+                if n.ticks_remaining > 0 {
+                    n.ticks_remaining -= 1;
+                }
+                n.ticks_remaining > 0
+            });
+            // Decrement title flash
+            if ui.title_flash_ticks > 0 {
+                ui.title_flash_ticks -= 1;
+            }
+            // Update snapshots
+            ui.prev_agent_statuses = agents.iter().map(|a| (a.id.clone(), a.status)).collect();
+            ui.prev_task_statuses = tasks.iter().map(|t| (t.id.clone(), t.status)).collect();
+        }
+
         // ---- Compute layout areas for mouse hit-testing ----
         let term_area = terminal.get_frame().area();
         let outer = Layout::default()
@@ -401,7 +589,7 @@ fn run_tui_loop(
         terminal
             .draw(|frame| {
                 // -- Title bar --
-                render_title_bar(frame, outer[0], run_id, &run_meta);
+                render_title_bar(frame, outer[0], run_id, &run_meta, ui.title_flash_ticks > 0);
 
                 // -- Stats bar --
                 render_stats_bar(frame, outer[1], &agents, &tasks, state, &ui);
@@ -453,6 +641,13 @@ fn run_tui_loop(
                         ui.output_scroll,
                         ui.output_auto_scroll,
                     );
+                } else if ui.show_notification_log {
+                    render_notification_log(frame, &ui.notification_log, ui.notification_log_scroll);
+                }
+
+                // -- Toast notifications (always on top) --
+                if !ui.notifications.is_empty() {
+                    render_toasts(frame, &ui.notifications);
                 }
             })
             .map_err(|e| e.to_string())?;
@@ -514,6 +709,8 @@ fn run_tui_loop(
                     KeyCode::Esc => {
                         if ui.overlay.is_some() {
                             ui.overlay = None;
+                        } else if ui.show_notification_log {
+                            ui.show_notification_log = false;
                         } else if ui.selected_agent_filter.is_some() {
                             ui.selected_agent_filter = None;
                             ui.swarm_selected = None;
@@ -533,6 +730,14 @@ fn run_tui_loop(
                         } else {
                             let _ = stdout().execute(DisableMouseCapture);
                         }
+                    }
+                    KeyCode::Char('j') | KeyCode::Down if ui.show_notification_log => {
+                        ui.notification_log_scroll =
+                            ui.notification_log_scroll.saturating_add(1);
+                    }
+                    KeyCode::Char('k') | KeyCode::Up if ui.show_notification_log => {
+                        ui.notification_log_scroll =
+                            ui.notification_log_scroll.saturating_sub(1);
                     }
                     KeyCode::Char('j') | KeyCode::Down => match ui.focused_pane {
                         Pane::Swarm => {
@@ -628,6 +833,9 @@ fn run_tui_loop(
                             ui.output_auto_scroll = true;
                             ui.overlay = Some(Overlay::AgentOutput(node.agent_id.clone()));
                         }
+                    }
+                    KeyCode::Char('n') => {
+                        ui.show_notification_log = !ui.show_notification_log;
                     }
                     _ => {}
                 }
