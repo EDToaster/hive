@@ -2,15 +2,83 @@ use serde_json::Value;
 use std::fs;
 use std::path::Path;
 
+/// Phase classification for a tool use entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutputPhase {
+    /// Exploration: Read, Grep, Glob, LS
+    Exploration,
+    /// Implementation: Write, Edit, MultiEdit
+    Implementation,
+    /// Testing: Bash with test/cargo test/pytest/etc.
+    Testing,
+    /// Other tool calls
+    Other,
+}
+
+impl OutputPhase {
+    pub fn from_tool(name: &str, command: Option<&str>) -> Self {
+        match name {
+            "Read" | "Grep" | "Glob" | "LS" => Self::Exploration,
+            "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => Self::Implementation,
+            "Bash" => {
+                if let Some(cmd) = command {
+                    let cmd_lower = cmd.to_lowercase();
+                    if cmd_lower.contains("cargo test")
+                        || cmd_lower.contains("pytest")
+                        || cmd_lower.contains("npm test")
+                        || cmd_lower.contains("make test")
+                        || cmd_lower.contains("go test")
+                        || (cmd_lower.contains("test") && !cmd_lower.starts_with("echo"))
+                    {
+                        return Self::Testing;
+                    }
+                }
+                Self::Other
+            }
+            _ => Self::Other,
+        }
+    }
+}
+
+/// Parsed test results from a Bash test command's output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TestResult {
+    pub passed: u64,
+    pub failed: u64,
+    pub command: String,
+}
+
+/// Summary of files touched and test outcomes in a session.
+#[derive(Debug, Clone, Default)]
+pub struct OutputSummary {
+    pub files_read: Vec<String>,
+    pub files_written: Vec<String>,
+    pub test_results: Vec<TestResult>,
+}
+
 /// A displayable entry parsed from Claude Code's stream-json NDJSON output.
 #[derive(Debug, Clone, PartialEq)]
 pub enum OutputEntry {
     /// Free-form text from the assistant.
     AssistantText(String),
     /// A tool invocation by the assistant.
-    ToolUse { name: String, input_summary: String },
+    ToolUse {
+        name: String,
+        input_summary: String,
+        /// Extracted file path (for Read/Write/Edit/Glob/Grep tools)
+        extracted_path: Option<String>,
+        /// Phase classification
+        phase: OutputPhase,
+    },
     /// The result returned from a tool call.
-    ToolResult { content: String },
+    ToolResult {
+        /// First line for collapsed view
+        first_line: String,
+        /// Full content (up to 2000 chars) for expanded view
+        full_content: String,
+        /// Total line count
+        line_count: usize,
+    },
     /// The final result summary at the end of a session.
     Result {
         duration_ms: u64,
@@ -74,6 +142,54 @@ pub fn load_output_file(path: &Path) -> Vec<String> {
     }
 }
 
+/// Extract a file path from a tool's input JSON for known file-based tools.
+fn extract_path_from_input(name: &str, input: &Value) -> Option<String> {
+    match name {
+        "Read" | "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        "Glob" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        "Grep" => input
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        "Bash" => input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+        _ => None,
+    }
+}
+
+/// Parse a Rust `cargo test` result line like:
+/// "test result: ok. 42 passed; 0 failed; ..."
+fn parse_rust_test_result(output: &str) -> Option<(u64, u64)> {
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with("test result:") {
+            // "test result: ok. 42 passed; 0 failed; ..."
+            let passed = line
+                .split_whitespace()
+                .skip_while(|w| *w != "result:")
+                .nth(2)
+                .and_then(|w| w.parse::<u64>().ok())
+                .unwrap_or(0);
+            let failed = line
+                .split(';')
+                .nth(1)
+                .and_then(|s| s.split_whitespace().next())
+                .and_then(|w| w.parse::<u64>().ok())
+                .unwrap_or(0);
+            return Some((passed, failed));
+        }
+    }
+    None
+}
+
 /// Parse NDJSON lines from Claude Code's `--output-format stream-json` into displayable entries.
 ///
 /// Skips `system` lines (hooks, init). Extracts text and tool_use blocks from `assistant` messages,
@@ -117,13 +233,22 @@ pub fn parse_output_lines(lines: &[String]) -> Vec<OutputEntry> {
                                     .and_then(|n| n.as_str())
                                     .unwrap_or("unknown")
                                     .to_string();
-                                let input_summary = block
-                                    .get("input")
-                                    .map(|i| summarize_json(i, 120))
-                                    .unwrap_or_default();
+                                let input = block.get("input");
+                                let input_summary =
+                                    input.map(|i| summarize_json(i, 120)).unwrap_or_default();
+                                let extracted_path =
+                                    input.and_then(|i| extract_path_from_input(&name, i));
+                                let command = if name == "Bash" {
+                                    extracted_path.as_deref()
+                                } else {
+                                    None
+                                };
+                                let phase = OutputPhase::from_tool(&name, command);
                                 entries.push(OutputEntry::ToolUse {
                                     name,
                                     input_summary,
+                                    extracted_path,
+                                    phase,
                                 });
                             }
                             _ => {}
@@ -132,14 +257,21 @@ pub fn parse_output_lines(lines: &[String]) -> Vec<OutputEntry> {
                 }
             }
             "tool_result" => {
-                let content = if let Some(s) = v.get("content").and_then(|c| c.as_str()) {
-                    truncate(s, 200)
+                let raw = if let Some(s) = v.get("content").and_then(|c| c.as_str()) {
+                    s.to_string()
                 } else if let Some(val) = v.get("content") {
-                    truncate(&val.to_string(), 200)
+                    val.to_string()
                 } else {
                     String::new()
                 };
-                entries.push(OutputEntry::ToolResult { content });
+                let first_line = raw.lines().next().unwrap_or("").to_string();
+                let line_count = raw.lines().count();
+                let full_content = truncate(&raw, 2000);
+                entries.push(OutputEntry::ToolResult {
+                    first_line,
+                    full_content,
+                    line_count,
+                });
             }
             "result" => {
                 let duration_ms = v.get("duration_ms").and_then(|d| d.as_u64()).unwrap_or(0);
@@ -167,6 +299,63 @@ pub fn parse_output_lines(lines: &[String]) -> Vec<OutputEntry> {
     }
 
     entries
+}
+
+/// Compute a summary of files touched and test results from parsed output entries.
+pub fn compute_output_summary(entries: &[OutputEntry]) -> OutputSummary {
+    let mut summary = OutputSummary::default();
+    let mut pending_test_command: Option<String> = None;
+
+    for entry in entries {
+        match entry {
+            OutputEntry::ToolUse {
+                name,
+                extracted_path,
+                phase,
+                ..
+            } => {
+                match name.as_str() {
+                    "Read" => {
+                        if let Some(p) = extracted_path
+                            && !summary.files_read.contains(p)
+                        {
+                            summary.files_read.push(p.clone());
+                        }
+                    }
+                    "Write" | "Edit" | "MultiEdit" => {
+                        if let Some(p) = extracted_path
+                            && !summary.files_written.contains(p)
+                        {
+                            summary.files_written.push(p.clone());
+                        }
+                    }
+                    _ => {}
+                }
+                if *phase == OutputPhase::Testing {
+                    pending_test_command = extracted_path.clone();
+                } else {
+                    pending_test_command = None;
+                }
+            }
+            OutputEntry::ToolResult { full_content, .. } => {
+                if let Some(ref cmd) = pending_test_command {
+                    if let Some((passed, failed)) = parse_rust_test_result(full_content) {
+                        summary.test_results.push(TestResult {
+                            passed,
+                            failed,
+                            command: cmd.clone(),
+                        });
+                    }
+                    pending_test_command = None;
+                }
+            }
+            _ => {
+                pending_test_command = None;
+            }
+        }
+    }
+
+    summary
 }
 
 /// Parse session_id from the init line at the start of output.jsonl.
@@ -310,9 +499,13 @@ mod tests {
             OutputEntry::ToolUse {
                 name,
                 input_summary,
+                extracted_path,
+                phase,
             } => {
                 assert_eq!(name, "Read");
                 assert!(input_summary.contains("file_path="));
+                assert_eq!(extracted_path.as_deref(), Some("/src/main.rs"));
+                assert_eq!(phase, &OutputPhase::Exploration);
             }
             other => panic!("Expected ToolUse, got {:?}", other),
         }
@@ -327,8 +520,13 @@ mod tests {
         let entries = parse_output_lines(&lines);
         assert_eq!(entries.len(), 1);
         match &entries[0] {
-            OutputEntry::ToolResult { content } => {
-                assert_eq!(content, "File contents here...");
+            OutputEntry::ToolResult {
+                first_line,
+                full_content,
+                ..
+            } => {
+                assert_eq!(first_line, "File contents here...");
+                assert_eq!(full_content, "File contents here...");
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }
@@ -427,6 +625,7 @@ mod tests {
             OutputEntry::ToolUse {
                 name,
                 input_summary,
+                ..
             } => {
                 assert_eq!(name, "Read");
                 assert!(input_summary.contains("file_path="));
@@ -434,8 +633,8 @@ mod tests {
             other => panic!("Expected ToolUse, got {:?}", other),
         }
         match &entries[2] {
-            OutputEntry::ToolResult { content } => {
-                assert!(content.contains("fn main()"));
+            OutputEntry::ToolResult { full_content, .. } => {
+                assert!(full_content.contains("fn main()"));
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }
@@ -485,7 +684,7 @@ mod tests {
 
     #[test]
     fn test_tool_result_long_content_truncated() {
-        let long_content = "x".repeat(500);
+        let long_content = "x".repeat(3000);
         let line = format!(
             r#"{{"type":"tool_result","content":"{}","tool_use_id":"t1"}}"#,
             long_content
@@ -493,9 +692,16 @@ mod tests {
         let entries = parse_output_lines(&[line]);
         assert_eq!(entries.len(), 1);
         match &entries[0] {
-            OutputEntry::ToolResult { content } => {
-                assert!(content.len() <= 203); // 200 + "..."
-                assert!(content.ends_with("..."));
+            OutputEntry::ToolResult {
+                full_content,
+                first_line,
+                ..
+            } => {
+                // full_content is capped at 2000 chars + "..."
+                assert!(full_content.len() <= 2003);
+                assert!(full_content.ends_with("..."));
+                // first_line is the first line of raw content (also truncated via full_content)
+                assert!(!first_line.is_empty());
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }
@@ -583,10 +789,12 @@ mod tests {
                 OutputEntry::ToolUse {
                     name: n1,
                     input_summary: s1,
+                    ..
                 },
                 OutputEntry::ToolUse {
                     name: n2,
                     input_summary: s2,
+                    ..
                 },
             ) => {
                 assert_eq!(n1, "Read");
@@ -596,6 +804,207 @@ mod tests {
             }
             other => panic!("Expected two ToolUse entries, got {:?}", other),
         }
+    }
+
+    // =================================================================
+    // New feature tests: OutputPhase, extracted_path, OutputSummary
+    // =================================================================
+
+    #[test]
+    fn test_output_phase_from_tool_read() {
+        assert_eq!(
+            OutputPhase::from_tool("Read", None),
+            OutputPhase::Exploration
+        );
+        assert_eq!(
+            OutputPhase::from_tool("Grep", None),
+            OutputPhase::Exploration
+        );
+        assert_eq!(
+            OutputPhase::from_tool("Glob", None),
+            OutputPhase::Exploration
+        );
+    }
+
+    #[test]
+    fn test_output_phase_from_tool_write() {
+        assert_eq!(
+            OutputPhase::from_tool("Write", None),
+            OutputPhase::Implementation
+        );
+        assert_eq!(
+            OutputPhase::from_tool("Edit", None),
+            OutputPhase::Implementation
+        );
+        assert_eq!(
+            OutputPhase::from_tool("MultiEdit", None),
+            OutputPhase::Implementation
+        );
+    }
+
+    #[test]
+    fn test_output_phase_from_tool_bash_test() {
+        assert_eq!(
+            OutputPhase::from_tool("Bash", Some("cargo test --all-targets")),
+            OutputPhase::Testing
+        );
+        assert_eq!(
+            OutputPhase::from_tool("Bash", Some("npm test")),
+            OutputPhase::Testing
+        );
+        assert_eq!(
+            OutputPhase::from_tool("Bash", Some("pytest src/")),
+            OutputPhase::Testing
+        );
+    }
+
+    #[test]
+    fn test_output_phase_from_tool_bash_other() {
+        assert_eq!(
+            OutputPhase::from_tool("Bash", Some("cargo build")),
+            OutputPhase::Other
+        );
+        assert_eq!(OutputPhase::from_tool("Bash", None), OutputPhase::Other);
+    }
+
+    #[test]
+    fn test_extracted_path_read() {
+        let lines = vec![
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/foo.rs"}}]}}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        match &entries[0] {
+            OutputEntry::ToolUse {
+                extracted_path,
+                phase,
+                ..
+            } => {
+                assert_eq!(extracted_path.as_deref(), Some("/src/foo.rs"));
+                assert_eq!(phase, &OutputPhase::Exploration);
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_extracted_path_write() {
+        let lines = vec![
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/src/bar.rs","content":"fn main(){}"}}]}}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        match &entries[0] {
+            OutputEntry::ToolUse {
+                extracted_path,
+                phase,
+                ..
+            } => {
+                assert_eq!(extracted_path.as_deref(), Some("/src/bar.rs"));
+                assert_eq!(phase, &OutputPhase::Implementation);
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_extracted_path_bash() {
+        let lines = vec![
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        match &entries[0] {
+            OutputEntry::ToolUse {
+                extracted_path,
+                phase,
+                ..
+            } => {
+                assert_eq!(extracted_path.as_deref(), Some("cargo test"));
+                assert_eq!(phase, &OutputPhase::Testing);
+            }
+            other => panic!("Expected ToolUse, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tool_result_stores_first_line_and_full_content() {
+        // Use JSON-escaped newlines so the line is valid JSON
+        let line = r#"{"type":"tool_result","content":"line one\nline two\nline three","tool_use_id":"t1"}"#.to_string();
+        let entries = parse_output_lines(&[line]);
+        assert_eq!(entries.len(), 1, "expected 1 entry");
+        match &entries[0] {
+            OutputEntry::ToolResult {
+                first_line,
+                full_content,
+                line_count,
+            } => {
+                assert_eq!(first_line, "line one");
+                assert_eq!(full_content, "line one\nline two\nline three");
+                assert_eq!(*line_count, 3);
+            }
+            other => panic!("Expected ToolResult, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_compute_output_summary_files() {
+        let lines = vec![
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.rs"}}]}}"#.to_string(),
+            r#"{"type":"tool_result","content":"fn main() {}","tool_use_id":"t1"}"#.to_string(),
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"/src/lib.rs","content":"pub fn foo() {}"}}]}}"#.to_string(),
+            r#"{"type":"tool_result","content":"ok","tool_use_id":"t2"}"#.to_string(),
+            // Duplicate read — should only appear once
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"/src/main.rs"}}]}}"#.to_string(),
+            r#"{"type":"tool_result","content":"fn main() {}","tool_use_id":"t3"}"#.to_string(),
+        ];
+        let entries = parse_output_lines(&lines);
+        let summary = compute_output_summary(&entries);
+        assert_eq!(summary.files_read, vec!["/src/main.rs"]);
+        assert_eq!(summary.files_written, vec!["/src/lib.rs"]);
+        assert!(summary.test_results.is_empty());
+    }
+
+    #[test]
+    fn test_compute_output_summary_test_results() {
+        let test_output = "running 42 tests\ntest result: ok. 42 passed; 0 failed; 0 ignored";
+        let lines = vec![
+            r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#.to_string(),
+            format!(
+                r#"{{"type":"tool_result","content":"{}","tool_use_id":"t1"}}"#,
+                test_output.replace('\n', "\\n")
+            ),
+        ];
+        let entries = parse_output_lines(&lines);
+        let summary = compute_output_summary(&entries);
+        assert_eq!(summary.test_results.len(), 1);
+        let tr = &summary.test_results[0];
+        assert_eq!(tr.passed, 42);
+        assert_eq!(tr.failed, 0);
+        assert_eq!(tr.command, "cargo test");
+    }
+
+    #[test]
+    fn test_compute_output_summary_empty() {
+        let entries: Vec<OutputEntry> = vec![];
+        let summary = compute_output_summary(&entries);
+        assert!(summary.files_read.is_empty());
+        assert!(summary.files_written.is_empty());
+        assert!(summary.test_results.is_empty());
+    }
+
+    #[test]
+    fn test_parse_rust_test_result_passing() {
+        let output = "running 10 tests\ntest foo::bar ... ok\ntest result: ok. 10 passed; 0 failed; 0 ignored";
+        assert_eq!(parse_rust_test_result(output), Some((10, 0)));
+    }
+
+    #[test]
+    fn test_parse_rust_test_result_failing() {
+        let output = "running 5 tests\ntest result: FAILED. 3 passed; 2 failed; 0 ignored";
+        assert_eq!(parse_rust_test_result(output), Some((3, 2)));
+    }
+
+    #[test]
+    fn test_parse_rust_test_result_none() {
+        assert_eq!(parse_rust_test_result("no test output here"), None);
     }
 
     #[test]
@@ -775,8 +1184,8 @@ mod tests {
         let entries = parse_output_lines(&lines);
         assert_eq!(entries.len(), 1);
         match &entries[0] {
-            OutputEntry::ToolResult { content } => {
-                assert!(content.contains("nested"));
+            OutputEntry::ToolResult { full_content, .. } => {
+                assert!(full_content.contains("nested"));
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }
@@ -788,8 +1197,13 @@ mod tests {
         let entries = parse_output_lines(&lines);
         assert_eq!(entries.len(), 1);
         match &entries[0] {
-            OutputEntry::ToolResult { content } => {
-                assert!(content.is_empty());
+            OutputEntry::ToolResult {
+                first_line,
+                full_content,
+                ..
+            } => {
+                assert!(first_line.is_empty());
+                assert!(full_content.is_empty());
             }
             other => panic!("Expected ToolResult, got {:?}", other),
         }
