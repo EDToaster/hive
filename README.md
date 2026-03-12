@@ -83,19 +83,13 @@ claude --dangerously-skip-permissions
 
 Then instruct it:
 ```
-Begin. Read CLAUDE.local.md for your assignment. Create all tasks with
-blocked_by relationships first, then spawn leads.
+Begin!
 ```
 
 ### 4. Monitor
 
 ```bash
 hive tui           # interactive dashboard
-# or
-hive status        # one-shot status
-hive agents        # list agents
-hive tasks         # list tasks
-hive watch         # auto-refreshing status
 ```
 
 ### 5. Finish
