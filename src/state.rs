@@ -2181,7 +2181,7 @@ mod tests {
         let state = make_state(dir.path());
         std::fs::write(
             state.hive_dir().join("config.yaml"),
-            &[0xFF, 0xFE, 0x00, 0x01, 0x02],
+            [0xFF, 0xFE, 0x00, 0x01, 0x02],
         )
         .unwrap();
         // Should not panic, just return defaults (file may or may not be readable as UTF-8)

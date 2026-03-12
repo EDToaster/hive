@@ -1763,7 +1763,7 @@ fn render_activity_stream(
                             }),
                         ),
                         Span::styled(
-                            format!("{tool_display}"),
+                            tool_display.to_string(),
                             Style::default().fg(if is_dimmed {
                                 Color::Rgb(110, 110, 120)
                             } else {
