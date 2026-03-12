@@ -33,7 +33,8 @@ fn main() {
             tool,
             status,
             duration,
-        } => cmd_log_tool(&run, &agent, &tool, &status, duration),
+            args_summary,
+        } => cmd_log_tool(&run, &agent, &tool, &status, duration, args_summary.as_deref()),
         Commands::Heartbeat { run, agent } => cmd_heartbeat(&run, &agent),
         Commands::Logs { agent } => cmd_logs(agent),
         Commands::Tui => cmd_tui(),
@@ -443,6 +444,7 @@ fn cmd_log_tool(
     tool: &str,
     status: &str,
     duration: Option<i64>,
+    args_summary: Option<&str>,
 ) -> Result<(), String> {
     let state = HiveState::discover()?;
     let log_path = state.run_dir(run_id).join("log.db");
@@ -460,7 +462,7 @@ fn cmd_log_tool(
         &role,
         "claude-code",
         tool,
-        None,
+        args_summary,
         status,
         duration,
     )?;

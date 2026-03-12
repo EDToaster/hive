@@ -56,6 +56,8 @@ pub enum Commands {
         status: String,
         #[arg(long)]
         duration: Option<i64>,
+        #[arg(long)]
+        args_summary: Option<String>,
     },
 
     /// Update an agent's heartbeat timestamp (called by agent hooks)
