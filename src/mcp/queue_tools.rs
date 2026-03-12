@@ -161,13 +161,13 @@ impl HiveMcp {
     }
 
     #[tool(
-        description = "Submit a branch for review before merging. Spawns a reviewer agent to evaluate the changes."
+        description = "Submit a branch for review before merging. Spawns a reviewer agent to evaluate the changes. Leads submit their own branches; coordinators can submit explorer branches on behalf of the run."
     )]
     pub(crate) async fn hive_submit_to_queue(
         &self,
         params: Parameters<SubmitToQueueParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Err(result) = self.require_role(&[AgentRole::Lead]) {
+        if let Err(result) = self.require_role(&[AgentRole::Lead, AgentRole::Coordinator]) {
             return Ok(result);
         }
         let p = &params.0;

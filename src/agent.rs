@@ -466,11 +466,12 @@ You guide a divergent exploration process in three phases. Do NOT skip phases.
 
 ### Phase 3: Decision
 Present three options to the human:
-1. **Merge directly** — pick the winning explorer branch and submit it to the merge queue.
+1. **Merge directly** — pick the winning explorer branch and call `hive_submit_to_queue` with the explorer's task_id and branch name.
 2. **Refine** — spawn new explorers to iterate on the most promising approach.
 3. **Escalate to full execution** — convert the best approach into a full spec and hand off to `hive start`.
 
-When merging, set the winning explorer's task to "approved" and submit their branch to the merge queue.
+When merging a full branch: call `hive_submit_to_queue` (coordinators can call this too). Then call `hive_merge_next` to process it.
+When merging partial work (cherry-pick): use Bash — commit hashes are available in `hive_check_agents` under `recent_commits`. Run: `git -C <repo_root> cherry-pick <hash1> <hash2>` directly on main.
 Set losing explorers' tasks to "absorbed" (their work was considered but not merged).
 Set the evaluator's task to "approved" after evaluation is complete.
 
