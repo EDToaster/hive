@@ -593,6 +593,375 @@ mod tests {
         assert_eq!(back.tags, vec!["summary"]);
     }
 
+    // --- Adversarial: Invalid enum deserialization ---
+
+    #[test]
+    fn invalid_agent_role_rejected() {
+        let result = serde_json::from_str::<AgentRole>("\"superadmin\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_agent_role_case_sensitive() {
+        // "Coordinator" with capital C should fail (serde expects lowercase)
+        let result = serde_json::from_str::<AgentRole>("\"Coordinator\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn empty_string_agent_role_rejected() {
+        let result = serde_json::from_str::<AgentRole>("\"\"");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn null_agent_role_rejected() {
+        let result = serde_json::from_str::<AgentRole>("null");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn numeric_agent_role_rejected() {
+        let result = serde_json::from_str::<AgentRole>("42");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_task_status_rejected() {
+        for bad in &["\"done\"", "\"running\"", "\"PENDING\"", "\"\"", "null", "0"] {
+            let result = serde_json::from_str::<TaskStatus>(bad);
+            assert!(result.is_err(), "Expected error for TaskStatus from {bad}");
+        }
+    }
+
+    #[test]
+    fn invalid_urgency_rejected() {
+        for bad in &["\"urgent\"", "\"CRITICAL\"", "\"medium\"", "\"\"", "null"] {
+            let result = serde_json::from_str::<Urgency>(bad);
+            assert!(result.is_err(), "Expected error for Urgency from {bad}");
+        }
+    }
+
+    #[test]
+    fn invalid_message_type_rejected() {
+        for bad in &["\"task_suggestion\"", "\"TaskSuggestion\"", "\"\"", "null"] {
+            let result = serde_json::from_str::<MessageType>(bad);
+            assert!(result.is_err(), "Expected error for MessageType from {bad}");
+        }
+    }
+
+    #[test]
+    fn invalid_confidence_rejected() {
+        for bad in &["\"HIGH\"", "\"Med\"", "\"none\"", "\"\"", "null"] {
+            let result = serde_json::from_str::<Confidence>(bad);
+            assert!(result.is_err(), "Expected error for Confidence from {bad}");
+        }
+    }
+
+    #[test]
+    fn invalid_run_status_rejected() {
+        for bad in &["\"running\"", "\"ACTIVE\"", "\"done\"", "\"\"", "null"] {
+            let result = serde_json::from_str::<RunStatus>(bad);
+            assert!(result.is_err(), "Expected error for RunStatus from {bad}");
+        }
+    }
+
+    #[test]
+    fn invalid_agent_status_rejected() {
+        for bad in &["\"active\"", "\"RUNNING\"", "\"pending\"", "\"\"", "null"] {
+            let result = serde_json::from_str::<AgentStatus>(bad);
+            assert!(
+                result.is_err(),
+                "Expected error for AgentStatus from {bad}"
+            );
+        }
+    }
+
+    // --- Adversarial: Malformed JSON for structs ---
+
+    #[test]
+    fn agent_missing_required_field_rejected() {
+        // Missing "role" field
+        let json = r#"{"id":"a1","status":"running","parent":null,"pid":null,"worktree":null,"heartbeat":null,"task_id":null,"session_id":null,"last_completed_at":null,"messages_read_at":null,"retry_count":0}"#;
+        let result = serde_json::from_str::<Agent>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn agent_extra_field_accepted() {
+        // serde by default ignores unknown fields
+        let json = r#"{"id":"a1","role":"worker","status":"running","parent":null,"pid":null,"worktree":null,"heartbeat":null,"task_id":null,"session_id":null,"last_completed_at":null,"messages_read_at":null,"retry_count":0,"extra_field":"ignored"}"#;
+        let result = serde_json::from_str::<Agent>(json);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn agent_wrong_type_for_pid_rejected() {
+        let json = r#"{"id":"a1","role":"worker","status":"running","parent":null,"pid":"not_a_number","worktree":null,"heartbeat":null,"task_id":null,"session_id":null,"last_completed_at":null,"messages_read_at":null,"retry_count":0}"#;
+        let result = serde_json::from_str::<Agent>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn task_missing_timestamps_rejected() {
+        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"domain":null}"#;
+        let result = serde_json::from_str::<Task>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn task_invalid_timestamp_format_rejected() {
+        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"domain":null,"review_count":0,"created_at":"not-a-date","updated_at":"2026-01-01T00:00:00Z"}"#;
+        let result = serde_json::from_str::<Task>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn message_missing_body_rejected() {
+        let json = r#"{"id":"m1","from":"a1","to":"a2","timestamp":"2026-01-01T00:00:00Z","message_type":"info","refs":[]}"#;
+        let result = serde_json::from_str::<Message>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn completely_invalid_json_rejected() {
+        let garbage = "{{{{not json at all";
+        assert!(serde_json::from_str::<Agent>(garbage).is_err());
+        assert!(serde_json::from_str::<Task>(garbage).is_err());
+        assert!(serde_json::from_str::<Message>(garbage).is_err());
+        assert!(serde_json::from_str::<MergeQueue>(garbage).is_err());
+        assert!(serde_json::from_str::<RunMetadata>(garbage).is_err());
+        assert!(serde_json::from_str::<Discovery>(garbage).is_err());
+    }
+
+    #[test]
+    fn empty_string_json_rejected() {
+        assert!(serde_json::from_str::<Agent>("").is_err());
+        assert!(serde_json::from_str::<Task>("").is_err());
+        assert!(serde_json::from_str::<MergeQueue>("").is_err());
+    }
+
+    #[test]
+    fn null_json_for_structs_rejected() {
+        assert!(serde_json::from_str::<Agent>("null").is_err());
+        assert!(serde_json::from_str::<Task>("null").is_err());
+        assert!(serde_json::from_str::<MergeQueue>("null").is_err());
+        assert!(serde_json::from_str::<RunMetadata>("null").is_err());
+    }
+
+    #[test]
+    fn array_json_for_struct_rejected() {
+        assert!(serde_json::from_str::<Agent>("[]").is_err());
+        assert!(serde_json::from_str::<Task>("[1,2,3]").is_err());
+    }
+
+    // --- Adversarial: Special characters and boundary values ---
+
+    #[test]
+    fn agent_with_special_chars_in_id() {
+        let agent = Agent {
+            id: "agent/with\\special<chars>&\"quotes'".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, agent.id);
+    }
+
+    #[test]
+    fn agent_with_unicode_in_id() {
+        let agent = Agent {
+            id: "agent-日本語-émojis-🚀".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Idle,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, agent.id);
+    }
+
+    #[test]
+    fn agent_with_empty_id() {
+        // No validation — empty strings pass through serde
+        let agent = Agent {
+            id: "".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.id, "");
+    }
+
+    #[test]
+    fn task_with_very_long_description() {
+        let now = chrono::Utc::now();
+        let long_desc = "x".repeat(100_000);
+        let task = Task {
+            id: "task-long".into(),
+            title: "Long task".into(),
+            description: long_desc.clone(),
+            status: TaskStatus::Pending,
+            urgency: Urgency::Normal,
+            blocking: vec![],
+            blocked_by: vec![],
+            assigned_to: None,
+            created_by: "test".into(),
+            parent_task: None,
+            branch: None,
+            domain: None,
+            review_count: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        let back: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.description.len(), 100_000);
+    }
+
+    #[test]
+    fn task_with_many_blocking_refs() {
+        let now = chrono::Utc::now();
+        let many_refs: Vec<String> = (0..1000).map(|i| format!("task-{i}")).collect();
+        let task = Task {
+            id: "task-many".into(),
+            title: "Many deps".into(),
+            description: "test".into(),
+            status: TaskStatus::Blocked,
+            urgency: Urgency::Critical,
+            blocking: many_refs.clone(),
+            blocked_by: many_refs,
+            assigned_to: None,
+            created_by: "test".into(),
+            parent_task: None,
+            branch: None,
+            domain: None,
+            review_count: 0,
+            created_at: now,
+            updated_at: now,
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        let back: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.blocking.len(), 1000);
+        assert_eq!(back.blocked_by.len(), 1000);
+    }
+
+    #[test]
+    fn agent_with_max_pid() {
+        let agent = Agent {
+            id: "agent-max-pid".into(),
+            role: AgentRole::Worker,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: Some(u32::MAX),
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: u32::MAX,
+        };
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: Agent = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.pid, Some(u32::MAX));
+        assert_eq!(back.retry_count, u32::MAX);
+    }
+
+    #[test]
+    fn agent_negative_pid_rejected() {
+        let json = r#"{"id":"a1","role":"worker","status":"running","parent":null,"pid":-1,"worktree":null,"heartbeat":null,"task_id":null,"session_id":null,"last_completed_at":null,"messages_read_at":null,"retry_count":0}"#;
+        let result = serde_json::from_str::<Agent>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn agent_overflow_pid_rejected() {
+        // u32::MAX + 1 = 4294967296
+        let json = r#"{"id":"a1","role":"worker","status":"running","parent":null,"pid":4294967296,"worktree":null,"heartbeat":null,"task_id":null,"session_id":null,"last_completed_at":null,"messages_read_at":null,"retry_count":0}"#;
+        let result = serde_json::from_str::<Agent>(json);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn message_with_newlines_and_special_chars_in_body() {
+        let msg = Message {
+            id: "msg-special".into(),
+            from: "a1".into(),
+            to: "a2".into(),
+            timestamp: chrono::Utc::now(),
+            message_type: MessageType::Info,
+            body: "line1\nline2\ttab\r\n\"quoted\" and \\backslash".into(),
+            refs: vec![],
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let back: Message = serde_json::from_str(&json).unwrap();
+        assert!(back.body.contains('\n'));
+        assert!(back.body.contains('\t'));
+        assert!(back.body.contains('"'));
+    }
+
+    #[test]
+    fn merge_queue_with_empty_entries() {
+        let queue = MergeQueue { entries: vec![] };
+        let json = serde_json::to_string(&queue).unwrap();
+        let back: MergeQueue = serde_json::from_str(&json).unwrap();
+        assert!(back.entries.is_empty());
+    }
+
+    #[test]
+    fn agent_cost_with_zero_values() {
+        let cost = AgentCost::default();
+        assert_eq!(cost.input_tokens, 0);
+        assert_eq!(cost.output_tokens, 0);
+        assert_eq!(cost.cost_usd, 0.0);
+        assert_eq!(cost.session_duration_secs, 0);
+        let json = serde_json::to_string(&cost).unwrap();
+        let back: AgentCost = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.input_tokens, 0);
+    }
+
+    #[test]
+    fn agent_cost_with_large_values() {
+        let cost = AgentCost {
+            input_tokens: u64::MAX,
+            output_tokens: u64::MAX,
+            cost_usd: f64::MAX,
+            session_duration_secs: u64::MAX,
+        };
+        let json = serde_json::to_string(&cost).unwrap();
+        let back: AgentCost = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.input_tokens, u64::MAX);
+    }
+
     #[test]
     fn mind_query_result_roundtrip() {
         let result = MindQueryResult {
