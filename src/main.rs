@@ -16,6 +16,7 @@ use cli::{Cli, Commands};
 use logging::LogDb;
 use state::HiveState;
 use std::fs;
+use types::Message;
 
 fn main() {
     let cli = Cli::parse();
@@ -634,21 +635,7 @@ fn cmd_read_messages(
         None => state.active_run_id()?,
     };
 
-    let agent = state.load_agent(&run_id, agent_id)?;
-
-    let since = if unread {
-        // Use max(messages_read_at, last_completed_at) as the "unread" cursor
-        match (agent.messages_read_at, agent.last_completed_at) {
-            (Some(a), Some(b)) => Some(a.max(b)),
-            (Some(a), None) => Some(a),
-            (None, Some(b)) => Some(b),
-            (None, None) => None,
-        }
-    } else {
-        None
-    };
-
-    let messages = state.load_messages_for_agent(&run_id, agent_id, since)?;
+    let (messages, _) = read_messages_inner(&state, &run_id, agent_id, unread, stop_hook)?;
 
     if stop_hook {
         if messages.is_empty() {
@@ -663,6 +650,41 @@ fn cmd_read_messages(
         println!("{}", json);
         Ok(())
     }
+}
+
+/// Core logic for reading messages. Returns the messages and whether the cursor was updated.
+/// Extracted for testability (cmd_read_messages calls process::exit).
+fn read_messages_inner(
+    state: &HiveState,
+    run_id: &str,
+    agent_id: &str,
+    unread: bool,
+    stop_hook: bool,
+) -> Result<(Vec<Message>, bool), String> {
+    let mut agent = state.load_agent(run_id, agent_id)?;
+
+    let since = if unread {
+        // Use max(messages_read_at, last_completed_at) as the "unread" cursor
+        match (agent.messages_read_at, agent.last_completed_at) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        }
+    } else {
+        None
+    };
+
+    let messages = state.load_messages_for_agent(run_id, agent_id, since)?;
+
+    // Advance read cursor when stop_hook delivers messages into the agent's conversation
+    let cursor_updated = stop_hook && !messages.is_empty();
+    if cursor_updated {
+        agent.messages_read_at = Some(chrono::Utc::now());
+        state.save_agent(run_id, &agent)?;
+    }
+
+    Ok((messages, cursor_updated))
 }
 
 fn cmd_summary(run: Option<String>) -> Result<(), String> {
@@ -1967,5 +1989,114 @@ mod tests {
         ])
         .unwrap();
         assert!(matches!(cli.command, Commands::AgentExit { .. }));
+    }
+
+    // ── read_messages_inner tests ──
+
+    #[test]
+    fn test_stop_hook_updates_read_cursor() {
+        use chrono::Utc;
+        use tempfile::TempDir;
+        use crate::state::HiveState;
+        use crate::types::{Agent, AgentRole, AgentStatus, Message, MessageType};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        let state = HiveState::new(root);
+        state.create_run("test-run").unwrap();
+
+        let agent = Agent {
+            id: "agent-1".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &agent).unwrap();
+
+        let msg = Message {
+            id: "msg-1".into(),
+            from: "coordinator".into(),
+            to: "agent-1".into(),
+            timestamp: Utc::now() - chrono::Duration::seconds(5),
+            message_type: MessageType::Info,
+            body: "Hello".into(),
+            refs: vec![],
+        };
+        state.save_message("test-run", &msg).unwrap();
+
+        // Stop hook with messages should update the cursor
+        let (messages, cursor_updated) =
+            super::read_messages_inner(&state, "test-run", "agent-1", false, true).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(cursor_updated);
+
+        // Verify cursor was persisted
+        let updated_agent = state.load_agent("test-run", "agent-1").unwrap();
+        assert!(updated_agent.messages_read_at.is_some());
+
+        // Second call with unread=true should return no messages
+        let (messages, cursor_updated) =
+            super::read_messages_inner(&state, "test-run", "agent-1", true, true).unwrap();
+        assert!(messages.is_empty());
+        assert!(!cursor_updated);
+    }
+
+    #[test]
+    fn test_non_stop_hook_does_not_update_cursor() {
+        use chrono::Utc;
+        use tempfile::TempDir;
+        use crate::state::HiveState;
+        use crate::types::{Agent, AgentRole, AgentStatus, Message, MessageType};
+
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_path_buf();
+        std::fs::create_dir_all(root.join(".hive")).unwrap();
+        let state = HiveState::new(root);
+        state.create_run("test-run").unwrap();
+
+        let agent = Agent {
+            id: "agent-2".into(),
+            role: AgentRole::Lead,
+            status: AgentStatus::Running,
+            parent: None,
+            pid: None,
+            worktree: None,
+            heartbeat: None,
+            task_id: None,
+            session_id: None,
+            last_completed_at: None,
+            messages_read_at: None,
+            retry_count: 0,
+        };
+        state.save_agent("test-run", &agent).unwrap();
+
+        let msg = Message {
+            id: "msg-2".into(),
+            from: "coordinator".into(),
+            to: "agent-2".into(),
+            timestamp: Utc::now(),
+            message_type: MessageType::Info,
+            body: "Hello".into(),
+            refs: vec![],
+        };
+        state.save_message("test-run", &msg).unwrap();
+
+        // Non-stop-hook should NOT update cursor
+        let (messages, cursor_updated) =
+            super::read_messages_inner(&state, "test-run", "agent-2", false, false).unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(!cursor_updated);
+
+        let agent_after = state.load_agent("test-run", "agent-2").unwrap();
+        assert!(agent_after.messages_read_at.is_none());
     }
 }
