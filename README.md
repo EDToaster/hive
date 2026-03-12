@@ -69,9 +69,9 @@ From a spec file:
 hive start docs/plans/my-feature.md
 ```
 
-Or from a goal string (spawns a planner agent to write the spec):
+Or from an exploration goal (spawns multiple explorers, adversaries, and evaluators to converge on a solution):
 ```bash
-hive start "Add WebSocket support for real-time status updates"
+hive explore "Add WebSocket support for real-time status updates"
 ```
 
 ### 3. Launch the coordinator
