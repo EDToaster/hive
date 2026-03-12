@@ -17,6 +17,7 @@ pub(super) fn render_overlay(
     run_id: &str,
     output_scroll: usize,
     output_auto_scroll: bool,
+    output_expanded_entries: &std::collections::HashSet<usize>,
 ) {
     match overlay {
         Overlay::Agent(agent_id) => {
@@ -44,6 +45,7 @@ pub(super) fn render_overlay(
                 &path,
                 output_scroll,
                 output_auto_scroll,
+                output_expanded_entries,
             );
         }
     }
@@ -177,6 +179,16 @@ fn render_task_overlay(frame: &mut Frame, area: Rect, task: &Task) {
     frame.render_widget(paragraph, area);
 }
 
+fn tool_phase_color(phase: &crate::output::OutputPhase) -> Color {
+    use crate::output::OutputPhase;
+    match phase {
+        OutputPhase::Exploration => Color::Cyan,
+        OutputPhase::Implementation => Color::Green,
+        OutputPhase::Testing => Color::Magenta,
+        OutputPhase::Other => Color::Yellow,
+    }
+}
+
 fn render_agent_output_overlay(
     frame: &mut Frame,
     area: Rect,
@@ -184,23 +196,112 @@ fn render_agent_output_overlay(
     path: &std::path::Path,
     scroll: usize,
     auto_scroll: bool,
+    expanded_entries: &std::collections::HashSet<usize>,
 ) {
-    use crate::output::{OutputEntry, load_output_file, parse_output_lines};
+    use crate::output::{
+        OutputEntry, OutputPhase, compute_output_summary, load_output_file, parse_output_lines,
+    };
 
     let raw_lines = load_output_file(path);
     let entries = parse_output_lines(&raw_lines);
+    let summary = compute_output_summary(&entries);
 
     let mut lines: Vec<Line> = Vec::new();
 
+    // ── Summary header ────────────────────────────────────────────────────────
+    if !summary.files_read.is_empty()
+        || !summary.files_written.is_empty()
+        || !summary.test_results.is_empty()
+    {
+        lines.push(Line::from(Span::styled(
+            " ─── Summary ───────────────────────────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        if !summary.files_written.is_empty() {
+            let file_list = summary
+                .files_written
+                .iter()
+                .map(|f| {
+                    // Show just the filename, not full path
+                    std::path::Path::new(f)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(f.as_str())
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            lines.push(Line::from(vec![
+                Span::styled(" ✎ ", Style::default().fg(Color::Green)),
+                Span::styled(
+                    format!("wrote: {file_list}"),
+                    Style::default().fg(Color::Green),
+                ),
+            ]));
+        }
+
+        if !summary.files_read.is_empty() {
+            let count = summary.files_read.len();
+            let show: Vec<&str> = summary
+                .files_read
+                .iter()
+                .take(4)
+                .map(|f| {
+                    std::path::Path::new(f.as_str())
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or(f.as_str())
+                })
+                .collect();
+            let file_list = if count > 4 {
+                format!("{} (+{})", show.join(", "), count - 4)
+            } else {
+                show.join(", ")
+            };
+            lines.push(Line::from(vec![
+                Span::styled(" 👁 ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("read: {file_list}"),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]));
+        }
+
+        for tr in &summary.test_results {
+            let (color, icon) = if tr.failed == 0 {
+                (Color::Green, "✓")
+            } else {
+                (Color::Red, "✗")
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!(" {icon} "), Style::default().fg(color)),
+                Span::styled(
+                    format!("tests: {} passed, {} failed", tr.passed, tr.failed),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+
+        lines.push(Line::from(Span::styled(
+            " ────────────────────────────────────────────────────────",
+            Style::default().fg(Color::DarkGray),
+        )));
+        lines.push(Line::from(""));
+    }
+
+    // ── Entries ───────────────────────────────────────────────────────────────
     if entries.is_empty() {
         lines.push(Line::from(Span::styled(
             " (no output yet)",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        for entry in &entries {
+        let mut prev_phase: Option<&OutputPhase> = None;
+
+        for (idx, entry) in entries.iter().enumerate() {
             match entry {
                 OutputEntry::AssistantText(text) => {
+                    prev_phase = None;
                     for l in text.lines() {
                         lines.push(Line::from(Span::styled(
                             format!(" {l}"),
@@ -211,14 +312,31 @@ fn render_agent_output_overlay(
                 OutputEntry::ToolUse {
                     name,
                     input_summary,
+                    phase,
+                    ..
                 } => {
+                    // Phase separator when phase changes
+                    let show_separator = prev_phase.is_some_and(|p| p != phase);
+                    if show_separator {
+                        let label = match phase {
+                            OutputPhase::Exploration => "── exploration ──",
+                            OutputPhase::Implementation => "── implementation ──",
+                            OutputPhase::Testing => "── testing ──",
+                            OutputPhase::Other => "────────────────",
+                        };
+                        lines.push(Line::from(Span::styled(
+                            format!(" {label}"),
+                            Style::default().fg(Color::DarkGray),
+                        )));
+                    }
+                    prev_phase = Some(phase);
+
+                    let color = tool_phase_color(phase);
                     lines.push(Line::from(vec![
-                        Span::styled("\u{25b6} ", Style::default().fg(Color::Yellow)),
+                        Span::styled("▶ ", Style::default().fg(color)),
                         Span::styled(
                             name.as_str(),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
                             format!(" {input_summary}"),
@@ -226,20 +344,49 @@ fn render_agent_output_overlay(
                         ),
                     ]));
                 }
-                OutputEntry::ToolResult { content } => {
-                    let result_lines: Vec<&str> = content.lines().collect();
-                    let show = result_lines.len().min(5);
-                    for l in &result_lines[..show] {
+                OutputEntry::ToolResult {
+                    first_line,
+                    full_content,
+                    line_count,
+                } => {
+                    let is_expanded = expanded_entries.contains(&idx);
+                    if is_expanded {
+                        for l in full_content.lines() {
+                            lines.push(Line::from(Span::styled(
+                                format!("   {l}"),
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
+                        if *line_count > full_content.lines().count() {
+                            lines.push(Line::from(Span::styled(
+                                format!("   … (truncated, {} total lines)", line_count),
+                                Style::default().fg(Color::DarkGray),
+                            )));
+                        }
                         lines.push(Line::from(Span::styled(
-                            format!("   {l}"),
-                            Style::default().fg(Color::DarkGray),
+                            "   [Enter] collapse",
+                            Style::default()
+                                .fg(Color::DarkGray)
+                                .add_modifier(Modifier::ITALIC),
                         )));
-                    }
-                    if result_lines.len() > 5 {
-                        lines.push(Line::from(Span::styled(
-                            format!("   ... ({} more lines)", result_lines.len() - 5),
-                            Style::default().fg(Color::DarkGray),
-                        )));
+                    } else {
+                        let extra = if *line_count > 1 {
+                            format!(" (+{} lines, Enter to expand)", line_count - 1)
+                        } else {
+                            String::new()
+                        };
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                format!("   {first_line}"),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                            Span::styled(
+                                extra,
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::DIM),
+                            ),
+                        ]));
                     }
                 }
                 OutputEntry::Result {
@@ -250,7 +397,7 @@ fn render_agent_output_overlay(
                 } => {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
-                        "\u{2500}\u{2500} Session Complete \u{2500}\u{2500}",
+                        "── Session Complete ──",
                         Style::default()
                             .fg(Color::Green)
                             .add_modifier(Modifier::BOLD),
@@ -279,8 +426,7 @@ fn render_agent_output_overlay(
     let logical_lines = lines.len();
     // Visible height inside the block (subtract 2 for top/bottom border)
     let visible = area.height.saturating_sub(2) as usize;
-    // Extra visual rows from wrapping: Paragraph::scroll operates on logical lines
-    // but wrapped lines consume extra visual rows, so we need extra scroll headroom
+    // Extra visual rows from wrapping
     let wrap_width = area.width.saturating_sub(2) as usize;
     let wrap_extra: usize = lines
         .iter()
@@ -290,11 +436,10 @@ fn render_agent_output_overlay(
                 0
             } else {
                 w.saturating_sub(1) / wrap_width
-            } // extra rows beyond first
+            }
         })
         .sum();
     let max_scroll = (logical_lines + wrap_extra).saturating_sub(visible);
-    // scroll is offset from bottom: 0 = bottom, N = N lines up
     let effective_scroll = if auto_scroll {
         max_scroll
     } else {
@@ -303,7 +448,9 @@ fn render_agent_output_overlay(
 
     let block = Block::default()
         .title(format!(" Output: {} ", agent_id))
-        .title_bottom(Line::from(" [j/k] scroll  [G] follow  [Esc] close ").right_aligned())
+        .title_bottom(
+            Line::from(" [j/k] scroll  [Enter] expand  [G] follow  [Esc] close ").right_aligned(),
+        )
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Yellow));
     let paragraph = Paragraph::new(lines)

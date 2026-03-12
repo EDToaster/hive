@@ -53,6 +53,8 @@ pub(crate) struct TuiState {
     pub activity_auto_scroll: bool,
     pub output_scroll: usize,
     pub output_auto_scroll: bool,
+    /// Set of output entry indices that are expanded in the AgentOutput overlay
+    pub output_expanded_entries: HashSet<usize>,
     pub overlay: Option<Overlay>,
     pub selected_agent_filter: Option<String>,
     pub collapsed_tasks: HashSet<String>,
@@ -105,6 +107,7 @@ impl Default for TuiState {
             activity_auto_scroll: true,
             output_scroll: 0,
             output_auto_scroll: true,
+            output_expanded_entries: HashSet::new(),
             overlay: None,
             selected_agent_filter: None,
             collapsed_tasks: HashSet::new(),
@@ -452,6 +455,7 @@ fn run_tui_loop(
                         run_id,
                         ui.output_scroll,
                         ui.output_auto_scroll,
+                        &ui.output_expanded_entries,
                     );
                 }
             })
@@ -472,10 +476,11 @@ fn run_tui_loop(
             // --- Keyboard events ---
             if let Event::Key(key) = ev {
                 // Intercept keys when AgentOutput overlay is open
-                if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
+                if let Some(Overlay::AgentOutput(ref agent_id)) = ui.overlay.clone() {
                     match key.code {
                         KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => {
                             ui.overlay = None;
+                            ui.output_expanded_entries.clear();
                         }
                         KeyCode::Char('j') | KeyCode::Down => {
                             // output_scroll is offset from bottom: 0 = bottom
@@ -495,6 +500,33 @@ fn run_tui_loop(
                         KeyCode::Char('G') => {
                             ui.output_auto_scroll = true;
                             ui.output_scroll = 0;
+                        }
+                        KeyCode::Enter => {
+                            // Toggle expand/collapse all ToolResult entries
+                            use crate::output::{
+                                OutputEntry, load_output_file, parse_output_lines,
+                            };
+                            let path = state.agents_dir(run_id).join(agent_id).join("output.jsonl");
+                            let raw = load_output_file(&path);
+                            let entries = parse_output_lines(&raw);
+                            let result_indices: Vec<usize> = entries
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, e)| matches!(e, OutputEntry::ToolResult { .. }))
+                                .map(|(i, _)| i)
+                                .collect();
+                            let all_expanded = result_indices
+                                .iter()
+                                .all(|i| ui.output_expanded_entries.contains(i));
+                            if all_expanded {
+                                for i in &result_indices {
+                                    ui.output_expanded_entries.remove(i);
+                                }
+                            } else {
+                                for i in result_indices {
+                                    ui.output_expanded_entries.insert(i);
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -626,6 +658,7 @@ fn run_tui_loop(
                         {
                             ui.output_scroll = 0;
                             ui.output_auto_scroll = true;
+                            ui.output_expanded_entries.clear();
                             ui.overlay = Some(Overlay::AgentOutput(node.agent_id.clone()));
                         }
                     }
