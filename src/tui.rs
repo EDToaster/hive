@@ -759,10 +759,17 @@ fn run_tui_loop(
                         ui.overlay = None;
                     }
                     KeyCode::Char('j') | KeyCode::Down => {
+                        if ui.output_auto_scroll {
+                            // Sync scroll position before leaving follow mode
+                            ui.output_scroll = usize::MAX; // will be clamped to max_scroll in render
+                        }
                         ui.output_auto_scroll = false;
                         ui.output_scroll = ui.output_scroll.saturating_add(1);
                     }
                     KeyCode::Char('k') | KeyCode::Up => {
+                        if ui.output_auto_scroll {
+                            ui.output_scroll = usize::MAX;
+                        }
                         ui.output_auto_scroll = false;
                         ui.output_scroll = ui.output_scroll.saturating_sub(1);
                     }
@@ -1257,6 +1264,12 @@ fn extract_arg<'a>(args: &'a str, key: &str) -> Option<&'a str> {
 /// Hive tools get `Color::Yellow`, standard Claude tools get `Color::Gray`.
 fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, Color) {
     let args = args_summary.unwrap_or("");
+    // Strip MCP prefix: "mcp__<server>__<tool>" → "<tool>"
+    let tool_name = if let Some(rest) = tool_name.strip_prefix("mcp__") {
+        rest.find("__").map_or(tool_name, |i| &rest[i + 2..])
+    } else {
+        tool_name
+    };
 
     match tool_name {
         // --- Hive MCP tools ---
@@ -1788,10 +1801,20 @@ fn render_agent_output_overlay(
         Style::default().fg(Color::Gray),
     )));
 
-    let total_lines = lines.len();
+    let logical_lines = lines.len();
     // Visible height inside the block (subtract 2 for top/bottom border)
     let visible = area.height.saturating_sub(2) as usize;
-    let max_scroll = total_lines.saturating_sub(visible);
+    // Extra visual rows from wrapping: Paragraph::scroll operates on logical lines
+    // but wrapped lines consume extra visual rows, so we need extra scroll headroom
+    let wrap_width = area.width.saturating_sub(2) as usize;
+    let wrap_extra: usize = lines
+        .iter()
+        .map(|line| {
+            let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
+            if wrap_width == 0 { 0 } else { w.saturating_sub(1) / wrap_width } // extra rows beyond first
+        })
+        .sum();
+    let max_scroll = (logical_lines + wrap_extra).saturating_sub(visible);
     let effective_scroll = if auto_scroll {
         max_scroll
     } else {
@@ -1809,7 +1832,7 @@ fn render_agent_output_overlay(
     frame.render_widget(paragraph, area);
 
     // Scrollbar
-    let mut scrollbar_state = ScrollbarState::new(total_lines).position(effective_scroll);
+    let mut scrollbar_state = ScrollbarState::new(logical_lines + wrap_extra).position(effective_scroll);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .track_style(Style::default().fg(Color::DarkGray))
         .thumb_style(Style::default().fg(Color::Gray));
