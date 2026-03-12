@@ -139,6 +139,12 @@ pub(super) fn render_stats_bar(
         ));
     }
 
+    // Timeline toggle hint
+    spans.push(Span::styled(
+        "    [t] timeline",
+        Style::default().fg(Color::DarkGray),
+    ));
+
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
