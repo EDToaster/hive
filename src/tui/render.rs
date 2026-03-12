@@ -641,9 +641,7 @@ pub(super) fn render_activity_stream(
         FilterMode::FailedOnly => Some(
             agents
                 .iter()
-                .filter(|a| {
-                    a.status == AgentStatus::Failed || a.status == AgentStatus::Stalled
-                })
+                .filter(|a| a.status == AgentStatus::Failed || a.status == AgentStatus::Stalled)
                 .map(|a| a.id.as_str())
                 .collect(),
         ),
@@ -817,16 +815,16 @@ pub(super) fn render_activity_stream(
                 Style::default().fg(Color::Yellow),
             ),
             Span::styled(
-                format!(
-                    "  [f] {}  [Esc] clear ",
-                    ui.filter_mode.label()
-                ),
+                format!("  [f] {}  [Esc] clear ", ui.filter_mode.label()),
                 Style::default().fg(Color::DarkGray),
             ),
         ])
     } else if ui.filter_mode != FilterMode::All {
         Line::from(Span::styled(
-            format!(" filter: {}  [f] cycle  [/] search ", ui.filter_mode.label()),
+            format!(
+                " filter: {}  [f] cycle  [/] search ",
+                ui.filter_mode.label()
+            ),
             Style::default().fg(Color::Cyan),
         ))
     } else {
@@ -872,7 +870,6 @@ pub(super) fn render_activity_stream(
         .thumb_style(Style::default().fg(Color::Gray));
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
 }
-
 
 // ---------------------------------------------------------------------------
 // Render: Planning view
