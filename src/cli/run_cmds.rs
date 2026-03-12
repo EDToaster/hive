@@ -532,6 +532,10 @@ pub fn cmd_tui() -> Result<(), String> {
     crate::tui::run_tui()
 }
 
+pub fn cmd_web(port: u16) -> Result<(), String> {
+    crate::web::run_web(port)
+}
+
 pub fn cmd_mcp(run_id: &str, agent_id: &str) -> Result<(), String> {
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
     rt.block_on(crate::mcp::run_mcp_server(run_id, agent_id))

@@ -10,6 +10,7 @@ mod state;
 mod tui;
 mod types;
 mod wait;
+mod web;
 
 use clap::Parser;
 use cli::{Cli, Commands};
@@ -61,6 +62,7 @@ fn main() {
         Commands::Config => cli::cmd_config(),
         Commands::Stop => cli::cmd_stop(),
         Commands::Watch { interval } => cli::cmd_watch(interval),
+        Commands::Web { port } => cli::cmd_web(port),
     };
 
     if let Err(e) = result {

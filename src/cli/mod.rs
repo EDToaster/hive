@@ -15,7 +15,7 @@ pub(crate) use message_cmds::read_messages_inner;
 pub use message_cmds::{cmd_messages, cmd_read_messages};
 pub use run_cmds::{
     cmd_config, cmd_cost, cmd_explore, cmd_history, cmd_init, cmd_mcp, cmd_start, cmd_status,
-    cmd_stop, cmd_summary, cmd_tui, cmd_wait, cmd_watch,
+    cmd_stop, cmd_summary, cmd_tui, cmd_wait, cmd_watch, cmd_web,
 };
 pub use task_cmds::cmd_tasks;
 
@@ -192,6 +192,13 @@ pub enum Commands {
         /// Refresh interval in seconds (default 10)
         #[arg(long, default_value = "10")]
         interval: u64,
+    },
+
+    /// Launch a web-based monitoring dashboard (alternative to hive tui)
+    Web {
+        /// Port to listen on
+        #[arg(long, default_value = "7474")]
+        port: u16,
     },
 }
 
