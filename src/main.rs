@@ -199,7 +199,7 @@ fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent coordinator --tool {{}} --status success"
+                        "INPUT=$(cat); TOOL=$(echo \"$INPUT\" | jq -r '.tool_name'); ARGS=$(echo \"$INPUT\" | jq -r '(.tool_input // {{}} | to_entries | map(.key + \"=\" + (.value | tostring | .[0:80])) | join(\", \"))'); hive log-tool --run {run_id} --agent coordinator --tool \"$TOOL\" --status success --args-summary \"$ARGS\""
                     )
                 }]
             }]
@@ -1044,7 +1044,7 @@ fn cmd_explore(intent: &str) -> Result<(), String> {
                 "hooks": [{
                     "type": "command",
                     "command": format!(
-                        "jq -r '.tool_name' | xargs -I {{}} hive log-tool --run {run_id} --agent coordinator --tool {{}} --status success"
+                        "INPUT=$(cat); TOOL=$(echo \"$INPUT\" | jq -r '.tool_name'); ARGS=$(echo \"$INPUT\" | jq -r '(.tool_input // {{}} | to_entries | map(.key + \"=\" + (.value | tostring | .[0:80])) | join(\", \"))'); hive log-tool --run {run_id} --agent coordinator --tool \"$TOOL\" --status success --args-summary \"$ARGS\""
                     )
                 }]
             }]
