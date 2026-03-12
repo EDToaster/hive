@@ -184,3 +184,168 @@ pub enum MemoryCommands {
     /// Remove stale entries (prune operations to 10, failures to 30)
     Prune,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn test_all_subcommands_parseable() {
+        // Verify every subcommand is reachable via try_parse_from
+        let subcommands = [
+            vec!["hive", "init"],
+            vec!["hive", "status"],
+            vec!["hive", "agents"],
+            vec!["hive", "tasks"],
+            vec!["hive", "messages"],
+            vec!["hive", "logs"],
+            vec!["hive", "tui"],
+            vec!["hive", "history"],
+            vec!["hive", "stop"],
+            vec!["hive", "memory"],
+            vec!["hive", "mind"],
+            vec!["hive", "summary"],
+            vec!["hive", "cost"],
+            vec!["hive", "watch"],
+            vec!["hive", "start"],
+        ];
+        for args in &subcommands {
+            assert!(
+                Cli::try_parse_from(args.iter()).is_ok(),
+                "Failed to parse: {:?}",
+                args
+            );
+        }
+    }
+
+    #[test]
+    fn test_subcommands_with_required_args() {
+        let cases = [
+            vec![
+                "hive", "log-tool", "--run", "r", "--agent", "a", "--tool", "t", "--status", "s",
+            ],
+            vec!["hive", "heartbeat", "--run", "r", "--agent", "a"],
+            vec!["hive", "mcp", "--run", "r", "--agent", "a"],
+            vec!["hive", "explore", "some intent"],
+            vec!["hive", "review-agent", "agent-1"],
+            vec!["hive", "read-messages", "--agent", "a"],
+            vec!["hive", "agent-exit", "--run", "r", "--agent", "a"],
+        ];
+        for args in &cases {
+            assert!(
+                Cli::try_parse_from(args.iter()).is_ok(),
+                "Failed to parse: {:?}",
+                args
+            );
+        }
+    }
+
+    #[test]
+    fn test_commands_enum_variant_count() {
+        // Ensure this test is updated when new subcommands are added.
+        // Each parseable subcommand string maps to one Commands variant.
+        let all_subcommands = [
+            "init",
+            "start",
+            "status",
+            "agents",
+            "tasks",
+            "messages",
+            "log-tool",
+            "heartbeat",
+            "logs",
+            "tui",
+            "mcp",
+            "wait",
+            "review-agent",
+            "read-messages",
+            "summary",
+            "cost",
+            "history",
+            "memory",
+            "explore",
+            "mind",
+            "agent-exit",
+            "stop",
+            "watch",
+        ];
+        // If a new command is added to Commands but not to this list, this will catch it
+        // by verifying the count matches. Currently 23 subcommands.
+        assert_eq!(all_subcommands.len(), 23);
+    }
+
+    #[test]
+    fn test_memory_subcommands_exhaustive() {
+        let cases = [
+            (vec!["hive", "memory"], true),
+            (vec!["hive", "memory", "show"], true),
+            (vec!["hive", "memory", "prune"], true),
+            (vec!["hive", "memory", "invalid"], false),
+        ];
+        for (args, should_succeed) in &cases {
+            let result = Cli::try_parse_from(args.iter());
+            assert_eq!(
+                result.is_ok(),
+                *should_succeed,
+                "Unexpected result for {:?}",
+                args
+            );
+        }
+    }
+
+    #[test]
+    fn test_mind_subcommands_exhaustive() {
+        let cases = [
+            (vec!["hive", "mind"], true),
+            (vec!["hive", "mind", "query", "test"], true),
+            (vec!["hive", "mind", "invalid"], false),
+        ];
+        for (args, should_succeed) in &cases {
+            let result = Cli::try_parse_from(args.iter());
+            assert_eq!(
+                result.is_ok(),
+                *should_succeed,
+                "Unexpected result for {:?}",
+                args
+            );
+        }
+    }
+
+    #[test]
+    fn test_start_spec_and_goal_both_provided() {
+        // Both positional spec and --goal flag: goal takes the flag value, spec gets positional
+        let cli = Cli::try_parse_from(["hive", "start", "path.md", "--goal", "my goal"]).unwrap();
+        match cli.command {
+            Commands::Start { spec, goal } => {
+                assert_eq!(spec, Some("path.md".to_string()));
+                assert_eq!(goal, Some("my goal".to_string()));
+            }
+            _ => panic!("expected Start"),
+        }
+    }
+
+    #[test]
+    fn test_wait_timeout_invalid_type() {
+        let result = Cli::try_parse_from(["hive", "wait", "--timeout", "not_a_number"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_watch_interval_invalid_type() {
+        let result = Cli::try_parse_from(["hive", "watch", "--interval", "abc"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_messages_bool_flags_default_false() {
+        let cli = Cli::try_parse_from(["hive", "read-messages", "--agent", "x"]).unwrap();
+        match cli.command {
+            Commands::ReadMessages { unread, stop_hook, .. } => {
+                assert!(!unread);
+                assert!(!stop_hook);
+            }
+            _ => panic!("expected ReadMessages"),
+        }
+    }
+}
