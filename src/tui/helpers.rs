@@ -1,6 +1,5 @@
 use crate::types::*;
 use ratatui::prelude::*;
-use ratatui::widgets::*;
 
 pub(super) fn status_abbrev(s: AgentStatus) -> &'static str {
     match s {
