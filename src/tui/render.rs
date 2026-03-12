@@ -18,6 +18,7 @@ pub(super) fn render_title_bar(
     area: Rect,
     run_id: &str,
     run_meta: &Option<RunMetadata>,
+    tick: u64,
 ) {
     let uptime = run_meta
         .as_ref()
@@ -32,13 +33,14 @@ pub(super) fn render_title_bar(
     let clock = chrono::Local::now().format("%H:%M:%S");
     let right = format!("Run: {run_id} ({uptime}) \u{2500}\u{2500} {clock}");
 
+    let hive_color = title_gradient_color(tick);
     let left_text = " \u{2B21} HIVE";
     let total_width = area.width as usize;
     let content_width = left_text.len() + right.len();
     let gap = total_width.saturating_sub(content_width);
 
     let line = Line::from(vec![
-        Span::styled(left_text, Style::default().fg(Color::Cyan).bold()),
+        Span::styled(left_text, Style::default().fg(hive_color).bold()),
         Span::raw(" ".repeat(gap)),
         Span::styled(right, Style::default().fg(Color::Gray)),
     ]);
@@ -166,6 +168,7 @@ pub(super) fn render_swarm_pane(
     use super::tree::aggregate_agent_status;
 
     let now = Utc::now();
+    let tick = ui.tick;
     let inner_width = area.width.saturating_sub(2) as usize; // subtract borders
     let mut items: Vec<ListItem> = tree_nodes
         .iter()
@@ -182,14 +185,24 @@ pub(super) fn render_swarm_pane(
                 _ => base_color,
             };
 
+            // For running agents, replace the status abbrev with an animated braille spinner.
+            let status_span = if !dimmed && node.status == AgentStatus::Running {
+                Span::styled(
+                    format!(" [{}]", spinner_char(tick)),
+                    Style::default().fg(Color::Rgb(60, 220, 60)),
+                )
+            } else {
+                Span::styled(
+                    format!(" [{}]", status_abbrev(node.status)),
+                    Style::default().fg(base_color),
+                )
+            };
+
             let mut spans = vec![
                 Span::raw(&node.prefix),
                 Span::raw(&node.indicator),
                 Span::styled(&node.agent_id, Style::default().fg(name_color)),
-                Span::styled(
-                    format!(" [{}]", status_abbrev(node.status)),
-                    Style::default().fg(base_color),
-                ),
+                status_span,
             ];
 
             if let Some(ref tid) = node.task_id {
@@ -214,7 +227,7 @@ pub(super) fn render_swarm_pane(
                 let hb_color = if dimmed {
                     Color::Gray
                 } else {
-                    heartbeat_color(age, stall_timeout)
+                    heartbeat_color_animated(age, stall_timeout, tick)
                 };
                 // Show current action for running agents
                 if let Some(action) = latest_actions.get(&node.agent_id).filter(|_| !dimmed) {
@@ -248,7 +261,12 @@ pub(super) fn render_swarm_pane(
         }
     }
 
-    let bc = border_color(ui.focused_pane, Pane::Swarm);
+    let bc = animated_border_color(
+        ui.focused_pane,
+        Pane::Swarm,
+        tick,
+        ui.swarm_last_change_tick,
+    );
     let block = Block::default()
         .title(" Swarm ")
         .title_bottom(Line::from(" [Enter] detail  [o] output ").right_aligned())
@@ -751,7 +769,7 @@ pub(super) fn render_activity_stream(
 // Render: Planning view
 // ---------------------------------------------------------------------------
 
-pub(super) fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agent) {
+pub(super) fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agent, tick: u64) {
     let elapsed = planner
         .heartbeat
         .map(|hb| {
@@ -760,11 +778,13 @@ pub(super) fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agen
         })
         .unwrap_or_else(|| "??".to_string());
 
+    let spinner = spinner_char(tick);
+    let border_color = title_gradient_color(tick);
     let lines = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "\u{27C1} Planning...",
-            Style::default().fg(Color::Cyan).bold(),
+            format!("{spinner} Planning..."),
+            Style::default().fg(border_color).bold(),
         )),
         Line::from(""),
         Line::from(Span::styled(
@@ -780,7 +800,7 @@ pub(super) fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agen
     let block = Block::default()
         .title(" Planning Phase ")
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(border_color));
     let paragraph = Paragraph::new(lines)
         .block(block)
         .alignment(Alignment::Center);

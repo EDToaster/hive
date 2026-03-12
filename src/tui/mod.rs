@@ -18,7 +18,7 @@ use crossterm::terminal::{
 };
 use ratatui::prelude::*;
 use rusqlite::Connection;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::stdout;
 use std::time::{Duration, Instant};
 
@@ -81,6 +81,14 @@ pub(crate) struct TuiState {
     pub last_click: Option<(u16, u16, Instant)>,
     /// Whether running inside a terminal multiplexer
     pub inside_multiplexer: Option<&'static str>,
+    /// Animation tick counter — incremented once per tick_rate interval
+    pub tick: u64,
+    /// Most recent known status per agent (for detecting changes)
+    pub last_agent_statuses: HashMap<String, AgentStatus>,
+    /// Tick at which each agent last changed status (for border flash)
+    pub status_changed_tick: HashMap<String, u64>,
+    /// Most recent tick where any swarm agent status changed (drives border flash)
+    pub swarm_last_change_tick: Option<u64>,
 }
 
 /// Detect if running inside a known terminal multiplexer.
@@ -133,6 +141,10 @@ impl Default for TuiState {
             gantt_scroll: 0,
             last_click: None,
             inside_multiplexer: detect_multiplexer(),
+            tick: 0,
+            last_agent_statuses: HashMap::new(),
+            status_changed_tick: HashMap::new(),
+            swarm_last_change_tick: None,
         }
     }
 }
@@ -382,6 +394,17 @@ fn run_tui_loop(
         let task_tree_nodes = build_task_tree(&tasks, &ui.collapsed_tasks);
         let task_tree_len = task_tree_nodes.len();
 
+        // Track agent status changes for border flash animation
+        for agent in &agents {
+            let prev = ui.last_agent_statuses.get(&agent.id).copied();
+            if prev != Some(agent.status) && prev.is_some() {
+                ui.status_changed_tick.insert(agent.id.clone(), ui.tick);
+                ui.swarm_last_change_tick = Some(ui.tick);
+            }
+            ui.last_agent_statuses
+                .insert(agent.id.clone(), agent.status);
+        }
+
         // Load latest action per agent for swarm pane display
         let latest_actions = load_latest_actions(log_db, run_id);
 
@@ -450,7 +473,7 @@ fn run_tui_loop(
         terminal
             .draw(|frame| {
                 // -- Title bar --
-                render_title_bar(frame, outer[0], run_id, &run_meta);
+                render_title_bar(frame, outer[0], run_id, &run_meta, ui.tick);
 
                 // -- Stats bar --
                 render_stats_bar(frame, outer[1], &agents, &tasks, state, &ui);
@@ -467,7 +490,7 @@ fn run_tui_loop(
                         ui.gantt_scroll,
                     );
                 } else if let Some(planner) = planner_agent {
-                    render_planning_view(frame, outer[2], planner);
+                    render_planning_view(frame, outer[2], planner, ui.tick);
                 } else {
                     // -- Swarm pane --
                     render_swarm_pane(
@@ -751,6 +774,7 @@ fn run_tui_loop(
 
         if last_tick.elapsed() >= tick_rate {
             last_tick = Instant::now();
+            ui.tick = ui.tick.wrapping_add(1);
         }
     }
 

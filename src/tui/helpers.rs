@@ -109,6 +109,85 @@ pub(super) fn border_color(focused: super::Pane, this: super::Pane) -> Color {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Animation utilities
+// ---------------------------------------------------------------------------
+
+/// Braille spinner frames — one per tick, cycling at 1 Hz.
+pub(super) const BRAILLE_SPINNER: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Return the braille spinner character for the current tick.
+pub(super) fn spinner_char(tick: u64) -> char {
+    BRAILLE_SPINNER[(tick as usize) % BRAILLE_SPINNER.len()]
+}
+
+/// Linear interpolation between two u8 values, t in 0..=255.
+fn lerp_u8(a: u8, b: u8, t: u8) -> u8 {
+    let a = a as u32;
+    let b = b as u32;
+    let t = t as u32;
+    ((a * (255 - t) + b * t) / 255) as u8
+}
+
+/// Smooth triangle-wave pulse between two RGB colors.
+/// `period` is the cycle length in ticks (full back-and-forth).
+pub(super) fn pulse_rgb(c1: (u8, u8, u8), c2: (u8, u8, u8), tick: u64, period: u64) -> Color {
+    let period = period.max(2);
+    let phase = tick % period;
+    let half = period / 2;
+    let t = if phase <= half { phase } else { period - phase };
+    let blend = ((t * 255) / half.max(1)) as u8;
+    Color::Rgb(
+        lerp_u8(c1.0, c2.0, blend),
+        lerp_u8(c1.1, c2.1, blend),
+        lerp_u8(c1.2, c2.2, blend),
+    )
+}
+
+/// Heartbeat color with a slow pulse effect based on freshness.
+/// Fresh (<120s): breathes between bright white-green and mid-green.
+/// Aging (approaching stall): pulses amber to orange.
+/// Stalled: delegates to static `heartbeat_color` (solid red).
+pub(super) fn heartbeat_color_animated(age_secs: i64, stall_timeout: i64, tick: u64) -> Color {
+    if age_secs < 120 {
+        pulse_rgb((200, 255, 200), (40, 180, 40), tick, 6)
+    } else if age_secs < stall_timeout {
+        pulse_rgb((255, 210, 40), (255, 110, 0), tick, 4)
+    } else {
+        heartbeat_color(age_secs, stall_timeout)
+    }
+}
+
+/// Border color for the swarm pane, with a brief flash when any agent
+/// recently changed status (drives sci-fi "alert" feel).
+pub(super) fn animated_border_color(
+    focused: super::Pane,
+    this: super::Pane,
+    tick: u64,
+    last_change_tick: Option<u64>,
+) -> Color {
+    if let Some(change_tick) = last_change_tick {
+        let age = tick.wrapping_sub(change_tick);
+        if age < 4 {
+            // Flash: bright cyan → teal → normal over 4 ticks
+            let flash_colors: &[(u8, u8, u8)] = &[
+                (255, 255, 120), // tick+0: bright yellow-white
+                (80, 255, 220),  // tick+1: electric cyan
+                (40, 200, 160),  // tick+2: teal
+                (0, 160, 120),   // tick+3: dim teal fading out
+            ];
+            let (r, g, b) = flash_colors[age as usize];
+            return Color::Rgb(r, g, b);
+        }
+    }
+    border_color(focused, this)
+}
+
+/// Gradient color for the title "HIVE" text — slow cycle through cyan→blue→cyan.
+pub(super) fn title_gradient_color(tick: u64) -> Color {
+    pulse_rgb((0, 220, 255), (80, 80, 255), tick, 10)
+}
+
 pub(super) fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let popup_layout = Layout::default()
         .direction(Direction::Vertical)
