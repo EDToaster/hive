@@ -11,6 +11,9 @@ Hive is a stateless CLI + MCP server (Rust) that orchestrates a swarm of Claude 
 ```bash
 cargo build                    # debug build
 cargo build --release          # release build
+
+make ci                        # Run everything below to test
+
 cargo test --all-targets       # run all tests
 cargo test <test_name>         # run a single test
 cargo clippy --all-targets -- -D warnings   # lint
