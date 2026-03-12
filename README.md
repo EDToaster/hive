@@ -31,7 +31,10 @@ Coordinator (Claude Code)
 - **Active code review** — Submitting to the merge queue auto-spawns a read-only reviewer agent that evaluates changes against the task description before approval.
 - **Self-planning** — Pass a goal string instead of a spec file. A planner agent analyzes the codebase and writes a detailed implementation spec.
 - **Run memory** — Post-mortem agent auto-spawns on `hive stop`, writing operational learnings, codebase conventions, and failure patterns to `.hive/memory/`. Injected into future agent prompts.
+- **Hive Mind** — Shared knowledge space where agents record discoveries and conventions during a run. Coordinator can synthesize insights. Searchable via CLI and MCP tools.
+- **Explore mode** — `hive explore` launches divergent exploration runs for codebase analysis and research.
 - **Cost tracking** — Per-agent token usage and USD cost, with optional budget enforcement.
+- **Per-role model configuration** — Default model tiers per role (Opus for coordinator/planner, Sonnet for lead/worker/explorer/evaluator, Haiku for reviewer/postmortem) with per-role overrides in config.
 - **Monitoring TUI** — Real-time dashboard showing agent tree, task board, merge queue, and activity stream.
 - **Event-driven orchestration** — File watching with `hive wait` for efficient activity detection. Auto-notifications on state changes.
 - **Stall detection and retry** — Heartbeat-based health checking with configurable timeouts. Failed agents can be retried with fresh worktrees.
@@ -116,6 +119,9 @@ hive stop          # stops agents, removes worktrees, runs post-mortem analysis
 | `hive summary [--run X]` | Run summary with merged commits |
 | `hive history` | List all past runs |
 | `hive memory [show\|prune]` | View or manage cross-run memory |
+| `hive mind [query <keyword>]` | Search the Hive Mind knowledge space |
+| `hive explore <intent>` | Start a divergent exploration run |
+| `hive config` | Show current configuration (model mappings, budget, etc.) |
 | `hive tui` | Launch the interactive monitoring dashboard |
 | `hive watch [--interval N]` | Auto-refreshing status display |
 | `hive review-agent <id>` | Review a completed agent's commits and diff |
@@ -130,6 +136,7 @@ Internal commands used by agent hooks:
 | `hive log-tool --run <id> --agent <id> --tool <name> --status <s>` | Record tool call event |
 | `hive heartbeat --run <id> --agent <id>` | Update agent heartbeat |
 | `hive read-messages --agent <id> [--unread] [--stop-hook]` | Read messages (used by Stop hook) |
+| `hive agent-exit --run <id> --agent <id>` | Transition agent to Idle on exit (used by Stop hook) |
 
 ## MCP Tools
 
@@ -156,17 +163,25 @@ Agents interact with hive via these MCP tools:
 | `hive_log_tool` | Record a tool call event | All roles |
 | `hive_save_memory` | Write memory entry (operational/convention/failure) | Postmortem only |
 | `hive_save_spec` | Save generated spec for the run | Planner only |
+| `hive_record_discovery` | Record a discovery to the Hive Mind | All roles |
+| `hive_search_mind` | Search the Hive Mind by keyword | All roles |
+| `hive_synthesize_insight` | Synthesize discoveries into an insight | Coordinator only |
+| `hive_add_convention` | Add a convention to shared memory | Coordinator only |
 
 ## Agent Roles
 
-| Role | Purpose | Worktree | Write Access | Spawns |
-|------|---------|----------|-------------|--------|
-| **Coordinator** | Strategic orchestration, merge queue processing | No | N/A | Leads |
-| **Lead** | Domain management, worker oversight, code review | Yes | Yes | Workers |
-| **Worker** | Implementation of specific tasks | Yes | Yes | None |
-| **Reviewer** | Automated code review against task intent | Yes | No (hook-enforced) | None |
-| **Planner** | Codebase analysis and spec generation | Yes | No (hook-enforced) | None |
-| **Postmortem** | Run analysis and memory extraction | Yes | Memory only | None |
+| Role | Purpose | Worktree | Default Model | Spawns |
+|------|---------|----------|---------------|--------|
+| **Coordinator** | Strategic orchestration, merge queue processing | No | Opus | Leads |
+| **Lead** | Domain management, worker oversight, code review | Yes | Sonnet | Workers |
+| **Worker** | Implementation of specific tasks | Yes | Sonnet | None |
+| **Reviewer** | Automated code review against task intent | Yes (read-only) | Haiku | None |
+| **Planner** | Codebase analysis and spec generation | Yes (read-only) | Opus | None |
+| **Postmortem** | Run analysis and memory extraction | Yes | Haiku | None |
+| **Explorer** | Divergent codebase exploration and research | Yes | Sonnet | None |
+| **Evaluator** | Evaluation and assessment tasks | Yes | Sonnet | None |
+
+Model tiers can be overridden per-role in `.hive/config.yaml` under `models:`.
 
 ### Role permissions
 
@@ -175,6 +190,22 @@ Agents interact with hive via these MCP tools:
 | Spawn agents | Leads only | Workers only | No |
 | Submit to merge queue | Process only | Yes | No |
 | Send messages | To leads | To workers + coordinator | To own lead only |
+
+## Task Lifecycle
+
+```
+pending ──► active ──► review ──► approved ──► queued ──► merged
+               │          │
+               ▼          ▼
+            blocked    active (sent back with feedback)
+               │
+               ▼
+            active (unblocked)
+
+Any state ──► failed
+Any state ──► absorbed   (subtask rolled into parent)
+Any state ──► cancelled  (no changes needed)
+```
 
 ## Architecture
 
@@ -188,16 +219,43 @@ Single Rust binary, three entry points:
 
 ```
 src/
-  main.rs    — CLI dispatch
-  cli.rs     — clap command definitions
-  types.rs   — Agent, Task, Message, MergeQueue, enums
-  state.rs   — all .hive/ filesystem reads/writes (nothing else touches disk)
-  git.rs     — shells out to git CLI for worktree, merge, branch ops
-  agent.rs   — agent spawn: worktree creation, config generation, process launch
-  mcp.rs     — MCP server via rmcp with #[tool_router] macro
-  tui.rs     — ratatui monitoring dashboard
-  logging.rs — SQLite logging layer (log.db)
-  wait.rs    — file watching for activity detection
+  main.rs       — CLI dispatch
+  cli/          — clap command definitions and handlers
+    mod.rs      — CLI struct, subcommands
+    run_cmds.rs — init, start, stop, status, cost, summary, etc.
+    agent_cmds.rs — agents, logs, heartbeat, review-agent
+    task_cmds.rs  — tasks
+    message_cmds.rs — messages, read-messages
+    memory_cmds.rs  — memory, mind
+  types.rs      — Agent, Task, Message, MergeQueue, ModelConfig, enums
+  state/        — all .hive/ filesystem reads/writes (nothing else touches disk)
+    mod.rs      — core state operations
+    agents.rs   — agent state
+    tasks.rs    — task state
+    messages.rs — message state
+    queue.rs    — merge queue state
+    memory.rs   — run memory and hive mind state
+  git.rs        — shells out to git CLI for worktree, merge, branch ops
+  agent.rs      — agent spawn: worktree creation, config generation, process launch
+  mcp/          — MCP server via rmcp with #[tool_router] macro
+    mod.rs      — server setup and tool routing
+    agent_tools.rs — spawn, list, check, retry, heartbeat, wait, review
+    task_tools.rs  — create, update, list tasks
+    queue_tools.rs — submit, merge, review verdict
+    message_tools.rs — send, read messages, log tool
+    mind_tools.rs  — record discovery, search, synthesize, conventions
+    misc_tools.rs  — cost, save memory, save spec
+    params.rs      — shared parameter types
+  tui/          — ratatui monitoring dashboard
+    mod.rs      — app state and main loop
+    render.rs   — pane rendering
+    input.rs    — keyboard handling
+    overlay.rs  — detail overlays
+    tree.rs     — agent hierarchy tree
+    helpers.rs  — formatting utilities
+  output.rs     — output capture for agent processes
+  logging.rs    — SQLite logging layer (log.db)
+  wait.rs       — file watching for activity detection
 ```
 
 ### Key design decisions
@@ -212,7 +270,7 @@ src/
 
 ```
 .hive/
-  config.yaml                    # stall timeout, verify command, budget
+  config.yaml                    # stall timeout, verify command, budget, model overrides
   memory/
     operations.jsonl             # run summaries and learnings
     conventions.md               # discovered codebase conventions
@@ -253,20 +311,17 @@ max_retries: 2
 
 # Maximum budget in USD for a single run (uncomment to enable)
 # budget_usd: 50.0
-```
 
-## Task Lifecycle
-
-```
-pending ──► active ──► review ──► approved ──► queued ──► merged
-               │          │
-               ▼          ▼
-            blocked    active (sent back with feedback)
-               │
-               ▼
-            active (unblocked)
-
-Any state ──► failed
+# Per-role model overrides (uncomment to customize)
+# models:
+#   coordinator: opus
+#   lead: sonnet
+#   worker: sonnet
+#   reviewer: haiku
+#   planner: opus
+#   postmortem: haiku
+#   explorer: sonnet
+#   evaluator: sonnet
 ```
 
 ## TUI Dashboard
@@ -279,32 +334,6 @@ The TUI provides four panes navigable with `Tab`:
 - **Spec** — Shows the generated spec (when using self-planning).
 
 Keyboard: `j/k` to navigate, `Enter` for detail overlay, `Esc` to dismiss, `G` for auto-scroll, `q` to quit.
-
-## Development
-
-```bash
-cargo build                    # debug build
-cargo build --release          # release build
-cargo test --all-targets       # run all tests (163 tests)
-cargo clippy --all-targets -- -D warnings   # lint
-cargo fmt --all -- --check     # check formatting
-```
-
-### Dependencies
-
-| Crate | Purpose |
-|-------|---------|
-| `clap` | CLI argument parsing |
-| `rmcp` + `schemars` | MCP server with JSON Schema tool definitions |
-| `ratatui` + `crossterm` | Terminal UI dashboard |
-| `rusqlite` | SQLite for tool call logging |
-| `tokio` | Async runtime |
-| `serde` + `serde_json` | JSON serialization |
-| `chrono` | Timestamps |
-| `uuid` | Unique IDs |
-| `notify` | Filesystem watching |
-| `fs2` | File locking |
-| `libc` | Process management (signals, waitpid) |
 
 ## How It Works
 
@@ -370,6 +399,32 @@ Add real-time status updates via WebSocket connections.
 - Files: src/tui.rs
 - Replace polling with WebSocket subscription
 ```
+
+## Development
+
+```bash
+cargo build                    # debug build
+cargo build --release          # release build
+cargo test --all-targets       # run all tests (651 tests)
+cargo clippy --all-targets -- -D warnings   # lint
+cargo fmt --all -- --check     # check formatting
+```
+
+### Dependencies
+
+| Crate | Purpose |
+|-------|---------|
+| `clap` | CLI argument parsing |
+| `rmcp` + `schemars` | MCP server with JSON Schema tool definitions |
+| `ratatui` + `crossterm` | Terminal UI dashboard |
+| `rusqlite` | SQLite for tool call logging |
+| `tokio` | Async runtime |
+| `serde` + `serde_json` | JSON serialization |
+| `chrono` | Timestamps |
+| `uuid` | Unique IDs |
+| `notify` | Filesystem watching |
+| `fs2` | File locking |
+| `libc` | Process management (signals, waitpid) |
 
 ## License
 
