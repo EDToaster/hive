@@ -1,6 +1,6 @@
 use crate::tui::helpers::*;
 use crate::tui::input::handle_mouse;
-use crate::tui::render::{extract_arg, format_tool_display};
+use crate::tui::render::{collapse_activity, extract_arg, format_tool_display};
 use crate::tui::tree::*;
 use crate::tui::*;
 use crate::types::*;
@@ -1612,4 +1612,102 @@ fn load_latest_actions_many_agents() {
             actions[&key]
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// collapse_activity tests
+// ---------------------------------------------------------------------------
+
+fn make_tool_call(agent: &str, tool: &str, args: Option<&str>, secs: u32) -> ActivityEntry {
+    ActivityEntry::ToolCall {
+        timestamp: chrono::DateTime::parse_from_rfc3339(&format!("2025-01-01T00:00:{secs:02}Z"))
+            .unwrap()
+            .with_timezone(&Utc),
+        agent_id: agent.into(),
+        tool_name: tool.into(),
+        args_summary: args.map(|s| s.into()),
+        status: "success".into(),
+        duration_ms: Some(10),
+    }
+}
+
+fn make_message(from: &str, to: &str, secs: u32) -> ActivityEntry {
+    ActivityEntry::Message {
+        timestamp: chrono::DateTime::parse_from_rfc3339(&format!("2025-01-01T00:00:{secs:02}Z"))
+            .unwrap()
+            .with_timezone(&Utc),
+        from: from.into(),
+        to: to.into(),
+        body: "hello".into(),
+    }
+}
+
+#[test]
+fn collapse_consecutive_same_tool_calls() {
+    let activity = vec![
+        make_tool_call("w1", "Read", Some("file_path=/a.rs"), 1),
+        make_tool_call("w1", "Read", Some("file_path=/b.rs"), 2),
+        make_tool_call("w1", "Read", Some("file_path=/c.rs"), 3),
+    ];
+    let collapsed = collapse_activity(&activity);
+    assert_eq!(collapsed.len(), 1);
+    assert_eq!(collapsed[0].collapsed_count, 2);
+    // Should show the last (most recent) entry
+    if let ActivityEntry::ToolCall { args_summary, .. } = collapsed[0].entry {
+        assert_eq!(args_summary.as_deref(), Some("file_path=/c.rs"));
+    } else {
+        panic!("expected ToolCall");
+    }
+}
+
+#[test]
+fn collapse_does_not_merge_different_tools() {
+    let activity = vec![
+        make_tool_call("w1", "Read", Some("file_path=/a.rs"), 1),
+        make_tool_call("w1", "Edit", Some("file_path=/a.rs"), 2),
+        make_tool_call("w1", "Read", Some("file_path=/b.rs"), 3),
+    ];
+    let collapsed = collapse_activity(&activity);
+    assert_eq!(collapsed.len(), 3);
+    assert!(collapsed.iter().all(|c| c.collapsed_count == 0));
+}
+
+#[test]
+fn collapse_does_not_merge_different_agents() {
+    let activity = vec![
+        make_tool_call("w1", "Read", Some("file_path=/a.rs"), 1),
+        make_tool_call("w2", "Read", Some("file_path=/b.rs"), 2),
+    ];
+    let collapsed = collapse_activity(&activity);
+    assert_eq!(collapsed.len(), 2);
+    assert!(collapsed.iter().all(|c| c.collapsed_count == 0));
+}
+
+#[test]
+fn collapse_message_breaks_sequence() {
+    let activity = vec![
+        make_tool_call("w1", "Read", Some("file_path=/a.rs"), 1),
+        make_tool_call("w1", "Read", Some("file_path=/b.rs"), 2),
+        make_message("w1", "lead-1", 3),
+        make_tool_call("w1", "Read", Some("file_path=/c.rs"), 4),
+    ];
+    let collapsed = collapse_activity(&activity);
+    assert_eq!(collapsed.len(), 3);
+    assert_eq!(collapsed[0].collapsed_count, 1); // 2 Reads -> +1
+    assert_eq!(collapsed[1].collapsed_count, 0); // Message
+    assert_eq!(collapsed[2].collapsed_count, 0); // Single Read
+}
+
+#[test]
+fn collapse_empty_activity() {
+    let collapsed = collapse_activity(&[]);
+    assert!(collapsed.is_empty());
+}
+
+#[test]
+fn collapse_single_entry() {
+    let activity = vec![make_tool_call("w1", "Read", Some("file_path=/a.rs"), 1)];
+    let collapsed = collapse_activity(&activity);
+    assert_eq!(collapsed.len(), 1);
+    assert_eq!(collapsed[0].collapsed_count, 0);
 }

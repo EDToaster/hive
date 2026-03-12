@@ -538,6 +538,62 @@ pub(super) fn format_tool_display(
 }
 
 // ---------------------------------------------------------------------------
+// Activity collapsing: group consecutive same-tool calls
+// ---------------------------------------------------------------------------
+
+pub(super) struct CollapsedEntry<'a> {
+    pub entry: &'a ActivityEntry,
+    pub collapsed_count: usize, // 0 means no collapse, N means "+N more"
+}
+
+/// Collapse consecutive ToolCall entries with the same (agent_id, tool_name)
+/// into a single entry (the most recent / last in the run) with a count.
+/// Messages and different tool calls break the sequence.
+pub(super) fn collapse_activity(activity: &[ActivityEntry]) -> Vec<CollapsedEntry<'_>> {
+    let mut result: Vec<CollapsedEntry<'_>> = Vec::with_capacity(activity.len());
+    let mut i = 0;
+    while i < activity.len() {
+        if let ActivityEntry::ToolCall {
+            agent_id,
+            tool_name,
+            ..
+        } = &activity[i]
+        {
+            // Count consecutive entries with same agent_id + tool_name
+            let mut j = i + 1;
+            while j < activity.len() {
+                if let ActivityEntry::ToolCall {
+                    agent_id: aid,
+                    tool_name: tn,
+                    ..
+                } = &activity[j]
+                    && aid == agent_id
+                    && tn == tool_name
+                {
+                    j += 1;
+                    continue;
+                }
+                break;
+            }
+            let count = j - i;
+            // Show the last entry in the group (most recent)
+            result.push(CollapsedEntry {
+                entry: &activity[j - 1],
+                collapsed_count: count - 1,
+            });
+            i = j;
+        } else {
+            result.push(CollapsedEntry {
+                entry: &activity[i],
+                collapsed_count: 0,
+            });
+            i += 1;
+        }
+    }
+    result
+}
+
+// ---------------------------------------------------------------------------
 // Render: Activity stream
 // ---------------------------------------------------------------------------
 
@@ -547,9 +603,12 @@ pub(super) fn render_activity_stream(
     activity: &[ActivityEntry],
     ui: &TuiState,
 ) {
-    let items: Vec<ListItem> = activity
+    let collapsed = collapse_activity(activity);
+    let items: Vec<ListItem> = collapsed
         .iter()
-        .map(|entry| {
+        .map(|collapsed_entry| {
+            let entry = collapsed_entry.entry;
+            let extra_count = collapsed_entry.collapsed_count;
             let is_dimmed = ui
                 .selected_agent_filter
                 .as_ref()
@@ -626,6 +685,16 @@ pub(super) fn render_activity_stream(
                             }),
                         ));
                     }
+                    if extra_count > 0 {
+                        spans.push(Span::styled(
+                            format!(" +{extra_count}"),
+                            Style::default().fg(if is_dimmed {
+                                Color::Rgb(110, 110, 120)
+                            } else {
+                                Color::DarkGray
+                            }),
+                        ));
+                    }
                     if !dur.is_empty() {
                         spans.push(Span::styled(dur, Style::default().fg(Color::DarkGray)));
                     }
@@ -642,15 +711,16 @@ pub(super) fn render_activity_stream(
         .border_style(Style::default().fg(bc));
 
     // Compute visible height (area height minus borders)
+    let num_items = collapsed.len();
     let visible_height = area.height.saturating_sub(2) as usize;
     let mut list_state = ListState::default();
     if ui.activity_auto_scroll {
         // Select last visible item
-        if activity.len() > visible_height {
-            list_state.select(Some(activity.len().saturating_sub(1)));
+        if num_items > visible_height {
+            list_state.select(Some(num_items.saturating_sub(1)));
         }
     } else {
-        let sel = ui.activity_scroll.min(activity.len().saturating_sub(1));
+        let sel = ui.activity_scroll.min(num_items.saturating_sub(1));
         list_state.select(Some(sel));
     }
 
@@ -660,11 +730,11 @@ pub(super) fn render_activity_stream(
 
     // Scrollbar
     let scroll_position = if ui.activity_auto_scroll {
-        activity.len().saturating_sub(1)
+        num_items.saturating_sub(1)
     } else {
         ui.activity_scroll
     };
-    let mut scrollbar_state = ScrollbarState::new(activity.len()).position(scroll_position);
+    let mut scrollbar_state = ScrollbarState::new(num_items).position(scroll_position);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .track_style(Style::default().fg(Color::DarkGray))
         .thumb_style(Style::default().fg(Color::Gray));
