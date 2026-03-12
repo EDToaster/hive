@@ -175,7 +175,7 @@ pub fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), Strin
     };
     state.save_agent(&run_id, &coordinator)?;
 
-    println!("Coordinator configured. Launch Claude Code in this directory to begin.");
+    println!("Coordinator configured. Run `claude --dangerously-skip-permissions` to start the coordinator.");
     println!("Run 'hive tui' in another terminal to monitor progress.");
 
     Ok(())
@@ -736,7 +736,7 @@ pub fn cmd_explore(intent: &str) -> Result<(), String> {
 
     println!("Created explore run: {run_id}");
     println!("Coordinator configured for EXPLORE mode.");
-    println!("Launch Claude Code in this directory to begin.");
+    println!("Run `claude --dangerously-skip-permissions` to start the coordinator.");
     println!("Run 'hive tui' in another terminal to monitor progress.");
 
     Ok(())
