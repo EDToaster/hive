@@ -562,37 +562,35 @@ fn load_state(state: &HiveState, run_id: &str) -> DashboardState {
         })
         .collect();
 
-    if let Some(conn) = log_db {
-        if let Ok(mut stmt) = conn.prepare(
+    if let Some(conn) = log_db
+        && let Ok(mut stmt) = conn.prepare(
             "SELECT timestamp, agent_id, tool_name, args_summary, status, duration_ms \
              FROM tool_calls WHERE run_id = ?1 ORDER BY timestamp DESC LIMIT 300",
-        ) {
-            let rows = stmt.query_map(rusqlite::params![run_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, Option<String>>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                ))
+        )
+        && let Ok(rows) = stmt.query_map(rusqlite::params![run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+    {
+        for row in rows.filter_map(|r| r.ok()) {
+            activity.push(ActivityItem {
+                kind: "tool",
+                timestamp: row.0,
+                from: None,
+                to: None,
+                body: None,
+                agent_id: Some(row.1),
+                tool_name: Some(row.2),
+                args_summary: row.3,
+                status: Some(row.4),
+                duration_ms: row.5,
             });
-            if let Ok(rows) = rows {
-                for row in rows.filter_map(|r| r.ok()) {
-                    activity.push(ActivityItem {
-                        kind: "tool",
-                        timestamp: row.0,
-                        from: None,
-                        to: None,
-                        body: None,
-                        agent_id: Some(row.1),
-                        tool_name: Some(row.2),
-                        args_summary: row.3,
-                        status: Some(row.4),
-                        duration_ms: row.5,
-                    });
-                }
-            }
         }
     }
 
@@ -615,11 +613,7 @@ fn load_state(state: &HiveState, run_id: &str) -> DashboardState {
 // Minimal HTTP server
 // ---------------------------------------------------------------------------
 
-async fn handle_connection(
-    mut stream: TcpStream,
-    state: Arc<HiveState>,
-    run_id: Arc<String>,
-) {
+async fn handle_connection(mut stream: TcpStream, state: Arc<HiveState>, run_id: Arc<String>) {
     // Read request line + headers (stop at blank line)
     let mut reader = BufReader::new(&mut stream);
     let mut request_line = String::new();
