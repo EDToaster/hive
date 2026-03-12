@@ -214,87 +214,6 @@ impl ActivityEntry {
 }
 
 // ---------------------------------------------------------------------------
-// Metrics
-// ---------------------------------------------------------------------------
-
-pub(crate) struct MetricsData {
-    pub tasks_done: usize,
-    pub tasks_total: usize,
-    pub total_cost_usd: f64,
-    /// Tool calls in the last 60 seconds
-    pub throughput_per_min: f64,
-    /// (agent_id, sparkline_buckets) for active agents — 20 x 30s buckets = 10min
-    pub sparklines: Vec<(String, Vec<u64>)>,
-}
-
-fn compute_metrics(
-    agents: &[crate::types::Agent],
-    tasks: &[crate::types::Task],
-    activity: &[ActivityEntry],
-    state: &HiveState,
-    run_id: &str,
-) -> MetricsData {
-    use crate::types::AgentStatus;
-
-    let tasks_total = tasks.len();
-    let tasks_done = tasks.iter().filter(|t| t.status.is_resolved()).count();
-
-    let total_cost_usd: f64 = agents
-        .iter()
-        .filter_map(|a| state.load_agent_cost(run_id, &a.id))
-        .map(|c| c.cost_usd)
-        .sum();
-
-    let now = Utc::now();
-    let one_min_ago = now - chrono::Duration::seconds(60);
-    let throughput_per_min = activity
-        .iter()
-        .filter(
-            |e| matches!(e, ActivityEntry::ToolCall { timestamp, .. } if *timestamp >= one_min_ago),
-        )
-        .count() as f64;
-
-    const NUM_BUCKETS: usize = 20;
-    const BUCKET_SECS: i64 = 30;
-    let sparklines = agents
-        .iter()
-        .filter(|a| a.status == AgentStatus::Running)
-        .map(|agent| {
-            let mut buckets = vec![0u64; NUM_BUCKETS];
-            for entry in activity {
-                if let ActivityEntry::ToolCall {
-                    agent_id,
-                    timestamp,
-                    ..
-                } = entry
-                {
-                    if agent_id != &agent.id {
-                        continue;
-                    }
-                    let age = (now - *timestamp).num_seconds();
-                    if age >= 0 && age < (NUM_BUCKETS as i64 * BUCKET_SECS) {
-                        let bucket = (age / BUCKET_SECS) as usize;
-                        let bucket_idx = NUM_BUCKETS.saturating_sub(1 + bucket);
-                        if bucket_idx < NUM_BUCKETS {
-                            buckets[bucket_idx] += 1;
-                        }
-                    }
-                }
-            }
-            (agent.id.clone(), buckets)
-        })
-        .collect();
-
-    MetricsData {
-        tasks_done,
-        tasks_total,
-        total_cost_usd,
-        throughput_per_min,
-        sparklines,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Data loading helpers
 // ---------------------------------------------------------------------------
 
@@ -547,15 +466,12 @@ fn run_tui_loop(
         let outer = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // [0] Title bar
-                Constraint::Length(1), // [1] Stats bar
-                Constraint::Length(3), // [2] Metrics bar
-                Constraint::Fill(3),   // [3] Main content
-                Constraint::Fill(1),   // [4] Activity stream
+                Constraint::Length(1), // Title bar
+                Constraint::Length(1), // Stats bar
+                Constraint::Fill(3),   // Main content
+                Constraint::Fill(1),   // Activity stream
             ])
             .split(term_area);
-
-        let metrics = compute_metrics(&agents, &tasks, &activity, state, run_id);
 
         let planner_agent = agents
             .iter()
@@ -570,13 +486,13 @@ fn run_tui_loop(
                     Constraint::Fill(2), // Swarm: ~40%
                     Constraint::Fill(3), // Tasks: ~60%
                 ])
-                .split(outer[3]);
+                .split(outer[2]);
             (main_content[0], main_content[1])
         };
 
         ui.swarm_area = swarm_area;
         ui.tasks_area = tasks_area;
-        ui.activity_area = outer[4];
+        ui.activity_area = outer[3];
         ui.overlay_area = if ui.overlay.is_some() {
             let pct = if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
                 (90, 90)
@@ -599,14 +515,11 @@ fn run_tui_loop(
                 // -- Stats bar --
                 render_stats_bar(frame, outer[1], &agents, &tasks, state, &ui);
 
-                // -- Metrics bar --
-                render_metrics_bar(frame, outer[2], &metrics, &agents);
-
                 // -- Main content: gantt, planning view, or normal swarm+tasks --
                 if ui.view_mode == ViewMode::Gantt {
                     render_gantt_view(
                         frame,
-                        outer[3],
+                        outer[2],
                         &agents,
                         &queue,
                         &run_meta,
@@ -614,7 +527,7 @@ fn run_tui_loop(
                         ui.gantt_scroll,
                     );
                 } else if let Some(planner) = planner_agent {
-                    render_planning_view(frame, outer[3], planner, ui.tick);
+                    render_planning_view(frame, outer[2], planner, ui.tick);
                 } else {
                     // -- Swarm pane --
                     render_swarm_pane(
@@ -645,7 +558,7 @@ fn run_tui_loop(
                 }
 
                 // -- Activity stream --
-                render_activity_stream(frame, outer[4], &activity, &agents, &ui);
+                render_activity_stream(frame, outer[3], &activity, &agents, &ui);
 
                 // -- Overlay --
                 if let Some(ref overlay) = ui.overlay {
