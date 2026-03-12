@@ -175,7 +175,9 @@ pub fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), Strin
     };
     state.save_agent(&run_id, &coordinator)?;
 
-    println!("Coordinator configured. Run `claude --dangerously-skip-permissions` to start the coordinator.");
+    println!(
+        "Coordinator configured. Run `claude --dangerously-skip-permissions` to start the coordinator."
+    );
     println!("Run 'hive tui' in another terminal to monitor progress.");
 
     Ok(())
