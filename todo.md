@@ -3,7 +3,9 @@ Some small ideas:
 [ ] Hotkey to callback to an editor or something
 [ ] Verify better isolation. Do leads only see agent status from their descendents and ancestors?
 [ ] Explorers should be able to submit merge queue requests
-[ ] Using different models for different agents to speed up. Haiku for evaluator and reviewer?
+[x] Using different models for different agents to speed up. Haiku for evaluator and reviewer?
+
+[ ] Rebase-based merging rather than merging-based merging
 
 [x] Agent statuses should refresh on every MCP call. Sometimes, leads forget to check agent status, and assume it's not done
 [x] Agent status returns unstaged changes and files. It should probably also return commits as well
