@@ -782,6 +782,154 @@ pub(super) fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agen
 }
 
 // ---------------------------------------------------------------------------
+// Render: Metrics bar
+// ---------------------------------------------------------------------------
+
+pub(super) fn render_metrics_bar(
+    frame: &mut Frame,
+    area: Rect,
+    metrics: &super::MetricsData,
+    agents: &[crate::types::Agent],
+) {
+    let _ = agents; // available for future per-agent coloring
+
+    // Horizontal split: [gauge 35%] [cost+throughput 22%] [sparklines 43%]
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Percentage(22),
+            Constraint::Percentage(43),
+        ])
+        .split(area);
+
+    // --- Task completion gauge ---
+    let ratio = if metrics.tasks_total > 0 {
+        (metrics.tasks_done as f64 / metrics.tasks_total as f64).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let gauge_color = if ratio >= 1.0 {
+        Color::LightBlue
+    } else if ratio >= 0.5 {
+        Color::Green
+    } else {
+        Color::Yellow
+    };
+    let label = format!(
+        "Tasks  {}/{}  done",
+        metrics.tasks_done, metrics.tasks_total
+    );
+    // Center the gauge vertically (it's 1 line tall, area is 3)
+    let gauge_y = chunks[0].y + chunks[0].height / 2;
+    let gauge_area = Rect {
+        x: chunks[0].x + 1,
+        y: gauge_y,
+        width: chunks[0].width.saturating_sub(2),
+        height: 1,
+    };
+    let gauge = Gauge::default()
+        .gauge_style(Style::default().fg(gauge_color).bg(Color::Rgb(40, 40, 40)))
+        .ratio(ratio)
+        .label(label);
+    frame.render_widget(gauge, gauge_area);
+
+    // --- Cost + throughput text ---
+    let cost_str = if metrics.total_cost_usd > 0.001 {
+        format!("${:.2}", metrics.total_cost_usd)
+    } else {
+        "--".to_string()
+    };
+    let tput_str = format!("{:.1}/min", metrics.throughput_per_min);
+    let cost_lines = vec![
+        Line::from(vec![
+            Span::styled(" \u{2665} ", Style::default().fg(Color::Red)),
+            Span::styled(cost_str, Style::default().fg(Color::Yellow).bold()),
+        ]),
+        Line::from(vec![
+            Span::styled(" \u{25CF} ", Style::default().fg(Color::Cyan)),
+            Span::styled(tput_str, Style::default().fg(Color::White)),
+            Span::styled(" calls/min", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+    // Vertically center in 3-line area
+    let text_y = chunks[1].y + chunks[1].height.saturating_sub(2) / 2;
+    let text_area = Rect {
+        x: chunks[1].x,
+        y: text_y,
+        width: chunks[1].width,
+        height: 2.min(chunks[1].height),
+    };
+    frame.render_widget(Paragraph::new(cost_lines), text_area);
+
+    // --- Per-agent sparklines ---
+    if metrics.sparklines.is_empty() {
+        let placeholder = Paragraph::new(Span::styled(
+            " no active agents",
+            Style::default().fg(Color::DarkGray),
+        ));
+        let ph_y = chunks[2].y + chunks[2].height / 2;
+        let ph_area = Rect {
+            x: chunks[2].x,
+            y: ph_y,
+            width: chunks[2].width,
+            height: 1,
+        };
+        frame.render_widget(placeholder, ph_area);
+        return;
+    }
+
+    let n = metrics.sparklines.len().min(4) as u16;
+    // Divide width among sparklines, each gets a labeled column
+    let spark_width = chunks[2].width / n;
+    if spark_width < 4 {
+        return; // too narrow to draw
+    }
+
+    for (i, (agent_id, data)) in metrics.sparklines.iter().take(n as usize).enumerate() {
+        let spark_area = Rect {
+            x: chunks[2].x + i as u16 * spark_width,
+            y: chunks[2].y,
+            width: spark_width,
+            height: chunks[2].height,
+        };
+
+        // Short agent name: take last dash-separated segment
+        let short_name = agent_id
+            .rsplit('-')
+            .next()
+            .unwrap_or(agent_id.as_str())
+            .chars()
+            .take(8)
+            .collect::<String>();
+
+        let max_val = *data.iter().max().unwrap_or(&1);
+        let spark_color = if max_val > 5 {
+            Color::Green
+        } else if max_val > 2 {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+
+        let block = Block::default()
+            .title(Span::styled(
+                format!(" {short_name} "),
+                Style::default().fg(Color::White),
+            ))
+            .borders(Borders::TOP)
+            .border_style(Style::default().fg(Color::DarkGray));
+
+        let sparkline = Sparkline::default()
+            .block(block)
+            .data(data)
+            .style(Style::default().fg(spark_color));
+
+        frame.render_widget(sparkline, spark_area);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Render: Spec viewer
 // ---------------------------------------------------------------------------
 
