@@ -211,7 +211,11 @@ fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     // Write .mcp.json for coordinator MCP (merge with existing)
-    crate::agent::AgentSpawner::write_mcp_config(&repo_root.join(".mcp.json"), &run_id, "coordinator")?;
+    crate::agent::AgentSpawner::write_mcp_config(
+        &repo_root.join(".mcp.json"),
+        &run_id,
+        "coordinator",
+    )?;
 
     // Register coordinator agent (no PID — user launches claude manually)
     let coordinator = crate::types::Agent {
@@ -490,10 +494,7 @@ fn cmd_agent_exit(run_id: &str, agent_id: &str) -> Result<(), String> {
     }
 
     // Parse session_id from output
-    let output_path = state
-        .agents_dir(run_id)
-        .join(agent_id)
-        .join("output.jsonl");
+    let output_path = state.agents_dir(run_id).join(agent_id).join("output.jsonl");
     agent.session_id = output::parse_session_id_from_output(&output_path);
 
     // Transition to Idle
@@ -1054,7 +1055,11 @@ fn cmd_explore(intent: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
 
     // Write .mcp.json for coordinator MCP (merge with existing)
-    crate::agent::AgentSpawner::write_mcp_config(&repo_root.join(".mcp.json"), &run_id, "coordinator")?;
+    crate::agent::AgentSpawner::write_mcp_config(
+        &repo_root.join(".mcp.json"),
+        &run_id,
+        "coordinator",
+    )?;
 
     // Register coordinator agent (no PID — user launches claude manually)
     let coordinator = crate::types::Agent {

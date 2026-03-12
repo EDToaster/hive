@@ -2,7 +2,10 @@ use crate::state::HiveState;
 use crate::types::*;
 use chrono::{DateTime, Utc};
 use crossterm::ExecutableCommand;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, MouseButton, MouseEvent,
+    MouseEventKind,
+};
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
@@ -17,7 +20,7 @@ use std::time::{Duration, Instant};
 // State
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Pane {
     Swarm,
     Tasks,
@@ -43,6 +46,40 @@ struct TuiState {
     selected_agent_filter: Option<String>,
     collapsed_tasks: HashSet<String>,
     collapsed_agents: HashSet<String>,
+    mouse_enabled: bool,
+    /// Cached pane areas for mouse hit-testing (updated each frame)
+    swarm_area: Rect,
+    tasks_area: Rect,
+    activity_area: Rect,
+    overlay_area: Rect,
+    /// Double-click detection
+    last_click: Option<(u16, u16, Instant)>,
+    /// Whether running inside a terminal multiplexer
+    inside_multiplexer: Option<&'static str>,
+}
+
+/// Detect if running inside a known terminal multiplexer.
+fn detect_multiplexer() -> Option<&'static str> {
+    if std::env::var("ZELLIJ_SESSION_NAME").is_ok() || std::env::var("ZELLIJ").is_ok() {
+        Some("Zellij")
+    } else if std::env::var("TMUX").is_ok() {
+        Some("tmux")
+    } else if std::env::var("STY").is_ok() {
+        Some("screen")
+    } else {
+        None
+    }
+}
+
+const DOUBLE_CLICK_MS: u128 = 400;
+
+/// Convert a mouse row within a bordered pane to a list item index.
+/// Returns None if the click is on a border.
+fn pane_row_index(area: Rect, row: u16) -> Option<usize> {
+    if row <= area.y || row >= area.y + area.height.saturating_sub(1) {
+        return None;
+    }
+    Some((row - area.y - 1) as usize)
 }
 
 impl Default for TuiState {
@@ -59,6 +96,13 @@ impl Default for TuiState {
             selected_agent_filter: None,
             collapsed_tasks: HashSet::new(),
             collapsed_agents: HashSet::new(),
+            mouse_enabled: true,
+            swarm_area: Rect::default(),
+            tasks_area: Rect::default(),
+            activity_area: Rect::default(),
+            overlay_area: Rect::default(),
+            last_click: None,
+            inside_multiplexer: detect_multiplexer(),
         }
     }
 }
@@ -90,7 +134,6 @@ impl ActivityEntry {
             Self::Message { timestamp, .. } | Self::ToolCall { timestamp, .. } => *timestamp,
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -441,7 +484,10 @@ fn truncate_spans(spans: Vec<Span<'_>>, max_width: usize) -> Vec<Span<'_>> {
             remaining = 0;
         }
     }
-    result.push(Span::styled("\u{2026}", Style::default().fg(Color::DarkGray))); // …
+    result.push(Span::styled(
+        "\u{2026}",
+        Style::default().fg(Color::DarkGray),
+    )); // …
     result
 }
 
@@ -592,6 +638,7 @@ struct TerminalGuard;
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
+        let _ = stdout().execute(DisableMouseCapture);
         let _ = disable_raw_mode();
         let _ = stdout().execute(LeaveAlternateScreen);
     }
@@ -618,6 +665,9 @@ pub fn run_tui() -> Result<(), String> {
     let _guard = TerminalGuard;
     stdout()
         .execute(EnterAlternateScreen)
+        .map_err(|e| e.to_string())?;
+    stdout()
+        .execute(EnableMouseCapture)
         .map_err(|e| e.to_string())?;
 
     run_tui_loop(&state, &run_id, &log_db)
@@ -667,45 +717,66 @@ fn run_tui_loop(
 
         let activity_len = activity.len();
 
+        // ---- Compute layout areas for mouse hit-testing ----
+        let term_area = terminal.get_frame().area();
+        let outer = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // Title bar
+                Constraint::Length(1), // Stats bar
+                Constraint::Fill(3),   // Main content
+                Constraint::Fill(1),   // Activity stream
+            ])
+            .split(term_area);
+
+        let planner_agent = agents
+            .iter()
+            .find(|a| a.role == AgentRole::Planner && a.status == AgentStatus::Running);
+
+        let (swarm_area, tasks_area) = if planner_agent.is_some() {
+            (Rect::default(), Rect::default())
+        } else {
+            let main_content = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([
+                    Constraint::Fill(2), // Swarm: ~40%
+                    Constraint::Fill(3), // Tasks: ~60%
+                ])
+                .split(outer[2]);
+            (main_content[0], main_content[1])
+        };
+
+        ui.swarm_area = swarm_area;
+        ui.tasks_area = tasks_area;
+        ui.activity_area = outer[3];
+        ui.overlay_area = if ui.overlay.is_some() {
+            let pct = if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
+                (90, 90)
+            } else {
+                (60, 80)
+            };
+            centered_rect(pct.0, pct.1, term_area)
+        } else {
+            Rect::default()
+        };
+
         // ---- Draw ----
         terminal
             .draw(|frame| {
-                let outer = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1), // Title bar
-                        Constraint::Length(1), // Stats bar
-                        Constraint::Fill(3),   // Main content
-                        Constraint::Fill(1),   // Activity stream
-                    ])
-                    .split(frame.area());
-
                 // -- Title bar --
                 render_title_bar(frame, outer[0], run_id, &run_meta);
 
                 // -- Stats bar --
-                render_stats_bar(frame, outer[1], &agents, &tasks, state);
+                render_stats_bar(frame, outer[1], &agents, &tasks, state, &ui);
 
                 // -- Main content: planning view or normal swarm+tasks --
-                let planner_agent = agents
-                    .iter()
-                    .find(|a| a.role == AgentRole::Planner && a.status == AgentStatus::Running);
-
                 if let Some(planner) = planner_agent {
                     render_planning_view(frame, outer[2], planner);
                 } else {
-                    let main_content = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([
-                            Constraint::Fill(2), // Swarm: ~40%
-                            Constraint::Fill(3), // Tasks: ~60%
-                        ])
-                        .split(outer[2]);
-
                     // -- Swarm pane --
                     render_swarm_pane(
                         frame,
-                        main_content[0],
+                        swarm_area,
                         &tree_nodes,
                         &agents,
                         &queue,
@@ -720,11 +791,11 @@ fn run_tui_loop(
                         let tasks_and_spec = Layout::default()
                             .direction(Direction::Vertical)
                             .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-                            .split(main_content[1]);
+                            .split(tasks_area);
                         render_tasks_pane(frame, tasks_and_spec[0], &task_tree_nodes, &tasks, &ui);
                         render_spec_viewer(frame, tasks_and_spec[1], spec);
                     } else {
-                        render_tasks_pane(frame, main_content[1], &task_tree_nodes, &tasks, &ui);
+                        render_tasks_pane(frame, tasks_area, &task_tree_nodes, &tasks, &ui);
                     }
                 }
 
@@ -749,159 +820,178 @@ fn run_tui_loop(
 
         // ---- Handle input ----
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
-        if event::poll(timeout).map_err(|e| e.to_string())?
-            && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
-        {
-            // Intercept keys when AgentOutput overlay is open
-            if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
-                match key.code {
-                    KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => {
-                        ui.overlay = None;
-                    }
-                    KeyCode::Char('j') | KeyCode::Down => {
-                        // output_scroll is offset from bottom: 0 = bottom
-                        if ui.output_scroll > 0 {
-                            ui.output_auto_scroll = false;
-                            ui.output_scroll = ui.output_scroll.saturating_sub(1);
-                            if ui.output_scroll == 0 {
-                                ui.output_auto_scroll = true;
-                            }
-                        }
-                    }
-                    KeyCode::Char('k') | KeyCode::Up => {
-                        // output_scroll is offset from bottom: increase to scroll up
-                        ui.output_auto_scroll = false;
-                        ui.output_scroll = ui.output_scroll.saturating_add(1);
-                    }
-                    KeyCode::Char('G') => {
-                        ui.output_auto_scroll = true;
-                        ui.output_scroll = 0;
-                    }
-                    _ => {}
-                }
-                // Skip normal key dispatch
-                if last_tick.elapsed() >= tick_rate {
-                    last_tick = Instant::now();
-                }
-                continue;
+        if event::poll(timeout).map_err(|e| e.to_string())? {
+            let ev = event::read().map_err(|e| e.to_string())?;
+
+            // --- Mouse events ---
+            if let Event::Mouse(mouse) = ev
+                && ui.mouse_enabled
+            {
+                handle_mouse(&mut ui, mouse, &tree_nodes, &task_tree_nodes);
             }
 
-            match key.code {
-                KeyCode::Char('q') => {
-                    if ui.overlay.is_none() {
-                        break;
+            // --- Keyboard events ---
+            if let Event::Key(key) = ev {
+                // Intercept keys when AgentOutput overlay is open
+                if matches!(ui.overlay, Some(Overlay::AgentOutput(_))) {
+                    match key.code {
+                        KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('o') => {
+                            ui.overlay = None;
+                        }
+                        KeyCode::Char('j') | KeyCode::Down => {
+                            // output_scroll is offset from bottom: 0 = bottom
+                            if ui.output_scroll > 0 {
+                                ui.output_auto_scroll = false;
+                                ui.output_scroll = ui.output_scroll.saturating_sub(1);
+                                if ui.output_scroll == 0 {
+                                    ui.output_auto_scroll = true;
+                                }
+                            }
+                        }
+                        KeyCode::Char('k') | KeyCode::Up => {
+                            // output_scroll is offset from bottom: increase to scroll up
+                            ui.output_auto_scroll = false;
+                            ui.output_scroll = ui.output_scroll.saturating_add(1);
+                        }
+                        KeyCode::Char('G') => {
+                            ui.output_auto_scroll = true;
+                            ui.output_scroll = 0;
+                        }
+                        _ => {}
                     }
+                    // Skip normal key dispatch
+                    if last_tick.elapsed() >= tick_rate {
+                        last_tick = Instant::now();
+                    }
+                    continue;
                 }
-                KeyCode::Esc => {
-                    if ui.overlay.is_some() {
-                        ui.overlay = None;
-                    } else if ui.selected_agent_filter.is_some() {
-                        ui.selected_agent_filter = None;
-                        ui.swarm_selected = None;
+
+                match key.code {
+                    KeyCode::Char('q') => {
+                        if ui.overlay.is_none() {
+                            break;
+                        }
                     }
-                }
-                KeyCode::Tab => {
-                    ui.focused_pane = match ui.focused_pane {
-                        Pane::Swarm => Pane::Tasks,
-                        Pane::Tasks => Pane::Activity,
-                        Pane::Activity => Pane::Swarm,
-                    };
-                }
-                KeyCode::Char('j') | KeyCode::Down => match ui.focused_pane {
-                    Pane::Swarm => {
-                        let max = tree_nodes.len().saturating_sub(1);
-                        let next = ui.swarm_selected.map_or(0, |i| (i + 1).min(max));
-                        ui.swarm_selected = Some(next);
-                        ui.selected_agent_filter = tree_nodes.get(next).map(|n| n.agent_id.clone());
+                    KeyCode::Esc => {
+                        if ui.overlay.is_some() {
+                            ui.overlay = None;
+                        } else if ui.selected_agent_filter.is_some() {
+                            ui.selected_agent_filter = None;
+                            ui.swarm_selected = None;
+                        }
                     }
-                    Pane::Tasks => {
-                        let max = task_tree_len.saturating_sub(1);
-                        let next = ui.tasks_selected.map_or(0, |i| (i + 1).min(max));
-                        ui.tasks_selected = Some(next);
+                    KeyCode::Tab => {
+                        ui.focused_pane = match ui.focused_pane {
+                            Pane::Swarm => Pane::Tasks,
+                            Pane::Tasks => Pane::Activity,
+                            Pane::Activity => Pane::Swarm,
+                        };
                     }
-                    Pane::Activity => {
-                        ui.activity_auto_scroll = false;
-                        ui.activity_scroll = ui.activity_scroll.saturating_add(1);
+                    KeyCode::Char('m') => {
+                        ui.mouse_enabled = !ui.mouse_enabled;
+                        if ui.mouse_enabled {
+                            let _ = stdout().execute(EnableMouseCapture);
+                        } else {
+                            let _ = stdout().execute(DisableMouseCapture);
+                        }
                     }
-                },
-                KeyCode::Char('k') | KeyCode::Up => match ui.focused_pane {
-                    Pane::Swarm => {
-                        if let Some(i) = ui.swarm_selected {
-                            let next = i.saturating_sub(1);
+                    KeyCode::Char('j') | KeyCode::Down => match ui.focused_pane {
+                        Pane::Swarm => {
+                            let max = tree_nodes.len().saturating_sub(1);
+                            let next = ui.swarm_selected.map_or(0, |i| (i + 1).min(max));
                             ui.swarm_selected = Some(next);
                             ui.selected_agent_filter =
                                 tree_nodes.get(next).map(|n| n.agent_id.clone());
                         }
-                    }
-                    Pane::Tasks => {
-                        if let Some(i) = ui.tasks_selected {
-                            ui.tasks_selected = Some(i.saturating_sub(1));
+                        Pane::Tasks => {
+                            let max = task_tree_len.saturating_sub(1);
+                            let next = ui.tasks_selected.map_or(0, |i| (i + 1).min(max));
+                            ui.tasks_selected = Some(next);
                         }
-                    }
-                    Pane::Activity => {
-                        ui.activity_auto_scroll = false;
-                        ui.activity_scroll = ui.activity_scroll.saturating_sub(1);
-                    }
-                },
-                KeyCode::Char('G') => {
-                    ui.activity_auto_scroll = true;
-                }
-                KeyCode::Char(' ') => match ui.focused_pane {
-                    Pane::Swarm => {
-                        if let Some(i) = ui.swarm_selected
-                            && let Some(node) = tree_nodes.get(i)
-                            && node.has_children
-                        {
-                            if ui.collapsed_agents.contains(&node.agent_id) {
-                                ui.collapsed_agents.remove(&node.agent_id);
-                            } else {
-                                ui.collapsed_agents.insert(node.agent_id.clone());
+                        Pane::Activity => {
+                            ui.activity_auto_scroll = false;
+                            ui.activity_scroll = ui.activity_scroll.saturating_add(1);
+                        }
+                    },
+                    KeyCode::Char('k') | KeyCode::Up => match ui.focused_pane {
+                        Pane::Swarm => {
+                            if let Some(i) = ui.swarm_selected {
+                                let next = i.saturating_sub(1);
+                                ui.swarm_selected = Some(next);
+                                ui.selected_agent_filter =
+                                    tree_nodes.get(next).map(|n| n.agent_id.clone());
                             }
                         }
-                    }
-                    Pane::Tasks => {
-                        if let Some(i) = ui.tasks_selected
-                            && let Some(node) = task_tree_nodes.get(i)
-                            && node.has_children
-                        {
-                            if ui.collapsed_tasks.contains(&node.task_id) {
-                                ui.collapsed_tasks.remove(&node.task_id);
-                            } else {
-                                ui.collapsed_tasks.insert(node.task_id.clone());
+                        Pane::Tasks => {
+                            if let Some(i) = ui.tasks_selected {
+                                ui.tasks_selected = Some(i.saturating_sub(1));
                             }
                         }
+                        Pane::Activity => {
+                            ui.activity_auto_scroll = false;
+                            ui.activity_scroll = ui.activity_scroll.saturating_sub(1);
+                        }
+                    },
+                    KeyCode::Char('G') => {
+                        ui.activity_auto_scroll = true;
                     }
-                    Pane::Activity => {}
-                },
-                KeyCode::Enter => match ui.focused_pane {
-                    Pane::Swarm => {
-                        if let Some(i) = ui.swarm_selected
+                    KeyCode::Char(' ') => match ui.focused_pane {
+                        Pane::Swarm => {
+                            if let Some(i) = ui.swarm_selected
+                                && let Some(node) = tree_nodes.get(i)
+                                && node.has_children
+                            {
+                                if ui.collapsed_agents.contains(&node.agent_id) {
+                                    ui.collapsed_agents.remove(&node.agent_id);
+                                } else {
+                                    ui.collapsed_agents.insert(node.agent_id.clone());
+                                }
+                            }
+                        }
+                        Pane::Tasks => {
+                            if let Some(i) = ui.tasks_selected
+                                && let Some(node) = task_tree_nodes.get(i)
+                                && node.has_children
+                            {
+                                if ui.collapsed_tasks.contains(&node.task_id) {
+                                    ui.collapsed_tasks.remove(&node.task_id);
+                                } else {
+                                    ui.collapsed_tasks.insert(node.task_id.clone());
+                                }
+                            }
+                        }
+                        Pane::Activity => {}
+                    },
+                    KeyCode::Enter => match ui.focused_pane {
+                        Pane::Swarm => {
+                            if let Some(i) = ui.swarm_selected
+                                && let Some(node) = tree_nodes.get(i)
+                            {
+                                ui.overlay = Some(Overlay::Agent(node.agent_id.clone()));
+                            }
+                        }
+                        Pane::Tasks => {
+                            if let Some(i) = ui.tasks_selected
+                                && let Some(node) = task_tree_nodes.get(i)
+                            {
+                                ui.overlay = Some(Overlay::Task(node.task_id.clone()));
+                            }
+                        }
+                        Pane::Activity => {}
+                    },
+                    KeyCode::Char('o') => {
+                        if ui.focused_pane == Pane::Swarm
+                            && ui.overlay.is_none()
+                            && let Some(i) = ui.swarm_selected
                             && let Some(node) = tree_nodes.get(i)
                         {
-                            ui.overlay = Some(Overlay::Agent(node.agent_id.clone()));
+                            ui.output_scroll = 0;
+                            ui.output_auto_scroll = true;
+                            ui.overlay = Some(Overlay::AgentOutput(node.agent_id.clone()));
                         }
                     }
-                    Pane::Tasks => {
-                        if let Some(i) = ui.tasks_selected
-                            && let Some(node) = task_tree_nodes.get(i)
-                        {
-                            ui.overlay = Some(Overlay::Task(node.task_id.clone()));
-                        }
-                    }
-                    Pane::Activity => {}
-                },
-                KeyCode::Char('o') => {
-                    if ui.focused_pane == Pane::Swarm
-                        && ui.overlay.is_none()
-                        && let Some(i) = ui.swarm_selected
-                        && let Some(node) = tree_nodes.get(i)
-                    {
-                        ui.output_scroll = 0;
-                        ui.output_auto_scroll = true;
-                        ui.overlay = Some(Overlay::AgentOutput(node.agent_id.clone()));
-                    }
+                    _ => {}
                 }
-                _ => {}
             }
         }
 
@@ -918,6 +1008,158 @@ fn run_tui_loop(
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Mouse handling
+// ---------------------------------------------------------------------------
+
+fn handle_mouse(
+    ui: &mut TuiState,
+    mouse: MouseEvent,
+    tree_nodes: &[TreeNode],
+    task_tree_nodes: &[TaskTreeNode],
+) {
+    let col = mouse.column;
+    let row = mouse.row;
+
+    match mouse.kind {
+        // --- Scroll wheel: target pane under cursor, 3-line steps ---
+        MouseEventKind::ScrollDown => {
+            if ui.overlay.is_some() && ui.overlay_area.contains((col, row).into()) {
+                // Scroll down in overlay (toward bottom)
+                if ui.output_scroll > 0 {
+                    ui.output_auto_scroll = false;
+                    ui.output_scroll = ui.output_scroll.saturating_sub(3);
+                    if ui.output_scroll == 0 {
+                        ui.output_auto_scroll = true;
+                    }
+                }
+            } else if ui.swarm_area.contains((col, row).into()) {
+                let max = tree_nodes.len().saturating_sub(1);
+                let next = ui.swarm_selected.map_or(0, |i| (i + 3).min(max));
+                ui.swarm_selected = Some(next);
+                ui.selected_agent_filter = tree_nodes.get(next).map(|n| n.agent_id.clone());
+            } else if ui.tasks_area.contains((col, row).into()) {
+                let max = task_tree_nodes.len().saturating_sub(1);
+                let next = ui.tasks_selected.map_or(0, |i| (i + 3).min(max));
+                ui.tasks_selected = Some(next);
+            } else if ui.activity_area.contains((col, row).into()) {
+                ui.activity_auto_scroll = false;
+                ui.activity_scroll = ui.activity_scroll.saturating_add(3);
+            }
+        }
+        MouseEventKind::ScrollUp => {
+            if ui.overlay.is_some() && ui.overlay_area.contains((col, row).into()) {
+                ui.output_auto_scroll = false;
+                ui.output_scroll = ui.output_scroll.saturating_add(3);
+            } else if ui.swarm_area.contains((col, row).into()) {
+                if let Some(i) = ui.swarm_selected {
+                    let next = i.saturating_sub(3);
+                    ui.swarm_selected = Some(next);
+                    ui.selected_agent_filter = tree_nodes.get(next).map(|n| n.agent_id.clone());
+                }
+            } else if ui.tasks_area.contains((col, row).into()) {
+                if let Some(i) = ui.tasks_selected {
+                    ui.tasks_selected = Some(i.saturating_sub(3));
+                }
+            } else if ui.activity_area.contains((col, row).into()) {
+                ui.activity_auto_scroll = false;
+                ui.activity_scroll = ui.activity_scroll.saturating_sub(3);
+            }
+        }
+
+        // --- Left click ---
+        MouseEventKind::Down(MouseButton::Left) => {
+            let now = Instant::now();
+
+            // Click outside overlay dismisses it
+            if ui.overlay.is_some() {
+                if !ui.overlay_area.contains((col, row).into()) {
+                    ui.overlay = None;
+                    ui.last_click = None;
+                    return;
+                }
+                // Clicks inside overlay are consumed
+                return;
+            }
+
+            // Detect double-click
+            let is_double = ui.last_click.is_some_and(|(lc, lr, lt)| {
+                lc == col && lr == row && now.duration_since(lt).as_millis() < DOUBLE_CLICK_MS
+            });
+
+            // Click in Swarm pane
+            if ui.swarm_area.contains((col, row).into()) {
+                ui.focused_pane = Pane::Swarm;
+                if let Some(idx) = pane_row_index(ui.swarm_area, row)
+                    && idx < tree_nodes.len()
+                {
+                    ui.swarm_selected = Some(idx);
+                    ui.selected_agent_filter = tree_nodes.get(idx).map(|n| n.agent_id.clone());
+
+                    let node = &tree_nodes[idx];
+
+                    // Check if click is on the collapse/expand toggle indicator
+                    if node.has_children {
+                        let toggle_col_start = ui.swarm_area.x + 1 + node.prefix.len() as u16;
+                        let toggle_col_end = toggle_col_start + 2;
+                        if col >= toggle_col_start && col < toggle_col_end {
+                            if ui.collapsed_agents.contains(&node.agent_id) {
+                                ui.collapsed_agents.remove(&node.agent_id);
+                            } else {
+                                ui.collapsed_agents.insert(node.agent_id.clone());
+                            }
+                        }
+                    }
+
+                    // Double-click opens detail overlay
+                    if is_double {
+                        ui.overlay = Some(Overlay::Agent(node.agent_id.clone()));
+                    }
+                }
+            }
+            // Click in Tasks pane
+            else if ui.tasks_area.contains((col, row).into()) {
+                ui.focused_pane = Pane::Tasks;
+                if let Some(idx) = pane_row_index(ui.tasks_area, row)
+                    && idx < task_tree_nodes.len()
+                {
+                    ui.tasks_selected = Some(idx);
+
+                    let node = &task_tree_nodes[idx];
+
+                    // Check if click is on the collapse/expand toggle indicator
+                    if node.has_children {
+                        let toggle_col_start = ui.tasks_area.x + 1 + node.prefix.len() as u16;
+                        let toggle_col_end = toggle_col_start + 2;
+                        if col >= toggle_col_start && col < toggle_col_end {
+                            if ui.collapsed_tasks.contains(&node.task_id) {
+                                ui.collapsed_tasks.remove(&node.task_id);
+                            } else {
+                                ui.collapsed_tasks.insert(node.task_id.clone());
+                            }
+                        }
+                    }
+
+                    // Double-click opens task detail overlay
+                    if is_double {
+                        ui.overlay = Some(Overlay::Task(node.task_id.clone()));
+                    }
+                }
+            }
+            // Click in Activity pane
+            else if ui.activity_area.contains((col, row).into()) {
+                ui.focused_pane = Pane::Activity;
+            }
+
+            // Record click for double-click detection
+            ui.last_click = Some((col, row, now));
+        }
+
+        // Ignore move, drag, and other mouse events for performance
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -961,6 +1203,7 @@ fn render_stats_bar(
     agents: &[Agent],
     tasks: &[Task],
     state: &HiveState,
+    ui: &TuiState,
 ) {
     let ops_count = state.load_operations().len();
     let conventions_count = state
@@ -1028,6 +1271,21 @@ fn render_stats_bar(
         format!("{ops_count} ops | {conventions_count} conventions | {failures_count} failures"),
         Style::default().fg(Color::Magenta),
     ));
+
+    // Mouse indicator with subtle multiplexer warning
+    if ui.mouse_enabled {
+        if let Some(mux) = ui.inside_multiplexer {
+            spans.push(Span::styled(
+                format!("    \u{1F5B1} [m] ({mux})"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    } else {
+        spans.push(Span::styled(
+            "    mouse off [m]",
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
@@ -1184,9 +1442,7 @@ fn render_tasks_pane(
         .iter()
         .enumerate()
         .map(|(i, node)| {
-            let is_dimmed = ui
-                .selected_agent_filter
-                .is_some()
+            let is_dimmed = ui.selected_agent_filter.is_some()
                 && !highlighted_tasks.contains(node.task_id.as_str());
 
             let stripe = if is_dimmed {
@@ -1208,10 +1464,7 @@ fn render_tasks_pane(
 
             Row::new(vec![
                 Cell::from(id_cell),
-                Cell::from(Span::styled(
-                    task_status_bullet(node.status),
-                    status_style,
-                )),
+                Cell::from(Span::styled(task_status_bullet(node.status), status_style)),
                 Cell::from(assigned.to_string()),
                 Cell::from(node.title.clone()),
             ])
@@ -1223,7 +1476,7 @@ fn render_tasks_pane(
         Constraint::Length(20), // indicator + prefix + ID
         Constraint::Length(12), // status bullet
         Constraint::Length(14), // assigned agent
-        Constraint::Fill(1),   // title gets remaining space
+        Constraint::Fill(1),    // title gets remaining space
     ];
 
     let bc = border_color(ui.focused_pane, Pane::Tasks);
@@ -1255,7 +1508,10 @@ fn render_tasks_pane(
 fn extract_arg<'a>(args: &'a str, key: &str) -> Option<&'a str> {
     for part in args.split(',') {
         let part = part.trim();
-        if let Some(val) = part.strip_prefix(key).and_then(|rest| rest.strip_prefix('=')) {
+        if let Some(val) = part
+            .strip_prefix(key)
+            .and_then(|rest| rest.strip_prefix('='))
+        {
             return Some(val.trim());
         }
     }
@@ -1278,7 +1534,10 @@ fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, 
         // --- Hive MCP tools ---
         "hive_wait_for_activity" => {
             let timeout = extract_arg(args, "timeout_secs").unwrap_or("?");
-            (format!("WaitForActivity (timeout: {timeout}s)"), Color::Yellow)
+            (
+                format!("WaitForActivity (timeout: {timeout}s)"),
+                Color::Yellow,
+            )
         }
         "hive_spawn_agent" => {
             let agent = extract_arg(args, "agent_id").unwrap_or("?");
@@ -1297,7 +1556,10 @@ fn format_tool_display(tool_name: &str, args_summary: Option<&str>) -> (String, 
         "hive_update_task" => {
             let task = extract_arg(args, "task_id").unwrap_or("?");
             let status = extract_arg(args, "status").unwrap_or("?");
-            (format!("UpdateTask {task} \u{2192} {status}"), Color::Yellow)
+            (
+                format!("UpdateTask {task} \u{2192} {status}"),
+                Color::Yellow,
+            )
         }
         "hive_submit_to_queue" => {
             let task = extract_arg(args, "task_id").unwrap_or("?");
@@ -1551,10 +1813,7 @@ fn render_overlay(
         Overlay::AgentOutput(agent_id) => {
             let area = centered_rect(90, 90, frame.area());
             frame.render_widget(Clear, area);
-            let path = state
-                .agents_dir(run_id)
-                .join(agent_id)
-                .join("output.jsonl");
+            let path = state.agents_dir(run_id).join(agent_id).join("output.jsonl");
             render_agent_output_overlay(
                 frame,
                 area,
@@ -1563,7 +1822,6 @@ fn render_overlay(
                 output_scroll,
                 output_auto_scroll,
             );
-
         }
     }
 }
@@ -1704,7 +1962,7 @@ fn render_agent_output_overlay(
     scroll: usize,
     auto_scroll: bool,
 ) {
-    use crate::output::{load_output_file, parse_output_lines, OutputEntry};
+    use crate::output::{OutputEntry, load_output_file, parse_output_lines};
 
     let raw_lines = load_output_file(path);
     let entries = parse_output_lines(&raw_lines);
@@ -1732,10 +1990,7 @@ fn render_agent_output_overlay(
                     input_summary,
                 } => {
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            "\u{25b6} ",
-                            Style::default().fg(Color::Yellow),
-                        ),
+                        Span::styled("\u{25b6} ", Style::default().fg(Color::Yellow)),
                         Span::styled(
                             name.as_str(),
                             Style::default()
@@ -1808,7 +2063,11 @@ fn render_agent_output_overlay(
         .iter()
         .map(|line| {
             let w: usize = line.spans.iter().map(|s| s.content.len()).sum();
-            if wrap_width == 0 { 0 } else { w.saturating_sub(1) / wrap_width } // extra rows beyond first
+            if wrap_width == 0 {
+                0
+            } else {
+                w.saturating_sub(1) / wrap_width
+            } // extra rows beyond first
         })
         .sum();
     let max_scroll = (logical_lines + wrap_extra).saturating_sub(visible);
@@ -1831,7 +2090,8 @@ fn render_agent_output_overlay(
     frame.render_widget(paragraph, area);
 
     // Scrollbar
-    let mut scrollbar_state = ScrollbarState::new(logical_lines + wrap_extra).position(effective_scroll);
+    let mut scrollbar_state =
+        ScrollbarState::new(logical_lines + wrap_extra).position(effective_scroll);
     let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
         .track_style(Style::default().fg(Color::DarkGray))
         .thumb_style(Style::default().fg(Color::Gray));
@@ -2155,8 +2415,7 @@ mod tests {
 
     #[test]
     fn format_hive_create_task() {
-        let (display, color) =
-            format_tool_display("hive_create_task", Some("title=Add feature X"));
+        let (display, color) = format_tool_display("hive_create_task", Some("title=Add feature X"));
         assert_eq!(display, "CreateTask: Add feature X");
         assert_eq!(color, Color::Yellow);
     }
@@ -2171,8 +2430,7 @@ mod tests {
 
     #[test]
     fn format_hive_submit_to_queue() {
-        let (display, color) =
-            format_tool_display("hive_submit_to_queue", Some("task_id=t-42"));
+        let (display, color) = format_tool_display("hive_submit_to_queue", Some("task_id=t-42"));
         assert_eq!(display, "SubmitToQueue t-42");
         assert_eq!(color, Color::Yellow);
     }
@@ -2186,10 +2444,8 @@ mod tests {
 
     #[test]
     fn format_hive_review_verdict() {
-        let (display, color) = format_tool_display(
-            "hive_review_verdict",
-            Some("task_id=t-5, verdict=approve"),
-        );
+        let (display, color) =
+            format_tool_display("hive_review_verdict", Some("task_id=t-5, verdict=approve"));
         assert_eq!(display, "ReviewVerdict t-5: approve");
         assert_eq!(color, Color::Yellow);
     }
@@ -2245,8 +2501,14 @@ mod tests {
 
     #[test]
     fn extract_arg_finds_value() {
-        assert_eq!(extract_arg("file_path=/src/main.rs, limit=100", "file_path"), Some("/src/main.rs"));
-        assert_eq!(extract_arg("file_path=/src/main.rs, limit=100", "limit"), Some("100"));
+        assert_eq!(
+            extract_arg("file_path=/src/main.rs, limit=100", "file_path"),
+            Some("/src/main.rs")
+        );
+        assert_eq!(
+            extract_arg("file_path=/src/main.rs, limit=100", "limit"),
+            Some("100")
+        );
     }
 
     #[test]
@@ -2257,5 +2519,342 @@ mod tests {
     #[test]
     fn extract_arg_empty_string() {
         assert_eq!(extract_arg("", "key"), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // Mouse support tests
+    // -----------------------------------------------------------------------
+
+    fn make_tree_node(id: &str, has_children: bool) -> TreeNode {
+        TreeNode {
+            agent_id: id.into(),
+            prefix: String::new(),
+            status: AgentStatus::Running,
+            task_id: None,
+            heartbeat: None,
+            role: AgentRole::Worker,
+            has_children,
+            indicator: if has_children {
+                "\u{25BC} ".into()
+            } else {
+                "  ".into()
+            },
+        }
+    }
+
+    fn make_task_tree_node(id: &str, has_children: bool) -> TaskTreeNode {
+        TaskTreeNode {
+            task_id: id.into(),
+            prefix: String::new(),
+            indicator: if has_children {
+                "\u{25BC} ".into()
+            } else {
+                "  ".into()
+            },
+            title: format!("Task {id}"),
+            status: TaskStatus::Active,
+            assigned_to: None,
+            review_count: 0,
+            has_children,
+        }
+    }
+
+    fn make_mouse(kind: MouseEventKind, col: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind,
+            column: col,
+            row,
+            modifiers: crossterm::event::KeyModifiers::NONE,
+        }
+    }
+
+    #[test]
+    fn mouse_default_on() {
+        let ui = TuiState::default();
+        assert!(ui.mouse_enabled, "mouse should be on by default");
+    }
+
+    #[test]
+    fn pane_row_index_inside_border() {
+        let area = Rect::new(0, 5, 40, 10); // y=5..15, inner rows y=6..13
+        assert_eq!(pane_row_index(area, 5), None); // top border
+        assert_eq!(pane_row_index(area, 6), Some(0)); // first inner row
+        assert_eq!(pane_row_index(area, 7), Some(1));
+        assert_eq!(pane_row_index(area, 14), None); // bottom border
+    }
+
+    #[test]
+    fn mouse_click_selects_swarm_item() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            ..Default::default()
+        };
+        let nodes = vec![
+            make_tree_node("agent-0", false),
+            make_tree_node("agent-1", false),
+        ];
+        let task_nodes: Vec<TaskTreeNode> = vec![];
+
+        // Click on row 4 → inner index 1 → agent-1
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 4),
+            &nodes,
+            &task_nodes,
+        );
+        assert_eq!(ui.swarm_selected, Some(1));
+        assert_eq!(ui.focused_pane, Pane::Swarm);
+        assert_eq!(ui.selected_agent_filter.as_deref(), Some("agent-1"));
+    }
+
+    #[test]
+    fn mouse_click_selects_task_item() {
+        let mut ui = TuiState {
+            tasks_area: Rect::new(40, 2, 60, 10),
+            ..Default::default()
+        };
+        let tree_nodes: Vec<TreeNode> = vec![];
+        let task_nodes = vec![
+            make_task_tree_node("task-0", false),
+            make_task_tree_node("task-1", false),
+        ];
+
+        // Click on first inner row (y=3) → index 0
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 3),
+            &tree_nodes,
+            &task_nodes,
+        );
+        assert_eq!(ui.tasks_selected, Some(0));
+        assert_eq!(ui.focused_pane, Pane::Tasks);
+    }
+
+    #[test]
+    fn mouse_click_focuses_activity_pane() {
+        let mut ui = TuiState {
+            activity_area: Rect::new(0, 15, 100, 10),
+            ..Default::default()
+        };
+
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 10, 18),
+            &[],
+            &[],
+        );
+        assert_eq!(ui.focused_pane, Pane::Activity);
+    }
+
+    #[test]
+    fn mouse_scroll_down_in_swarm_advances_by_3() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            swarm_selected: Some(0),
+            ..Default::default()
+        };
+        let nodes = vec![
+            make_tree_node("a-0", false),
+            make_tree_node("a-1", false),
+            make_tree_node("a-2", false),
+            make_tree_node("a-3", false),
+            make_tree_node("a-4", false),
+        ];
+
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::ScrollDown, 5, 5),
+            &nodes,
+            &[],
+        );
+        assert_eq!(ui.swarm_selected, Some(3)); // 0 + 3
+    }
+
+    #[test]
+    fn mouse_scroll_in_activity_increases_by_3() {
+        let mut ui = TuiState {
+            activity_area: Rect::new(0, 15, 100, 10),
+            activity_scroll: 5,
+            activity_auto_scroll: false,
+            ..Default::default()
+        };
+
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::ScrollDown, 10, 18),
+            &[],
+            &[],
+        );
+        assert_eq!(ui.activity_scroll, 8); // 5 + 3
+    }
+
+    #[test]
+    fn mouse_double_click_opens_agent_overlay() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            ..Default::default()
+        };
+        let nodes = vec![make_tree_node("agent-x", false)];
+
+        // First click
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 3),
+            &nodes,
+            &[],
+        );
+        assert!(ui.overlay.is_none());
+
+        // Second click at same position (double-click)
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 3),
+            &nodes,
+            &[],
+        );
+        assert!(matches!(ui.overlay, Some(Overlay::Agent(ref id)) if id == "agent-x"));
+    }
+
+    #[test]
+    fn mouse_double_click_opens_task_overlay() {
+        let mut ui = TuiState {
+            tasks_area: Rect::new(40, 2, 60, 10),
+            ..Default::default()
+        };
+        let task_nodes = vec![make_task_tree_node("task-y", false)];
+
+        // First click
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 3),
+            &[],
+            &task_nodes,
+        );
+        // Second click (double-click)
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 50, 3),
+            &[],
+            &task_nodes,
+        );
+        assert!(matches!(ui.overlay, Some(Overlay::Task(ref id)) if id == "task-y"));
+    }
+
+    #[test]
+    fn mouse_click_outside_overlay_dismisses() {
+        let mut ui = TuiState {
+            overlay: Some(Overlay::Agent("agent-z".into())),
+            overlay_area: Rect::new(20, 5, 60, 30),
+            ..Default::default()
+        };
+
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 5, 3),
+            &[],
+            &[],
+        );
+        assert!(ui.overlay.is_none());
+    }
+
+    #[test]
+    fn mouse_click_inside_overlay_does_not_dismiss() {
+        let mut ui = TuiState {
+            overlay: Some(Overlay::Agent("agent-z".into())),
+            overlay_area: Rect::new(20, 5, 60, 30),
+            ..Default::default()
+        };
+
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 40, 15),
+            &[],
+            &[],
+        );
+        assert!(ui.overlay.is_some());
+    }
+
+    #[test]
+    fn mouse_scroll_in_overlay_adjusts_output_scroll() {
+        let mut ui = TuiState {
+            overlay: Some(Overlay::AgentOutput("agent-o".into())),
+            overlay_area: Rect::new(5, 3, 90, 40),
+            ..Default::default()
+        };
+
+        // Scroll up inside overlay
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::ScrollUp, 50, 20),
+            &[],
+            &[],
+        );
+        assert_eq!(ui.output_scroll, 3);
+        assert!(!ui.output_auto_scroll);
+    }
+
+    #[test]
+    fn mouse_click_on_collapse_toggle_toggles_agent() {
+        let mut ui = TuiState {
+            swarm_area: Rect::new(0, 2, 40, 10),
+            ..Default::default()
+        };
+        let nodes = vec![make_tree_node("lead-1", true)]; // has_children=true, prefix=""
+
+        // Toggle indicator is at col = swarm_area.x + 1 + prefix.len() = 0 + 1 + 0 = 1
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 1, 3),
+            &nodes,
+            &[],
+        );
+        assert!(ui.collapsed_agents.contains("lead-1"));
+
+        // Click again to expand
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 1, 3),
+            &nodes,
+            &[],
+        );
+        assert!(!ui.collapsed_agents.contains("lead-1"));
+    }
+
+    #[test]
+    fn mouse_click_on_collapse_toggle_toggles_task() {
+        let mut ui = TuiState {
+            tasks_area: Rect::new(40, 2, 60, 10),
+            ..Default::default()
+        };
+        let task_nodes = vec![make_task_tree_node("task-p", true)]; // has_children=true
+
+        // Toggle indicator at col = tasks_area.x + 1 + prefix.len() = 40 + 1 + 0 = 41
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 41, 3),
+            &[],
+            &task_nodes,
+        );
+        assert!(ui.collapsed_tasks.contains("task-p"));
+
+        // Click again to expand
+        handle_mouse(
+            &mut ui,
+            make_mouse(MouseEventKind::Down(MouseButton::Left), 41, 3),
+            &[],
+            &task_nodes,
+        );
+        assert!(!ui.collapsed_tasks.contains("task-p"));
+    }
+
+    #[test]
+    fn detect_multiplexer_returns_valid_value() {
+        let result = detect_multiplexer();
+        if let Some(name) = result {
+            assert!(
+                name == "Zellij" || name == "tmux" || name == "screen",
+                "unexpected multiplexer: {name}"
+            );
+        }
     }
 }

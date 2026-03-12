@@ -249,8 +249,7 @@ impl AgentSpawner {
             }),
         );
 
-        fs::write(path, serde_json::to_string_pretty(&root).unwrap())
-            .map_err(|e| e.to_string())
+        fs::write(path, serde_json::to_string_pretty(&root).unwrap()).map_err(|e| e.to_string())
     }
 
     /// Remove the hive MCP server entry from .mcp.json.
@@ -260,8 +259,8 @@ impl AgentSpawner {
             return Ok(());
         }
         let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let mut root: serde_json::Value =
-            serde_json::from_str(&content).map_err(|e| format!("Failed to parse .mcp.json: {e}"))?;
+        let mut root: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| format!("Failed to parse .mcp.json: {e}"))?;
 
         if let Some(servers) = root
             .as_object_mut()
@@ -275,8 +274,7 @@ impl AgentSpawner {
             }
         }
 
-        fs::write(path, serde_json::to_string_pretty(&root).unwrap())
-            .map_err(|e| e.to_string())
+        fs::write(path, serde_json::to_string_pretty(&root).unwrap()).map_err(|e| e.to_string())
     }
 
     /// Scan the repo and return a brief summary of the project structure.
@@ -1038,7 +1036,9 @@ mod tests {
         assert!(prompt.contains("## Task Decomposition Protocol"));
         assert!(prompt.contains("Break your task into subtasks"));
         assert!(prompt.contains("parent_task set to your task ID"));
-        assert!(prompt.contains("CANNOT submit to the merge queue until ALL subtasks are resolved"));
+        assert!(
+            prompt.contains("CANNOT submit to the merge queue until ALL subtasks are resolved")
+        );
         assert!(prompt.contains("## Code Review Protocol"));
         assert!(prompt.contains("hive_review_agent"));
         assert!(prompt.contains("## Health Monitoring"));
@@ -1266,8 +1266,7 @@ mod tests {
 
     #[test]
     fn coordinator_prompt_fn_has_new_task_creation_text() {
-        let prompt =
-            AgentSpawner::coordinator_prompt("run-1", "spec here", "summary", "");
+        let prompt = AgentSpawner::coordinator_prompt("run-1", "spec here", "summary", "");
         assert!(prompt.contains("Do NOT create worker-level subtasks"));
         assert!(!prompt.contains("Create ALL tasks FIRST"));
     }

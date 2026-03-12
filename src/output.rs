@@ -8,14 +8,9 @@ pub enum OutputEntry {
     /// Free-form text from the assistant.
     AssistantText(String),
     /// A tool invocation by the assistant.
-    ToolUse {
-        name: String,
-        input_summary: String,
-    },
+    ToolUse { name: String, input_summary: String },
     /// The result returned from a tool call.
-    ToolResult {
-        content: String,
-    },
+    ToolResult { content: String },
     /// The final result summary at the end of a session.
     Result {
         duration_ms: u64,
@@ -147,18 +142,12 @@ pub fn parse_output_lines(lines: &[String]) -> Vec<OutputEntry> {
                 entries.push(OutputEntry::ToolResult { content });
             }
             "result" => {
-                let duration_ms = v
-                    .get("duration_ms")
-                    .and_then(|d| d.as_u64())
-                    .unwrap_or(0);
+                let duration_ms = v.get("duration_ms").and_then(|d| d.as_u64()).unwrap_or(0);
                 let cost_usd = v
                     .get("total_cost_usd")
                     .and_then(|c| c.as_f64())
                     .unwrap_or(0.0);
-                let num_turns = v
-                    .get("num_turns")
-                    .and_then(|n| n.as_u64())
-                    .unwrap_or(0);
+                let num_turns = v.get("num_turns").and_then(|n| n.as_u64()).unwrap_or(0);
                 let result = v
                     .get("result")
                     .and_then(|r| r.as_str())
@@ -254,8 +243,7 @@ mod tests {
 
     #[test]
     fn test_summarize_json_object() {
-        let v: Value =
-            serde_json::from_str(r#"{"file_path":"/src/main.rs","line":42}"#).unwrap();
+        let v: Value = serde_json::from_str(r#"{"file_path":"/src/main.rs","line":42}"#).unwrap();
         let summary = summarize_json(&v, 100);
         assert!(summary.contains("file_path="));
         assert!(summary.contains("line=42"));
@@ -275,16 +263,14 @@ mod tests {
 
     #[test]
     fn test_summarize_json_nested_object() {
-        let v: Value =
-            serde_json::from_str(r#"{"name":"Read","input":{"a":"b"}}"#).unwrap();
+        let v: Value = serde_json::from_str(r#"{"name":"Read","input":{"a":"b"}}"#).unwrap();
         let summary = summarize_json(&v, 100);
         assert!(summary.contains("input={...}"));
     }
 
     #[test]
     fn test_summarize_json_with_array_value() {
-        let v: Value =
-            serde_json::from_str(r#"{"items":[1,2,3],"name":"test"}"#).unwrap();
+        let v: Value = serde_json::from_str(r#"{"items":[1,2,3],"name":"test"}"#).unwrap();
         let summary = summarize_json(&v, 100);
         assert!(summary.contains("items=[3 items]"));
     }
@@ -306,7 +292,10 @@ mod tests {
         ];
         let entries = parse_output_lines(&lines);
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0], OutputEntry::AssistantText("Hello world!".to_string()));
+        assert_eq!(
+            entries[0],
+            OutputEntry::AssistantText("Hello world!".to_string())
+        );
     }
 
     #[test]
@@ -318,7 +307,10 @@ mod tests {
         let entries = parse_output_lines(&lines);
         assert_eq!(entries.len(), 1);
         match &entries[0] {
-            OutputEntry::ToolUse { name, input_summary } => {
+            OutputEntry::ToolUse {
+                name,
+                input_summary,
+            } => {
                 assert_eq!(name, "Read");
                 assert!(input_summary.contains("file_path="));
             }
@@ -432,7 +424,10 @@ mod tests {
             OutputEntry::AssistantText("I'll read the file first.".to_string())
         );
         match &entries[1] {
-            OutputEntry::ToolUse { name, input_summary } => {
+            OutputEntry::ToolUse {
+                name,
+                input_summary,
+            } => {
                 assert_eq!(name, "Read");
                 assert!(input_summary.contains("file_path="));
             }
@@ -508,9 +503,7 @@ mod tests {
 
     #[test]
     fn test_result_with_missing_fields() {
-        let lines = vec![
-            r#"{"type":"result","subtype":"success"}"#.to_string(),
-        ];
+        let lines = vec![r#"{"type":"result","subtype":"success"}"#.to_string()];
         let entries = parse_output_lines(&lines);
         assert_eq!(entries.len(), 1);
         match &entries[0] {
@@ -587,8 +580,14 @@ mod tests {
         assert_eq!(entries.len(), 2);
         match (&entries[0], &entries[1]) {
             (
-                OutputEntry::ToolUse { name: n1, input_summary: s1 },
-                OutputEntry::ToolUse { name: n2, input_summary: s2 },
+                OutputEntry::ToolUse {
+                    name: n1,
+                    input_summary: s1,
+                },
+                OutputEntry::ToolUse {
+                    name: n2,
+                    input_summary: s2,
+                },
             ) => {
                 assert_eq!(n1, "Read");
                 assert!(s1.contains("a.rs"));

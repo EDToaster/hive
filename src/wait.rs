@@ -40,11 +40,7 @@ impl AgentContext {
         // Collect tasks assigned to any team member
         let relevant_tasks: HashSet<String> = tasks
             .iter()
-            .filter(|t| {
-                t.assigned_to
-                    .as_ref()
-                    .is_some_and(|a| team.contains(a))
-            })
+            .filter(|t| t.assigned_to.as_ref().is_some_and(|a| team.contains(a)))
             .map(|t| t.id.clone())
             .collect();
 
@@ -273,17 +269,11 @@ pub fn agent_status_digest(repo_root: &Path, run_id: &str, agent_id: Option<&str
             other => format!("{other:?}").to_lowercase(),
         };
 
-        let task_info = agent
-            .task_id
-            .as_deref()
-            .unwrap_or("no task");
+        let task_info = agent.task_id.as_deref().unwrap_or("no task");
 
         lines.push(format!(
             "{}: {:?} ({}, {})",
-            agent.id,
-            agent.status,
-            task_info,
-            timing,
+            agent.id, agent.status, task_info, timing,
         ));
     }
 
@@ -354,20 +344,13 @@ pub async fn wait_for_activity(
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_dur);
 
-        let digest = agent_status_digest(
-            &repo_root_owned,
-            &run_id_owned,
-            agent_id_owned.as_deref(),
-        );
+        let digest =
+            agent_status_digest(&repo_root_owned, &run_id_owned, agent_id_owned.as_deref());
 
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
-                let mut result = timeout_summary(
-                    &repo_root_owned,
-                    &run_id_owned,
-                    timeout_dur,
-                );
+                let mut result = timeout_summary(&repo_root_owned, &run_id_owned, timeout_dur);
                 result.push_str(&digest);
                 return Ok(result);
             }
@@ -386,11 +369,7 @@ pub async fn wait_for_activity(
                     continue;
                 }
                 Err(_) => {
-                    let mut result = timeout_summary(
-                        &repo_root_owned,
-                        &run_id_owned,
-                        timeout_dur,
-                    );
+                    let mut result = timeout_summary(&repo_root_owned, &run_id_owned, timeout_dur);
                     result.push_str(&digest);
                     return Ok(result);
                 }
@@ -415,7 +394,9 @@ mod tests {
         std::fs::create_dir_all(run_dir.join("tasks")).unwrap();
         std::fs::create_dir_all(run_dir.join("messages")).unwrap();
 
-        let result = wait_for_activity(dir.path(), run_id, 1, None).await.unwrap();
+        let result = wait_for_activity(dir.path(), run_id, 1, None)
+            .await
+            .unwrap();
         assert!(
             result.contains("no activity detected within 1s"),
             "unexpected result: {result}"
@@ -835,7 +816,10 @@ mod tests {
         std::fs::write(&msg_path, serde_json::to_string_pretty(&msg).unwrap()).unwrap();
 
         let desc = describe_event(run_dir, &msg_path, &HashMap::new(), Some(&ctx));
-        assert!(desc.is_none(), "should filter message not addressed to team");
+        assert!(
+            desc.is_none(),
+            "should filter message not addressed to team"
+        );
     }
 
     #[test]
@@ -1043,7 +1027,10 @@ mod tests {
         state.save_agent(run_id, &agent2).unwrap();
 
         let digest = agent_status_digest(dir.path(), run_id, None);
-        assert!(digest.contains("--- Agent Status ---"), "unexpected: {digest}");
+        assert!(
+            digest.contains("--- Agent Status ---"),
+            "unexpected: {digest}"
+        );
         assert!(digest.contains("worker-1"), "unexpected: {digest}");
         assert!(digest.contains("worker-2"), "unexpected: {digest}");
         assert!(digest.contains("Idle"), "unexpected: {digest}");
@@ -1066,7 +1053,10 @@ mod tests {
 
         let digest = agent_status_digest(dir.path(), run_id, Some("lead-1"));
         assert!(digest.contains("lead-1"), "should include self: {digest}");
-        assert!(digest.contains("worker-1"), "should include child: {digest}");
+        assert!(
+            digest.contains("worker-1"),
+            "should include child: {digest}"
+        );
         assert!(
             !digest.contains("worker-other"),
             "should not include other team: {digest}"

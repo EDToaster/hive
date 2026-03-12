@@ -497,10 +497,7 @@ impl HiveMcp {
                 task.assigned_to.as_deref() == Some(caller_id.as_str())
             }
             AgentRole::Reviewer => {
-                caller_agent
-                    .as_ref()
-                    .and_then(|a| a.task_id.as_deref())
-                    == Some(&task.id)
+                caller_agent.as_ref().and_then(|a| a.task_id.as_deref()) == Some(&task.id)
             }
             _ => false,
         };
@@ -713,7 +710,8 @@ impl HiveMcp {
             AgentRole::Coordinator => {
                 // Coordinator can only message leads
                 let target = self.state().load_agent(&self.run_id, &p.to).ok();
-                if !matches!(target, Some(ref t) if matches!(t.role, AgentRole::Lead | AgentRole::Explorer | AgentRole::Evaluator)) {
+                if !matches!(target, Some(ref t) if matches!(t.role, AgentRole::Lead | AgentRole::Explorer | AgentRole::Evaluator))
+                {
                     return Ok(CallToolResult::error(vec![Content::text(
                         "Coordinator can only send messages to leads, explorers, and evaluators.",
                     )]));
@@ -1315,7 +1313,9 @@ impl HiveMcp {
                                 .agents_dir(&self.run_id)
                                 .join(&agent.id)
                                 .join("output.jsonl");
-                            if let Some(sid) = crate::output::parse_session_id_from_output(&output_path) {
+                            if let Some(sid) =
+                                crate::output::parse_session_id_from_output(&output_path)
+                            {
                                 agent.session_id = Some(sid);
                             }
                         }
@@ -1335,21 +1335,26 @@ impl HiveMcp {
 
             let uncommitted_changes = agent.worktree.as_deref().and_then(Self::worktree_status);
 
-            let (recent_commits, commit_count) = agent.worktree.as_deref().map(|wt| {
-                let wt_path = std::path::Path::new(wt);
-                match crate::git::Git::log_oneline_since(wt_path, "main") {
-                    Ok(log) if !log.trim().is_empty() => {
-                        let lines: Vec<&str> = log.trim().lines().collect();
-                        let count = lines.len();
-                        let mut commits: Vec<String> = lines.iter().take(10).map(|s| s.to_string()).collect();
-                        if count > 10 {
-                            commits.push(format!("... and {} more", count - 10));
+            let (recent_commits, commit_count) = agent
+                .worktree
+                .as_deref()
+                .map(|wt| {
+                    let wt_path = std::path::Path::new(wt);
+                    match crate::git::Git::log_oneline_since(wt_path, "main") {
+                        Ok(log) if !log.trim().is_empty() => {
+                            let lines: Vec<&str> = log.trim().lines().collect();
+                            let count = lines.len();
+                            let mut commits: Vec<String> =
+                                lines.iter().take(10).map(|s| s.to_string()).collect();
+                            if count > 10 {
+                                commits.push(format!("... and {} more", count - 10));
+                            }
+                            (Some(commits), count)
                         }
-                        (Some(commits), count)
+                        _ => (None, 0),
                     }
-                    _ => (None, 0),
-                }
-            }).unwrap_or((None, 0));
+                })
+                .unwrap_or((None, 0));
 
             reports.push(serde_json::json!({
                 "agent_id": agent.id,
@@ -3108,8 +3113,16 @@ mod tests {
         assert_eq!(worker_report["commit_count"], 2);
         let commits = worker_report["recent_commits"].as_array().unwrap();
         assert_eq!(commits.len(), 2);
-        assert!(commits.iter().any(|c| c.as_str().unwrap().contains("first feature commit")));
-        assert!(commits.iter().any(|c| c.as_str().unwrap().contains("second feature commit")));
+        assert!(
+            commits
+                .iter()
+                .any(|c| c.as_str().unwrap().contains("first feature commit"))
+        );
+        assert!(
+            commits
+                .iter()
+                .any(|c| c.as_str().unwrap().contains("second feature commit"))
+        );
 
         // Coordinator should have no commits (no worktree)
         let coord_report = reports
@@ -3186,10 +3199,7 @@ mod tests {
 
         // No messages should be created
         let messages = state.list_messages("test-run").unwrap();
-        let notify_msgs: Vec<_> = messages
-            .iter()
-            .filter(|m| m.from == "solo-agent")
-            .collect();
+        let notify_msgs: Vec<_> = messages.iter().filter(|m| m.from == "solo-agent").collect();
         assert_eq!(notify_msgs.len(), 0, "No notification without a parent");
     }
 }
