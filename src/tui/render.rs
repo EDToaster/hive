@@ -515,8 +515,7 @@ pub(super) fn format_tool_display(
             let detail = if args.is_empty() {
                 String::new()
             } else {
-                let truncated = if args.len() > 40 { &args[..40] } else { args };
-                truncated.to_string()
+                args.to_string()
             };
             (pascal, detail, Color::Yellow)
         }
@@ -536,8 +535,7 @@ pub(super) fn format_tool_display(
         }
         "Bash" => {
             let cmd = extract_arg(args, "command").unwrap_or("?");
-            let preview = if cmd.len() > 50 { &cmd[..50] } else { cmd };
-            ("$".into(), preview.to_string(), Color::Blue)
+            ("$".into(), cmd.to_string(), Color::Blue)
         }
         "Grep" => {
             let pattern = extract_arg(args, "pattern").unwrap_or("?");
@@ -553,8 +551,7 @@ pub(super) fn format_tool_display(
             let detail = if args.is_empty() {
                 String::new()
             } else {
-                let truncated = if args.len() > 40 { &args[..40] } else { args };
-                truncated.to_string()
+                args.to_string()
             };
             (tool_name.to_string(), detail, Color::Gray)
         }
@@ -776,7 +773,7 @@ pub(super) fn render_activity_stream(
                             Style::default().fg(if is_dimmed {
                                 Color::Rgb(110, 110, 120)
                             } else {
-                                Color::Gray
+                                Color::DarkGray
                             }),
                         ));
                     }
