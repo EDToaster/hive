@@ -261,13 +261,18 @@ impl HiveMcp {
             refs: agent.task_id.clone().into_iter().collect(),
         };
         let _ = state.save_message(&self.run_id, &message);
+        self.append_event(
+            "message_created",
+            &message.id,
+            &format!("from {} to {}", agent.id, parent_id),
+        );
         let _ = self.try_wake_agent(parent_id, &body);
     }
 
     pub(crate) fn notify_submitter(state: &HiveState, run_id: &str, to: &str, body: &str) {
         let msg_id = format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let message = Message {
-            id: msg_id,
+            id: msg_id.clone(),
             from: "coordinator".to_string(),
             to: to.to_string(),
             timestamp: Utc::now(),
@@ -276,6 +281,16 @@ impl HiveMcp {
             refs: vec![],
         };
         let _ = state.save_message(run_id, &message);
+        // Best-effort event logging (static method, no &self)
+        let log_path = state.run_dir(run_id).join("log.db");
+        if let Ok(db) = crate::logging::LogDb::open(&log_path) {
+            let _ = db.append_event(
+                run_id,
+                "message_created",
+                &msg_id,
+                &format!("from coordinator to {to}"),
+            );
+        }
     }
 
     /// Append an event to the run's event log (log.db). Errors are silently ignored

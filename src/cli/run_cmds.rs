@@ -552,12 +552,20 @@ pub fn cmd_wait(run: Option<String>, timeout: u64) -> Result<(), String> {
         None => state.active_run_id()?,
     };
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
+    // Start from the current max event ID so we only see new events
+    let cursor = {
+        let log_path = state.run_dir(&run_id).join("log.db");
+        crate::logging::LogDb::open(&log_path)
+            .ok()
+            .and_then(|db| db.max_event_id(&run_id).ok())
+            .unwrap_or(0)
+    };
     let (result, _cursor) = rt.block_on(crate::wait::wait_for_activity(
         state.repo_root(),
         &run_id,
         timeout,
         None,
-        0,
+        cursor,
     ))?;
     println!("{result}");
     Ok(())

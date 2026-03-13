@@ -31,7 +31,9 @@ impl LogDb {
     pub fn open(path: &Path) -> Result<Self, String> {
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
         conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS tool_calls (
+            "PRAGMA journal_mode=WAL;
+            PRAGMA busy_timeout=5000;
+            CREATE TABLE IF NOT EXISTS tool_calls (
                 id INTEGER PRIMARY KEY,
                 run_id TEXT NOT NULL,
                 agent_id TEXT NOT NULL,

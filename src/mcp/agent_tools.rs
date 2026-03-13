@@ -105,6 +105,11 @@ impl HiveMcp {
                     let _ = state.save_agent(&self.run_id, &spawned_agent);
                 }
                 self.append_event(
+                    "task_changed",
+                    &p.task_id,
+                    &format!("activated, assigned to {}", p.agent_id),
+                );
+                self.append_event(
                     "agent_spawned",
                     &agent.id,
                     &format!("spawned {:?} for task {}", agent.role, p.task_id),

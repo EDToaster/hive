@@ -54,6 +54,12 @@ impl HiveMcp {
                     .save_merge_queue(&self.run_id, &queue)
                     .map_err(|e| McpError::internal_error(e, None))?;
 
+                self.append_event(
+                    "task_changed",
+                    &p.task_id,
+                    &format!("review approved, queued (branch: {})", branch),
+                );
+
                 // Notify coordinator
                 let msg = format!(
                     "Review approved for task '{}'. Branch '{}' added to merge queue.",
@@ -87,6 +93,12 @@ impl HiveMcp {
                     .map_err(|e| McpError::internal_error(e, None))?;
 
                 // Send feedback to the agent that worked on this task
+                self.append_event(
+                    "task_changed",
+                    &p.task_id,
+                    &format!("review requested changes (cycle {})", task.review_count),
+                );
+
                 if let Some(ref assigned) = task.assigned_to {
                     let body = format!(
                         "Review feedback for task '{}' (review cycle {}):\n{}",
@@ -126,6 +138,12 @@ impl HiveMcp {
                 state
                     .save_task(&self.run_id, &task)
                     .map_err(|e| McpError::internal_error(e, None))?;
+
+                self.append_event(
+                    "task_changed",
+                    &p.task_id,
+                    "review rejected, task failed",
+                );
 
                 // Notify the lead (parent of the assigned agent)
                 if let Some(ref assigned) = task.assigned_to
@@ -281,6 +299,12 @@ impl HiveMcp {
                 });
                 let _ = state.save_merge_queue(&self.run_id, &queue);
 
+                self.append_event(
+                    "task_changed",
+                    &p.task_id,
+                    &format!("submitted directly to queue (reviewer spawn failed, branch: {})", p.branch),
+                );
+
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Warning: Failed to spawn reviewer ({e}). Branch submitted directly to merge queue as fallback."
                 ))]))
@@ -314,12 +338,22 @@ impl HiveMcp {
         let repo_root = state.repo_root().to_path_buf();
         let target_branch = self.repo_current_branch();
 
-        // Helper closure: mark task as failed
-        let mark_failed = |state: &crate::state::HiveState, run_id: &str, task_id: &str| {
+        // Helper closure: mark task as failed and log event
+        let log_path = state.run_dir(&self.run_id).join("log.db");
+        let run_id_for_closure = self.run_id.clone();
+        let mark_failed = move |state: &crate::state::HiveState, run_id: &str, task_id: &str| {
             if let Ok(mut task) = state.load_task(run_id, task_id) {
                 task.status = TaskStatus::Failed;
                 task.updated_at = Utc::now();
                 let _ = state.save_task(run_id, &task);
+            }
+            if let Ok(db) = crate::logging::LogDb::open(&log_path) {
+                let _ = db.append_event(
+                    &run_id_for_closure,
+                    "task_changed",
+                    task_id,
+                    "merge failed, task marked as failed",
+                );
             }
         };
 

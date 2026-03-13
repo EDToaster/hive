@@ -335,14 +335,19 @@ pub async fn wait_for_activity(
         });
 
         let log_path = run_dir.join("log.db");
+        let db = if log_path.exists() {
+            crate::logging::LogDb::open(&log_path).ok()
+        } else {
+            None
+        };
 
         let poll_events = |cur: u64| -> Vec<crate::logging::EventRow> {
-            if !log_path.exists() {
-                return vec![];
-            }
-            let events = crate::logging::LogDb::open(&log_path)
-                .ok()
-                .and_then(|db| db.events_since(&run_id_owned, cur, 50).ok())
+            let db = match db.as_ref() {
+                Some(db) => db,
+                None => return vec![],
+            };
+            let events = db
+                .events_since(&run_id_owned, cur, 50)
                 .unwrap_or_default();
 
             // Filter events by team context and message dedup
