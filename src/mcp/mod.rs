@@ -84,7 +84,6 @@ impl HiveMcp {
     }
 
     /// Returns the current branch of the repo root (the merge target).
-    #[allow(dead_code)]
     pub(crate) fn repo_current_branch(&self) -> String {
         crate::git::Git::current_branch(std::path::Path::new(&self.repo_root))
             .unwrap_or_else(|_| "main".into())

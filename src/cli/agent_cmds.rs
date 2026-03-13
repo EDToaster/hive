@@ -172,10 +172,11 @@ pub fn cmd_review_agent(agent_id: &str, run: Option<String>) -> Result<(), Strin
     }
 
     let branch = format!("hive/{run_id}/{agent_id}");
-    let commits = crate::git::Git::log_oneline_since(wt_path, "main")
+    let base = agent.branched_from.as_deref().unwrap_or("main");
+    let commits = crate::git::Git::log_oneline_since(wt_path, base)
         .unwrap_or_else(|_| "(no commits)".to_string());
-    let diff_stat = crate::git::Git::diff_stat_since(wt_path, "main")
-        .unwrap_or_else(|_| "(no diff)".to_string());
+    let diff_stat =
+        crate::git::Git::diff_stat_since(wt_path, base).unwrap_or_else(|_| "(no diff)".to_string());
 
     println!("Agent:  {}", agent.id);
     println!("Role:   {:?}", agent.role);

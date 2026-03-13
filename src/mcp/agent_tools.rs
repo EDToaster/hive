@@ -273,7 +273,8 @@ impl HiveMcp {
                 .as_deref()
                 .map(|wt| {
                     let wt_path = std::path::Path::new(wt);
-                    match crate::git::Git::log_oneline_since(wt_path, "main") {
+                    let base = agent.branched_from.as_deref().unwrap_or("main");
+                    match crate::git::Git::log_oneline_since(wt_path, base) {
                         Ok(log) if !log.trim().is_empty() => {
                             let lines: Vec<&str> = log.trim().lines().collect();
                             let count = lines.len();
@@ -385,9 +386,10 @@ impl HiveMcp {
 
         // Get branch name, commit log, and diff stat
         let branch = format!("hive/{}/{}", self.run_id, agent.id);
-        let commits = crate::git::Git::log_oneline_since(wt_path, "main")
+        let base = agent.branched_from.as_deref().unwrap_or("main");
+        let commits = crate::git::Git::log_oneline_since(wt_path, base)
             .unwrap_or_else(|_| "(no commits)".to_string());
-        let diff_stat = crate::git::Git::diff_stat_since(wt_path, "main")
+        let diff_stat = crate::git::Git::diff_stat_since(wt_path, base)
             .unwrap_or_else(|_| "(no diff)".to_string());
 
         let report = serde_json::json!({
@@ -531,7 +533,8 @@ impl HiveMcp {
             let wt_path = std::path::Path::new(worktree);
             if wt_path.exists() {
                 Self::auto_commit_worktree(worktree);
-                diff_stat = crate::git::Git::diff_stat_since(wt_path, "main").unwrap_or_default();
+                let base = agent.branched_from.as_deref().unwrap_or("main");
+                diff_stat = crate::git::Git::diff_stat_since(wt_path, base).unwrap_or_default();
                 if let Err(_e) = crate::git::Git::worktree_remove(state.repo_root(), wt_path) {
                     let _ = crate::git::Git::worktree_prune(state.repo_root());
                 }

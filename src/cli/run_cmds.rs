@@ -355,13 +355,15 @@ pub fn cmd_summary(run: Option<String>) -> Result<(), String> {
     }
 
     // Merged commits
+    let current_branch =
+        crate::git::Git::current_branch(state.repo_root()).unwrap_or_else(|_| "main".into());
     let since_date = metadata.created_at.format("%Y-%m-%d %H:%M:%S").to_string();
     if let Ok(output) = std::process::Command::new("git")
         .args([
             "log",
             "--oneline",
             &format!("--since={}", since_date),
-            "main",
+            &current_branch,
         ])
         .current_dir(state.repo_root())
         .output()

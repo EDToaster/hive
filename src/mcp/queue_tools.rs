@@ -307,6 +307,7 @@ impl HiveMcp {
 
         let entry = queue.entries.remove(0);
         let repo_root = state.repo_root().to_path_buf();
+        let target_branch = self.repo_current_branch();
 
         // Helper closure: mark task as failed
         let mark_failed = |state: &crate::state::HiveState, run_id: &str, task_id: &str| {
@@ -317,10 +318,10 @@ impl HiveMcp {
             }
         };
 
-        // Ensure we're on main before merging
-        if let Err(e) = crate::git::Git::checkout(&repo_root, "main") {
+        // Ensure we're on the target branch before merging
+        if let Err(e) = crate::git::Git::checkout(&repo_root, &target_branch) {
             return Ok(CallToolResult::error(vec![Content::text(format!(
-                "Failed to checkout main before merge: {e}"
+                "Failed to checkout {target_branch} before merge: {e}"
             ))]));
         }
 
@@ -331,15 +332,15 @@ impl HiveMcp {
         let merge_result = if let Err(merge_err) = merge_result {
             let _ = crate::git::Git::merge_abort(&repo_root);
 
-            match crate::git::Git::rebase(&repo_root, &entry.branch, "main") {
+            match crate::git::Git::rebase(&repo_root, &entry.branch, &target_branch) {
                 Ok(()) => {
                     // Rebase succeeded — HEAD is now on the rebased branch.
-                    // Switch back to main before retrying the merge.
-                    if let Err(e) = crate::git::Git::checkout(&repo_root, "main") {
+                    // Switch back to the target branch before retrying the merge.
+                    if let Err(e) = crate::git::Git::checkout(&repo_root, &target_branch) {
                         mark_failed(&state, &self.run_id, &entry.task_id);
                         state.save_merge_queue(&self.run_id, &queue).ok();
                         let msg = format!(
-                            "Rebase of '{}' succeeded but checkout main failed: {e}",
+                            "Rebase of '{}' succeeded but checkout {target_branch} failed: {e}",
                             entry.branch
                         );
                         Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &msg);
@@ -349,8 +350,8 @@ impl HiveMcp {
                 }
                 Err(rebase_err) => {
                     let _ = crate::git::Git::rebase_abort(&repo_root);
-                    // Restore main after failed rebase
-                    let _ = crate::git::Git::checkout(&repo_root, "main");
+                    // Restore target branch after failed rebase
+                    let _ = crate::git::Git::checkout(&repo_root, &target_branch);
                     mark_failed(&state, &self.run_id, &entry.task_id);
                     state.save_merge_queue(&self.run_id, &queue).ok();
                     let msg = format!(
