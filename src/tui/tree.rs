@@ -15,6 +15,7 @@ pub(super) struct TreeNode {
     pub role: AgentRole,
     pub has_children: bool,
     pub indicator: String,
+    pub model: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -235,6 +236,7 @@ fn add_agent_node(
         role: agent.role,
         has_children,
         indicator,
+        model: agent.model.clone(),
     });
 
     if !is_collapsed {

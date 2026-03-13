@@ -455,6 +455,7 @@ fn make_tree_node(id: &str, has_children: bool) -> TreeNode {
         heartbeat: None,
         role: AgentRole::Worker,
         has_children,
+        model: None,
         indicator: if has_children {
             "\u{25BC} ".into()
         } else {

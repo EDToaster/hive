@@ -205,6 +205,23 @@ pub(super) fn render_swarm_pane(
                 status_span,
             ];
 
+            if let Some(ref model) = node.model {
+                // Show short model name: extract tier from model ID string
+                let short = if model.contains("opus") {
+                    "opus"
+                } else if model.contains("sonnet") {
+                    "sonnet"
+                } else if model.contains("haiku") {
+                    "haiku"
+                } else {
+                    model.as_str()
+                };
+                spans.push(Span::styled(
+                    format!(" ({short})"),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
             if let Some(ref tid) = node.task_id {
                 spans.push(Span::styled(
                     format!(" {tid}"),
