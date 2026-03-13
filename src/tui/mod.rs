@@ -460,7 +460,7 @@ fn run_tui_loop(
     let config = state.load_config();
     let stall_timeout = config.stall_timeout_seconds;
 
-    loop {
+    'main: loop {
         // ---- Load data ----
         let agents = state.list_agents(run_id).unwrap_or_default();
         let tasks = state.list_tasks(run_id).unwrap_or_default();
@@ -624,19 +624,28 @@ fn run_tui_loop(
             .map_err(|e| e.to_string())?;
 
         // ---- Handle input ----
+        // Drain all pending events to avoid inertial scroll buildup on macOS.
+        // Without this, each scroll event waits for a full render cycle, so
+        // momentum-scroll floods the queue and blocks direction changes.
         let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+        let mut events = Vec::new();
         if event::poll(timeout).map_err(|e| e.to_string())? {
-            let ev = event::read().map_err(|e| e.to_string())?;
+            events.push(event::read().map_err(|e| e.to_string())?);
+            while event::poll(std::time::Duration::ZERO).map_err(|e| e.to_string())? {
+                events.push(event::read().map_err(|e| e.to_string())?);
+            }
+        }
 
+        for ev in &events {
             // --- Mouse events ---
             if let Event::Mouse(mouse) = ev
                 && ui.mouse_enabled
             {
-                handle_mouse(&mut ui, mouse, &tree_nodes, &task_tree_nodes);
+                handle_mouse(&mut ui, *mouse, &tree_nodes, &task_tree_nodes);
             }
 
             // --- Keyboard events ---
-            if let Event::Key(key) = ev {
+            if let Event::Key(key) = *ev {
                 // Intercept keys when AgentOutput overlay is open
                 if let Some(Overlay::AgentOutput(ref agent_id)) = ui.overlay.clone() {
                     match key.code {
@@ -737,7 +746,7 @@ fn run_tui_loop(
                 match key.code {
                     KeyCode::Char('q') => {
                         if ui.overlay.is_none() {
-                            break;
+                            break 'main;
                         }
                     }
                     KeyCode::Esc => {
