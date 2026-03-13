@@ -252,6 +252,7 @@ impl AgentSpawner {
             retry_count: 0,
             model: Some(resolved_model),
             branched_from: Some(branched_from),
+            wait_cursor: None,
         };
         state.save_agent(run_id, &agent)?;
 

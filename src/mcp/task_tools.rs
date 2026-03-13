@@ -92,10 +92,17 @@ impl HiveMcp {
         };
 
         match self.state().save_task(&self.run_id, &task) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Created task '{task_id}': {}",
-                p.title
-            ))])),
+            Ok(()) => {
+                self.append_event(
+                    "task_created",
+                    &task_id,
+                    &format!("task created: {}", p.title),
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Created task '{task_id}': {}",
+                    p.title
+                ))]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }
@@ -243,10 +250,17 @@ impl HiveMcp {
         task.updated_at = Utc::now();
 
         match state.save_task(&self.run_id, &task) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "Updated task '{}': status={:?}",
-                task.id, task.status
-            ))])),
+            Ok(()) => {
+                self.append_event(
+                    "task_changed",
+                    &task.id,
+                    &format!("status changed to {:?}", task.status),
+                );
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "Updated task '{}': status={:?}",
+                    task.id, task.status
+                ))]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }

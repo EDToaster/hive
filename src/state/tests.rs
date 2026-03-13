@@ -43,6 +43,7 @@ fn make_agent(id: &str, role: AgentRole, status: AgentStatus) -> Agent {
         retry_count: 0,
         model: None,
         branched_from: None,
+        wait_cursor: None,
     }
 }
 
@@ -717,6 +718,7 @@ fn agent_retry_count_serialization_roundtrip() {
         retry_count: 1,
         model: None,
         branched_from: None,
+        wait_cursor: None,
     };
     let json = serde_json::to_string(&agent).unwrap();
     let back: Agent = serde_json::from_str(&json).unwrap();

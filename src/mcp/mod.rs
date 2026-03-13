@@ -278,6 +278,15 @@ impl HiveMcp {
         let _ = state.save_message(run_id, &message);
     }
 
+    /// Append an event to the run's event log (log.db). Errors are silently ignored
+    /// since event logging is best-effort and should not block tool execution.
+    pub(crate) fn append_event(&self, event_type: &str, entity_id: &str, summary: &str) {
+        let log_path = self.state().run_dir(&self.run_id).join("log.db");
+        if let Ok(db) = crate::logging::LogDb::open(&log_path) {
+            let _ = db.append_event(&self.run_id, event_type, entity_id, summary);
+        }
+    }
+
     pub(crate) fn worktree_status(worktree: &str) -> Option<String> {
         let wt_path = std::path::Path::new(worktree);
         if !wt_path.exists() {

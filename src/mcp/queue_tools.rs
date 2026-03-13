@@ -251,6 +251,11 @@ impl HiveMcp {
                     let _ = state.save_agent(&self.run_id, &reviewer_agent);
                 }
 
+                self.append_event(
+                    "task_changed",
+                    &p.task_id,
+                    &format!("submitted for review (branch: {})", p.branch),
+                );
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Spawned reviewer '{}' for task '{}'. Awaiting review verdict.",
                     reviewer_id, p.task_id
@@ -426,6 +431,12 @@ impl HiveMcp {
                 for w in &warnings {
                     msg.push_str(&format!("\n{w}"));
                 }
+
+                self.append_event(
+                    "task_changed",
+                    &entry.task_id,
+                    &format!("merged (branch: {})", entry.branch),
+                );
 
                 Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &msg);
 

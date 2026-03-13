@@ -13,6 +13,16 @@ pub struct ToolCallRow {
     pub duration_ms: Option<i64>,
 }
 
+/// A row from the append-only event log used by wait_for_activity.
+#[derive(Debug, Clone)]
+pub struct EventRow {
+    pub id: u64,
+    pub event_type: String,
+    pub entity_id: String,
+    pub summary: String,
+    pub timestamp: String,
+}
+
 pub struct LogDb {
     conn: Connection,
 }
@@ -34,10 +44,87 @@ impl LogDb {
                 timestamp TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_tool_calls_agent ON tool_calls(run_id, agent_id);
-            CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(run_id, tool_name);",
+            CREATE INDEX IF NOT EXISTS idx_tool_calls_tool ON tool_calls(run_id, tool_name);
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                timestamp TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_events_run ON events(run_id, id);",
         )
         .map_err(|e| e.to_string())?;
         Ok(Self { conn })
+    }
+
+    /// Append an event to the log. Returns the new event ID.
+    pub fn append_event(
+        &self,
+        run_id: &str,
+        event_type: &str,
+        entity_id: &str,
+        summary: &str,
+    ) -> Result<u64, String> {
+        let timestamp = Utc::now().to_rfc3339();
+        self.conn
+            .execute(
+                "INSERT INTO events (run_id, event_type, entity_id, summary, timestamp) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![run_id, event_type, entity_id, summary, timestamp],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(self.conn.last_insert_rowid() as u64)
+    }
+
+    /// Return events after `cursor` for the given run, up to `limit` rows.
+    pub fn events_since(
+        &self,
+        run_id: &str,
+        cursor: u64,
+        limit: usize,
+    ) -> Result<Vec<EventRow>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, event_type, entity_id, summary, timestamp \
+                 FROM events WHERE run_id = ?1 AND id > ?2 ORDER BY id LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![run_id, cursor as i64, limit as i64],
+                |row| {
+                    Ok(EventRow {
+                        id: row.get::<_, i64>(0)? as u64,
+                        event_type: row.get(1)?,
+                        entity_id: row.get(2)?,
+                        summary: row.get(3)?,
+                        timestamp: row.get(4)?,
+                    })
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        let mut results = Vec::new();
+        for row in rows {
+            results.push(row.map_err(|e| e.to_string())?);
+        }
+        Ok(results)
+    }
+
+    /// Return the maximum event ID for a run (0 if no events).
+    #[allow(dead_code)]
+    pub fn max_event_id(&self, run_id: &str) -> Result<u64, String> {
+        let result: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM events WHERE run_id = ?1",
+                rusqlite::params![run_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(result as u64)
     }
 
     #[allow(clippy::too_many_arguments)]

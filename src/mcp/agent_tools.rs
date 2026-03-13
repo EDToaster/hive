@@ -104,6 +104,11 @@ impl HiveMcp {
                     spawned_agent.task_id = Some(p.task_id.clone());
                     let _ = state.save_agent(&self.run_id, &spawned_agent);
                 }
+                self.append_event(
+                    "agent_spawned",
+                    &agent.id,
+                    &format!("spawned {:?} for task {}", agent.role, p.task_id),
+                );
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Spawned agent '{}' (role={:?}, task={}, worktree={})",
                     agent.id,
@@ -189,12 +194,28 @@ impl HiveMcp {
                     agent.last_completed_at = Some(now);
                     agent.pid = None;
                     let _ = state.save_agent(&self.run_id, &agent);
+                    self.append_event(
+                        "agent_changed",
+                        &agent.id,
+                        &format!(
+                            "status changed to idle (task: {})",
+                            agent.task_id.as_deref().unwrap_or("none")
+                        ),
+                    );
                     self.notify_parent_of_transition(&state, &agent);
                 } else if agent.status == AgentStatus::Running {
                     // Process exited but no session_id found — mark as failed
                     agent.status = AgentStatus::Failed;
                     agent.pid = None;
                     let _ = state.save_agent(&self.run_id, &agent);
+                    self.append_event(
+                        "agent_changed",
+                        &agent.id,
+                        &format!(
+                            "status changed to failed (task: {})",
+                            agent.task_id.as_deref().unwrap_or("none")
+                        ),
+                    );
                     self.notify_parent_of_transition(&state, &agent);
                 }
             } else if process_alive == Some(false)
@@ -206,6 +227,14 @@ impl HiveMcp {
                 agent.last_completed_at = Some(now);
                 agent.pid = None;
                 let _ = state.save_agent(&self.run_id, &agent);
+                self.append_event(
+                    "agent_changed",
+                    &agent.id,
+                    &format!(
+                        "status changed to idle (task: {})",
+                        agent.task_id.as_deref().unwrap_or("none")
+                    ),
+                );
                 self.notify_parent_of_transition(&state, &agent);
             }
 
@@ -257,6 +286,14 @@ impl HiveMcp {
                         agent.status = AgentStatus::Stalled;
                         agent.pid = None;
                         let _ = state.save_agent(&self.run_id, &agent);
+                        self.append_event(
+                            "agent_changed",
+                            &agent.id,
+                            &format!(
+                                "status changed to stalled (task: {})",
+                                agent.task_id.as_deref().unwrap_or("none")
+                            ),
+                        );
                         self.notify_parent_of_transition(&state, &agent);
 
                         "stalled"
@@ -320,7 +357,7 @@ impl HiveMcp {
     }
 
     #[tool(
-        description = "Block until activity is detected in the hive run directory, or timeout. Returns a summary of what changed."
+        description = "Block until activity is detected in the hive run, or timeout. Returns a summary of what changed. The event cursor is automatically managed per-agent — consecutive calls will not miss events that occurred between calls."
     )]
     pub(crate) async fn hive_wait_for_activity(
         &self,
@@ -329,15 +366,35 @@ impl HiveMcp {
         if let Err(result) = self.require_role(&[AgentRole::Coordinator, AgentRole::Lead]) {
             return Ok(result);
         }
+
+        // Load the agent's stored cursor (default 0 for first call)
+        let state = self.state();
+        let cursor = state
+            .load_agent(&self.run_id, &self.agent_id)
+            .ok()
+            .and_then(|a| a.wait_cursor)
+            .unwrap_or(0);
+
         let result = crate::wait::wait_for_activity(
             self.repo_root.as_ref(),
             &self.run_id,
             params.0.timeout_secs,
             Some(&self.agent_id),
+            cursor,
         )
         .await;
+
         match result {
-            Ok(summary) => Ok(CallToolResult::success(vec![Content::text(summary)])),
+            Ok((summary, new_cursor)) => {
+                // Persist the new cursor so the next call picks up where this one left off
+                if new_cursor != cursor
+                    && let Ok(mut agent) = state.load_agent(&self.run_id, &self.agent_id)
+                {
+                    agent.wait_cursor = Some(new_cursor);
+                    let _ = state.save_agent(&self.run_id, &agent);
+                }
+                Ok(CallToolResult::success(vec![Content::text(summary)]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
         }
     }

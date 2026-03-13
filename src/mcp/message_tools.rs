@@ -90,6 +90,12 @@ impl HiveMcp {
             return Ok(CallToolResult::error(vec![Content::text(e)]));
         }
 
+        self.append_event(
+            "message_created",
+            &msg_id,
+            &format!("from {} to {}", self.agent_id, p.to),
+        );
+
         // Auto-wake: if target agent is idle with a session_id, resume it
         let wake_info = self.try_wake_agent(&p.to, &p.body);
 

@@ -149,6 +149,9 @@ pub struct Agent {
     pub model: Option<String>,
     #[serde(default)]
     pub branched_from: Option<String>,
+    /// Cursor for wait_for_activity — last consumed event ID in the event log.
+    #[serde(default)]
+    pub wait_cursor: Option<u64>,
 }
 
 // --- Task Types ---
@@ -476,6 +479,7 @@ mod tests {
             retry_count: 0,
             model: None,
             branched_from: None,
+            wait_cursor: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -501,6 +505,7 @@ mod tests {
             retry_count: 0,
             model: None,
             branched_from: None,
+            wait_cursor: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -890,6 +895,7 @@ mod tests {
             retry_count: 0,
             model: None,
             branched_from: None,
+            wait_cursor: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -913,6 +919,7 @@ mod tests {
             retry_count: 0,
             model: None,
             branched_from: None,
+            wait_cursor: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -937,6 +944,7 @@ mod tests {
             retry_count: 0,
             model: None,
             branched_from: None,
+            wait_cursor: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -1013,6 +1021,7 @@ mod tests {
             retry_count: u32::MAX,
             model: None,
             branched_from: None,
+            wait_cursor: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();

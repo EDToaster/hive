@@ -842,6 +842,7 @@ fn test_stop_hook_updates_read_cursor() {
         retry_count: 0,
         model: None,
         branched_from: None,
+        wait_cursor: None,
     };
     state.save_agent("test-run", &agent).unwrap();
 
@@ -901,6 +902,7 @@ fn test_non_stop_hook_does_not_update_cursor() {
         retry_count: 0,
         model: None,
         branched_from: None,
+        wait_cursor: None,
     };
     state.save_agent("test-run", &agent).unwrap();
 

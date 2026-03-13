@@ -810,6 +810,7 @@ fn make_agent(id: &str, role: AgentRole, status: AgentStatus, parent: Option<&st
         retry_count: 0,
         model: None,
         branched_from: None,
+        wait_cursor: None,
     }
 }
 

@@ -173,6 +173,7 @@ pub fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), Strin
         retry_count: 0,
         model: None,
         branched_from: None,
+        wait_cursor: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 
@@ -551,11 +552,12 @@ pub fn cmd_wait(run: Option<String>, timeout: u64) -> Result<(), String> {
         None => state.active_run_id()?,
     };
     let rt = tokio::runtime::Runtime::new().map_err(|e| e.to_string())?;
-    let result = rt.block_on(crate::wait::wait_for_activity(
+    let (result, _cursor) = rt.block_on(crate::wait::wait_for_activity(
         state.repo_root(),
         &run_id,
         timeout,
         None,
+        0,
     ))?;
     println!("{result}");
     Ok(())
@@ -741,6 +743,7 @@ pub fn cmd_explore(intent: &str) -> Result<(), String> {
         retry_count: 0,
         model: None,
         branched_from: None,
+        wait_cursor: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 
