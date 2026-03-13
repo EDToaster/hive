@@ -59,6 +59,11 @@ impl AgentSpawner {
             start_point.as_deref(),
         )?;
 
+        let branched_from = match &start_point {
+            Some(sp) => sp.clone(),
+            None => Git::current_branch(state.repo_root()).unwrap_or_else(|_| "HEAD".into()),
+        };
+
         // Step 2: Write .claude/settings.local.json (hooks)
         let claude_dir = worktree_path.join(".claude");
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
@@ -246,7 +251,7 @@ impl AgentSpawner {
             task_id: None,
             retry_count: 0,
             model: Some(resolved_model),
-            branched_from: None,
+            branched_from: Some(branched_from),
         };
         state.save_agent(run_id, &agent)?;
 
