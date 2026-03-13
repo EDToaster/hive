@@ -556,6 +556,7 @@ mod tests {
             task_id: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         state.save_agent(run_id, &running_agent).unwrap();
 
@@ -573,6 +574,7 @@ mod tests {
             task_id: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         state.save_agent(run_id, &done_agent).unwrap();
 
@@ -596,6 +598,7 @@ mod tests {
             task_id: Some("task-1".into()),
             retry_count: 0,
             model: None,
+            branched_from: None,
         }
     }
 
@@ -724,6 +727,7 @@ mod tests {
             task_id: task_id.map(|s| s.into()),
             retry_count: 0,
             model: None,
+            branched_from: None,
         }
     }
 

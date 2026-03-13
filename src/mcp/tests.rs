@@ -29,6 +29,7 @@ fn setup_mcp(role: AgentRole) -> (TempDir, HiveMcp) {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &agent).unwrap();
     let mcp = HiveMcp::new(
@@ -59,6 +60,7 @@ fn setup_mcp_with_id(agent_id: &str, role: AgentRole) -> (TempDir, HiveMcp) {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &agent).unwrap();
     let mcp = HiveMcp::new(
@@ -220,6 +222,7 @@ async fn update_task_lead_can_update_own_and_children() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker_agent).unwrap();
 
@@ -668,6 +671,7 @@ async fn review_verdict_request_changes_sends_feedback_message() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -713,6 +717,7 @@ async fn coordinator_can_message_explorer() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &explorer).unwrap();
 
@@ -849,6 +854,7 @@ async fn check_agents_includes_commits() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &agent).unwrap();
 
@@ -867,6 +873,7 @@ async fn check_agents_includes_commits() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &coord).unwrap();
     let mcp = HiveMcp::new(
@@ -931,6 +938,7 @@ fn notify_parent_of_transition_sends_message_and_records() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker).unwrap();
 
@@ -978,6 +986,7 @@ async fn send_message_worker_denied_non_parent() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -1017,6 +1026,7 @@ async fn send_message_worker_can_message_parent() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -1053,6 +1063,7 @@ async fn send_message_lead_denied_non_child() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &other_worker).unwrap();
 
@@ -1087,6 +1098,7 @@ async fn send_message_lead_can_message_coordinator() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &coord).unwrap();
 
@@ -1122,6 +1134,7 @@ async fn send_message_coordinator_denied_worker() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker).unwrap();
 
@@ -1158,6 +1171,7 @@ async fn send_message_explorer_can_only_message_coordinator() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -1192,6 +1206,7 @@ async fn send_message_explorer_can_message_coordinator() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &coord).unwrap();
 
@@ -1396,6 +1411,7 @@ async fn review_verdict_reject_sets_failed() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -1529,6 +1545,7 @@ async fn retry_agent_coordinator_denied_retry_worker() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker).unwrap();
 
@@ -1561,6 +1578,7 @@ async fn retry_agent_not_in_retriable_state() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -1593,6 +1611,7 @@ async fn retry_agent_lead_denied_other_leads_worker() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker).unwrap();
 
@@ -1866,6 +1885,7 @@ async fn update_task_absorbed_denied_for_non_creator() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker).unwrap();
 
@@ -2162,6 +2182,7 @@ async fn list_agents_returns_all() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -2252,6 +2273,7 @@ fn notify_parent_of_transition_no_parent_is_noop() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &agent).unwrap();
 
@@ -2289,6 +2311,7 @@ fn setup_hierarchy() -> (TempDir, HiveMcp, HiveMcp, HiveMcp) {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &coord).unwrap();
 
@@ -2306,6 +2329,7 @@ fn setup_hierarchy() -> (TempDir, HiveMcp, HiveMcp, HiveMcp) {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &lead).unwrap();
 
@@ -2323,6 +2347,7 @@ fn setup_hierarchy() -> (TempDir, HiveMcp, HiveMcp, HiveMcp) {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker).unwrap();
 
@@ -2780,6 +2805,7 @@ async fn update_task_absorbed_by_non_creator_rejected() {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent("test-run", &worker).unwrap();
 
@@ -3236,6 +3262,7 @@ async fn integration_ownership_cross_domain_isolation() {
             messages_read_at: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         state.save_agent("test-run", &agent).unwrap();
 
@@ -3562,6 +3589,7 @@ fn integration_heartbeat_and_agent_state_independence() {
             messages_read_at: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         state.save_agent("run-1", &agent).unwrap();
     }

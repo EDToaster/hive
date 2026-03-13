@@ -172,6 +172,7 @@ pub fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), Strin
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 
@@ -737,6 +738,7 @@ pub fn cmd_explore(intent: &str) -> Result<(), String> {
         messages_read_at: None,
         retry_count: 0,
         model: None,
+        branched_from: None,
     };
     state.save_agent(&run_id, &coordinator)?;
 

@@ -147,6 +147,8 @@ pub struct Agent {
     /// Model used for this agent (persisted for resume/wake consistency)
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub branched_from: Option<String>,
 }
 
 // --- Task Types ---
@@ -473,6 +475,7 @@ mod tests {
             messages_read_at: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -497,6 +500,7 @@ mod tests {
             messages_read_at: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -885,6 +889,7 @@ mod tests {
             messages_read_at: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -907,6 +912,7 @@ mod tests {
             messages_read_at: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -930,6 +936,7 @@ mod tests {
             messages_read_at: None,
             retry_count: 0,
             model: None,
+            branched_from: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
@@ -1005,6 +1012,7 @@ mod tests {
             messages_read_at: None,
             retry_count: u32::MAX,
             model: None,
+            branched_from: None,
         };
         let json = serde_json::to_string(&agent).unwrap();
         let back: Agent = serde_json::from_str(&json).unwrap();
