@@ -6,6 +6,7 @@ Some small ideas:
 [x] Using different models for different agents to speed up. Haiku for evaluator and reviewer?
 
 [ ] Rebase-based merging rather than merging-based merging. Or? Squash and merge?
+[ ] Wait-for-activity can miss activities between calls
 
 [x] Agent statuses should refresh on every MCP call. Sometimes, leads forget to check agent status, and assume it's not done
 [x] Agent status returns unstaged changes and files. It should probably also return commits as well
