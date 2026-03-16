@@ -101,7 +101,6 @@ async fn spawn_agent_rejects_missing_task_id() {
         agent_id: "lead-test".into(),
         role: "lead".into(),
         task_id: "nonexistent-task".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -1230,7 +1229,6 @@ async fn spawn_agent_worker_denied() {
         agent_id: "child".into(),
         role: "worker".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -1250,7 +1248,6 @@ async fn spawn_agent_invalid_role() {
         agent_id: "agent-1".into(),
         role: "superadmin".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -1270,7 +1267,6 @@ async fn spawn_agent_coordinator_cannot_spawn_worker() {
         agent_id: "worker-1".into(),
         role: "worker".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -1291,7 +1287,6 @@ async fn spawn_agent_task_wrong_status() {
         agent_id: "lead-1".into(),
         role: "lead".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -1312,7 +1307,6 @@ async fn spawn_agent_lead_cannot_spawn_lead() {
         agent_id: "lead-2".into(),
         role: "lead".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -2665,7 +2659,6 @@ async fn spawn_agent_empty_role_rejected() {
         agent_id: "empty-role".into(),
         role: "".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -2683,7 +2676,6 @@ async fn spawn_agent_invalid_role_rejected() {
         agent_id: "bad-role-agent".into(),
         role: "superadmin".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -2703,7 +2695,6 @@ async fn spawn_agent_task_already_active_rejected() {
         agent_id: "lead-1".into(),
         role: "lead".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
@@ -2724,7 +2715,6 @@ async fn spawn_agent_wrong_hierarchy_rejected() {
         agent_id: "spawned-agent".into(),
         role: "worker".into(),
         task_id: "task-1".into(),
-        task_description: "test".into(),
         model: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();

@@ -7,10 +7,8 @@ pub struct SpawnAgentParams {
     pub agent_id: String,
     /// Role: "lead" or "worker"
     pub role: String,
-    /// Task ID to bind this agent to
+    /// Task ID to bind this agent to (the task's description is used as the agent's prompt)
     pub task_id: String,
-    /// Task description for the agent
-    pub task_description: String,
     /// Optional model override (e.g. "sonnet", "haiku", "opus"). Overrides role-level config default.
     pub model: Option<String>,
 }

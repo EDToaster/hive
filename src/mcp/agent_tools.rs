@@ -78,6 +78,7 @@ impl HiveMcp {
                 p.task_id, task.status
             ))]));
         }
+        let task_description = task.description.clone();
         task.assigned_to = Some(p.agent_id.clone());
         task.status = TaskStatus::Active;
         task.updated_at = Utc::now();
@@ -93,7 +94,7 @@ impl HiveMcp {
             &p.agent_id,
             role,
             Some(&self.agent_id),
-            &p.task_description,
+            &task_description,
             p.model.as_deref(),
         ) {
             Ok(agent) => {
