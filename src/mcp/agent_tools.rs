@@ -347,17 +347,6 @@ impl HiveMcp {
         Ok(CallToolResult::success(vec![Content::text(summary)]))
     }
 
-    #[tool(description = "Update this agent's heartbeat timestamp to signal liveness")]
-    pub(crate) async fn hive_heartbeat(&self) -> Result<CallToolResult, McpError> {
-        let state = self.state();
-        match state.update_agent_heartbeat(&self.run_id, &self.agent_id) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(
-                "Heartbeat updated.",
-            )])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(e)])),
-        }
-    }
-
     #[tool(
         description = "Block until activity is detected in the hive run, or timeout. Returns a summary of what changed. The event cursor is automatically managed per-agent — consecutive calls will not miss events that occurred between calls."
     )]

@@ -2141,25 +2141,6 @@ async fn establish_convention_explorer_denied() {
     assert!(result.is_error.unwrap_or(false));
 }
 
-// ---- heartbeat test ----
-
-#[tokio::test]
-async fn heartbeat_updates_timestamp() {
-    let (_dir, mcp) = setup_mcp_with_id("worker-1", AgentRole::Worker);
-    let state = mcp.state();
-
-    // Verify no heartbeat initially
-    let agent = state.load_agent("test-run", "worker-1").unwrap();
-    assert!(agent.heartbeat.is_none());
-
-    let result = mcp.hive_heartbeat().await.unwrap();
-    assert!(!result.is_error.unwrap_or(false));
-
-    // Verify heartbeat was set
-    let agent = state.load_agent("test-run", "worker-1").unwrap();
-    assert!(agent.heartbeat.is_some());
-}
-
 // ---- list_agents test ----
 
 #[tokio::test]

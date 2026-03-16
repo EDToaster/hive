@@ -488,7 +488,6 @@ pub(super) fn format_tool_display(
             let status = extract_arg(args, "status").unwrap_or("");
             ("ListTasks".into(), status.to_string(), Color::Yellow)
         }
-        "hive_heartbeat" => ("Heartbeat".into(), String::new(), Color::Yellow),
         "hive_read_messages" => ("ReadMessages".into(), String::new(), Color::Yellow),
         "hive_run_cost" => ("RunCost".into(), String::new(), Color::Yellow),
         "hive_log_tool" => {
