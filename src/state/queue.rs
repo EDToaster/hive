@@ -29,14 +29,4 @@ impl HiveState {
         let path = self.run_dir(run_id).join("spec.md");
         fs::read_to_string(&path).map_err(|e| e.to_string())
     }
-
-    // --- Planner Spec ---
-
-    pub fn save_planner_spec(&self, run_id: &str, spec: &str) -> Result<(), String> {
-        self.save_spec(run_id, spec)
-    }
-
-    pub fn load_planner_spec(&self, run_id: &str) -> Option<String> {
-        self.load_spec(run_id).ok()
-    }
 }

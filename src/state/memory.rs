@@ -209,7 +209,7 @@ impl HiveState {
 
         let mut sections = Vec::new();
 
-        let include_operations = matches!(role, AgentRole::Coordinator | AgentRole::Planner);
+        let include_operations = matches!(role, AgentRole::Coordinator);
         let include_conventions = !matches!(role, AgentRole::Coordinator);
         let include_failures = matches!(
             role,

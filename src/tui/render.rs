@@ -180,7 +180,6 @@ pub(super) fn render_swarm_pane(
                 agent_status_color(node.status)
             };
             let name_color = match node.role {
-                AgentRole::Planner => Color::Cyan,
                 AgentRole::Postmortem => Color::DarkGray,
                 _ => base_color,
             };
@@ -883,48 +882,6 @@ pub(super) fn render_activity_stream(
         .track_style(Style::default().fg(Color::DarkGray))
         .thumb_style(Style::default().fg(Color::Gray));
     frame.render_stateful_widget(scrollbar, area, &mut scrollbar_state);
-}
-
-// ---------------------------------------------------------------------------
-// Render: Planning view
-// ---------------------------------------------------------------------------
-
-pub(super) fn render_planning_view(frame: &mut Frame, area: Rect, planner: &Agent, tick: u64) {
-    let elapsed = planner
-        .heartbeat
-        .map(|hb| {
-            let age = (Utc::now() - hb).num_seconds().max(0);
-            format_duration_short(age)
-        })
-        .unwrap_or_else(|| "??".to_string());
-
-    let spinner = spinner_char(tick);
-    let border_color = title_gradient_color(tick);
-    let lines = vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("{spinner} Planning..."),
-            Style::default().fg(border_color).bold(),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Planner agent is analyzing the codebase and writing a spec",
-            Style::default().fg(Color::Gray),
-        )),
-        Line::from(Span::styled(
-            format!("Elapsed: {elapsed}"),
-            Style::default().fg(Color::White),
-        )),
-    ];
-
-    let block = Block::default()
-        .title(" Planning Phase ")
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(border_color));
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .alignment(Alignment::Center);
-    frame.render_widget(paragraph, area);
 }
 
 // ---------------------------------------------------------------------------

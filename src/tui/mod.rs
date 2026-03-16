@@ -518,13 +518,7 @@ fn run_tui_loop(
             ])
             .split(term_area);
 
-        let planner_agent = agents
-            .iter()
-            .find(|a| a.role == AgentRole::Planner && a.status == AgentStatus::Running);
-
-        let (swarm_area, tasks_area) = if planner_agent.is_some() {
-            (Rect::default(), Rect::default())
-        } else {
+        let (swarm_area, tasks_area) = {
             let main_content = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
@@ -572,8 +566,6 @@ fn run_tui_loop(
                         &agent_tool_calls,
                         ui.gantt_scroll,
                     );
-                } else if let Some(planner) = planner_agent {
-                    render_planning_view(frame, outer[2], planner, ui.tick);
                 } else {
                     // -- Swarm pane --
                     render_swarm_pane(
@@ -588,7 +580,7 @@ fn run_tui_loop(
                     );
 
                     // -- Tasks pane with optional spec viewer --
-                    let spec_content = state.load_planner_spec(run_id);
+                    let spec_content = state.load_spec(run_id).ok();
                     if let Some(ref spec) = spec_content {
                         let tasks_and_spec = Layout::default()
                             .direction(Direction::Vertical)

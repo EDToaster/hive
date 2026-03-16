@@ -20,7 +20,7 @@ fn main() {
 
     let result = match cli.command {
         Commands::Init => cli::cmd_init(),
-        Commands::Start { spec, goal } => cli::cmd_start(spec, goal),
+        Commands::Start { spec } => cli::cmd_start(&spec),
         Commands::Status => cli::cmd_status(),
         Commands::Agents => cli::cmd_agents(),
         Commands::Tasks { status, assignee } => cli::cmd_tasks(status, assignee),

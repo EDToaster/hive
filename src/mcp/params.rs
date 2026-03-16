@@ -154,12 +154,6 @@ pub struct SaveMemoryParams {
 }
 
 #[derive(Deserialize, JsonSchema)]
-pub struct SaveSpecParams {
-    /// Full spec markdown content
-    pub spec: String,
-}
-
-#[derive(Deserialize, JsonSchema)]
 pub struct DiscoverParams {
     /// Content of the discovery
     pub content: String,

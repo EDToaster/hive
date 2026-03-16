@@ -37,26 +37,8 @@ pub fn cmd_init() -> Result<(), String> {
     Ok(())
 }
 
-pub fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), String> {
+pub fn cmd_start(spec_path: &str) -> Result<(), String> {
     let state = HiveState::discover()?;
-
-    // Determine whether this is a file-path or a goal-string start
-    enum StartMode {
-        SpecFile(String),
-        Goal(String),
-    }
-
-    let mode = if let Some(goal_str) = goal {
-        StartMode::Goal(goal_str)
-    } else if let Some(spec_str) = spec {
-        if spec_str.contains('/') || spec_str.ends_with(".md") {
-            StartMode::SpecFile(spec_str)
-        } else {
-            StartMode::Goal(spec_str)
-        }
-    } else {
-        return Err("Provide a spec file path or a goal string".into());
-    };
 
     let run_id = uuid::Uuid::new_v4().to_string()[..8].to_string();
     state.create_run(&run_id)?;
@@ -65,55 +47,12 @@ pub fn cmd_start(spec: Option<String>, goal: Option<String>) -> Result<(), Strin
     let log_path = state.run_dir(&run_id).join("log.db");
     LogDb::open(&log_path)?;
 
-    let spec_content = match mode {
-        StartMode::SpecFile(spec_path) => {
-            let content = fs::read_to_string(&spec_path)
-                .map_err(|e| format!("Cannot read spec file '{spec_path}': {e}"))?;
-            state.save_spec(&run_id, &content)?;
-            println!("Created run: {run_id}");
-            content
-        }
-        StartMode::Goal(goal_str) => {
-            println!("Created run: {run_id}");
-            println!("Planning phase: analyzing codebase and generating spec...");
-
-            let memory = state.load_memory_for_prompt(&crate::types::AgentRole::Planner);
-            let planner_agent = crate::agent::AgentSpawner::spawn(
-                &state,
-                &run_id,
-                "planner",
-                crate::types::AgentRole::Planner,
-                None,
-                &goal_str,
-            )?;
-
-            // Wait up to 5 minutes for planner to finish
-            let timeout = std::time::Duration::from_secs(300);
-            let start = std::time::Instant::now();
-            let _ = memory; // memory is injected by spawn via generate_prompt
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(3));
-                if let Some(pid) = planner_agent.pid {
-                    if !crate::agent::AgentSpawner::is_alive(pid) {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-                if start.elapsed() > timeout {
-                    return Err("Planner agent timed out after 5 minutes".into());
-                }
-            }
-
-            // Check if planner produced a spec
-            match state.load_planner_spec(&run_id) {
-                Some(content) => {
-                    println!("Spec generated successfully.");
-                    content
-                }
-                None => return Err("Planner agent did not produce a spec".into()),
-            }
-        }
+    let spec_content = {
+        let content = fs::read_to_string(spec_path)
+            .map_err(|e| format!("Cannot read spec file '{spec_path}': {e}"))?;
+        state.save_spec(&run_id, &content)?;
+        println!("Created run: {run_id}");
+        content
     };
 
     // Write coordinator CLAUDE.local.md to the base repo
@@ -467,7 +406,6 @@ pub fn cmd_config() -> Result<(), String> {
         crate::types::AgentRole::Lead,
         crate::types::AgentRole::Worker,
         crate::types::AgentRole::Reviewer,
-        crate::types::AgentRole::Planner,
         crate::types::AgentRole::Postmortem,
         crate::types::AgentRole::Explorer,
         crate::types::AgentRole::Evaluator,

@@ -68,10 +68,7 @@ impl AgentSpawner {
         let claude_dir = worktree_path.join(".claude");
         fs::create_dir_all(&claude_dir).map_err(|e| e.to_string())?;
 
-        let settings_json = if matches!(
-            role,
-            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem
-        ) {
+        let settings_json = if matches!(role, AgentRole::Reviewer | AgentRole::Postmortem) {
             serde_json::json!({
                 "hooks": {
                     "PreToolUse": [{
@@ -794,48 +791,6 @@ Parent: {}
 "#,
                 parent.unwrap_or("coordinator")
             ),
-            AgentRole::Planner => format!(
-                r#"You are a planner agent in a hive swarm.
-Agent ID: {agent_id}
-Role: planner
-
-## Goal
-{task_description}
-
-## Instructions
-You are a READ-ONLY agent. Your job is to analyze the codebase and write a detailed implementation spec.
-
-### Codebase Analysis
-1. Read `Cargo.toml` to understand dependencies and project metadata.
-2. Read `src/` to understand module structure — list every module and its responsibility.
-3. Identify public APIs, key data types, and important traits.
-4. Read existing tests to understand test patterns and conventions.
-5. Check for any existing CLAUDE.md or documentation for project conventions.
-6. If `.hive/memory/` exists, read run memory for patterns from previous runs.
-
-### Spec Format
-Write a spec in this exact format:
-- **Goal:** One paragraph describing what to build.
-- **Implementation Details:** Detailed technical description of changes needed.
-- **Lead Decomposition:** Break the work into domain-level chunks, one per lead agent. Each chunk should specify:
-  - Domain name
-  - Files to modify (with clear boundaries — no file should appear in two domains)
-  - Specific changes needed in each file
-  - Dependencies on other chunks (merge ordering)
-- **File Boundaries:** A table showing which files belong to which lead.
-- **Merge Ordering:** Which leads must merge first due to type/API dependencies.
-
-### Completion
-When your spec is complete, call `hive_save_spec` with the full spec content.
-Then stop immediately.
-
-## Constraints
-- You are READ-ONLY. Do NOT modify any files. Do NOT use Edit, Write, or Bash to change files.
-- Only use Read, Glob, Grep to examine code.
-- Use hive_save_spec to save your spec when done.
-- After saving the spec, stop immediately.
-"#
-            ),
             AgentRole::Postmortem => format!(
                 r#"You are a post-mortem analysis agent in a hive swarm.
 Agent ID: {agent_id}
@@ -1164,24 +1119,6 @@ mod tests {
         );
         assert!(prompt.contains("## Project Memory"));
         assert!(prompt.contains("Last run had 5 tasks."));
-    }
-
-    #[test]
-    fn test_planner_prompt_has_detailed_instructions() {
-        let prompt = AgentSpawner::generate_prompt(
-            "planner-1",
-            AgentRole::Planner,
-            None,
-            "Add WebSocket support",
-            "",
-        );
-        assert!(prompt.contains("Role: planner"));
-        assert!(prompt.contains("## Goal"));
-        assert!(prompt.contains("Add WebSocket support"));
-        assert!(prompt.contains("Codebase Analysis"));
-        assert!(prompt.contains("Spec Format"));
-        assert!(prompt.contains("hive_save_spec"));
-        assert!(prompt.contains("READ-ONLY"));
     }
 
     #[test]

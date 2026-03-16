@@ -139,11 +139,7 @@ impl HiveMcp {
                     .save_task(&self.run_id, &task)
                     .map_err(|e| McpError::internal_error(e, None))?;
 
-                self.append_event(
-                    "task_changed",
-                    &p.task_id,
-                    "review rejected, task failed",
-                );
+                self.append_event("task_changed", &p.task_id, "review rejected, task failed");
 
                 // Notify the lead (parent of the assigned agent)
                 if let Some(ref assigned) = task.assigned_to
@@ -302,7 +298,10 @@ impl HiveMcp {
                 self.append_event(
                     "task_changed",
                     &p.task_id,
-                    &format!("submitted directly to queue (reviewer spawn failed, branch: {})", p.branch),
+                    &format!(
+                        "submitted directly to queue (reviewer spawn failed, branch: {})",
+                        p.branch
+                    ),
                 );
 
                 Ok(CallToolResult::success(vec![Content::text(format!(

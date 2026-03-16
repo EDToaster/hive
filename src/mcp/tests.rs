@@ -432,20 +432,6 @@ fn save_memory_allows_postmortem() {
     );
 }
 
-#[test]
-fn save_spec_rejects_non_planner() {
-    let (_dir, mcp) = setup_mcp(AgentRole::Worker);
-    let result = mcp.require_role(&[AgentRole::Planner]);
-    assert!(result.is_err(), "Worker should not be allowed to save spec");
-}
-
-#[test]
-fn save_spec_allows_planner() {
-    let (_dir, mcp) = setup_mcp(AgentRole::Planner);
-    let result = mcp.require_role(&[AgentRole::Planner]);
-    assert!(result.is_ok(), "Planner should be allowed to save spec");
-}
-
 #[tokio::test]
 async fn save_memory_rejects_invalid_memory_type() {
     let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
@@ -469,19 +455,15 @@ async fn save_memory_rejects_invalid_operation_json() {
 }
 
 #[test]
-fn check_agents_allows_planner_and_postmortem() {
-    let (_dir, mcp) = setup_mcp(AgentRole::Planner);
+fn check_agents_allows_postmortem() {
+    let (_dir, mcp) = setup_mcp(AgentRole::Postmortem);
     let allowed = &[
         AgentRole::Coordinator,
         AgentRole::Lead,
         AgentRole::Reviewer,
-        AgentRole::Planner,
         AgentRole::Postmortem,
     ];
     assert!(mcp.require_role(allowed).is_ok());
-
-    let (_dir2, mcp2) = setup_mcp(AgentRole::Postmortem);
-    assert!(mcp2.require_role(allowed).is_ok());
 }
 
 #[test]
@@ -491,7 +473,6 @@ fn spawn_hierarchy_allows_coordinator_to_spawn_postmortem() {
     let allowed = matches!(
         (caller_role, AgentRole::Postmortem),
         (AgentRole::Coordinator, AgentRole::Lead)
-            | (AgentRole::Coordinator, AgentRole::Planner)
             | (AgentRole::Coordinator, AgentRole::Postmortem)
             | (AgentRole::Lead, AgentRole::Worker)
             | (AgentRole::Lead, AgentRole::Reviewer)
@@ -546,7 +527,6 @@ fn spawn_hierarchy_coordinator_can_spawn_explorer() {
     let allowed = matches!(
         (caller_role, AgentRole::Explorer),
         (AgentRole::Coordinator, AgentRole::Lead)
-            | (AgentRole::Coordinator, AgentRole::Planner)
             | (AgentRole::Coordinator, AgentRole::Postmortem)
             | (AgentRole::Coordinator, AgentRole::Explorer)
             | (AgentRole::Coordinator, AgentRole::Evaluator)
@@ -563,7 +543,6 @@ fn spawn_hierarchy_coordinator_can_spawn_evaluator() {
     let allowed = matches!(
         (caller_role, AgentRole::Evaluator),
         (AgentRole::Coordinator, AgentRole::Lead)
-            | (AgentRole::Coordinator, AgentRole::Planner)
             | (AgentRole::Coordinator, AgentRole::Postmortem)
             | (AgentRole::Coordinator, AgentRole::Explorer)
             | (AgentRole::Coordinator, AgentRole::Evaluator)
@@ -2622,16 +2601,6 @@ async fn save_memory_non_postmortem_rejected() {
         content: "test".into(),
     });
     let result = mcp.hive_save_memory(params).await.unwrap();
-    assert!(result.is_error.unwrap_or(false));
-}
-
-#[tokio::test]
-async fn save_spec_non_planner_rejected() {
-    let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
-    let params = Parameters(SaveSpecParams {
-        spec: "# My Spec".into(),
-    });
-    let result = mcp.hive_save_spec(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
 }
 

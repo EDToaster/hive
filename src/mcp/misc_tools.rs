@@ -1,5 +1,5 @@
 use super::HiveMcp;
-use super::params::{SaveMemoryParams, SaveSpecParams};
+use super::params::SaveMemoryParams;
 use crate::types::{AgentRole, FailureEntry, OperationalEntry};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
@@ -119,20 +119,5 @@ impl HiveMcp {
                 "Invalid memory_type. Use 'operation', 'convention', or 'failure'.",
             )])),
         }
-    }
-
-    #[tool(description = "Save the generated spec for this run. Planner-only.")]
-    pub(crate) async fn hive_save_spec(
-        &self,
-        params: Parameters<SaveSpecParams>,
-    ) -> Result<CallToolResult, McpError> {
-        if let Err(result) = self.require_role(&[AgentRole::Planner]) {
-            return Ok(result);
-        }
-        let state = self.state();
-        state
-            .save_planner_spec(&self.run_id, &params.0.spec)
-            .map_err(|e| McpError::internal_error(e, None))?;
-        Ok(CallToolResult::success(vec![Content::text("Spec saved.")]))
     }
 }

@@ -21,13 +21,12 @@ impl HiveMcp {
             "lead" => AgentRole::Lead,
             "worker" => AgentRole::Worker,
             "reviewer" => AgentRole::Reviewer,
-            "planner" => AgentRole::Planner,
             "postmortem" => AgentRole::Postmortem,
             "explorer" => AgentRole::Explorer,
             "evaluator" => AgentRole::Evaluator,
             _ => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Invalid role. Use 'lead', 'worker', 'reviewer', 'planner', 'postmortem', 'explorer', or 'evaluator'.",
+                    "Invalid role. Use 'lead', 'worker', 'reviewer', 'postmortem', 'explorer', or 'evaluator'.",
                 )]));
             }
         };
@@ -37,7 +36,6 @@ impl HiveMcp {
         let allowed = matches!(
             (caller_role, role),
             (AgentRole::Coordinator, AgentRole::Lead)
-                | (AgentRole::Coordinator, AgentRole::Planner)
                 | (AgentRole::Coordinator, AgentRole::Postmortem)
                 | (AgentRole::Coordinator, AgentRole::Explorer)
                 | (AgentRole::Coordinator, AgentRole::Evaluator)
@@ -144,7 +142,6 @@ impl HiveMcp {
             AgentRole::Coordinator,
             AgentRole::Lead,
             AgentRole::Reviewer,
-            AgentRole::Planner,
             AgentRole::Postmortem,
         ]) {
             return Ok(result);
@@ -508,12 +505,11 @@ impl HiveMcp {
             }
             AgentRole::Worker
             | AgentRole::Reviewer
-            | AgentRole::Planner
             | AgentRole::Postmortem
             | AgentRole::Explorer
             | AgentRole::Evaluator => {
                 return Ok(CallToolResult::error(vec![Content::text(
-                    "Workers, reviewers, planners, and postmortem agents cannot retry agents.",
+                    "Workers, reviewers, and postmortem agents cannot retry agents.",
                 )]));
             }
         }

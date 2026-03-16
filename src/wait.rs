@@ -346,9 +346,7 @@ pub async fn wait_for_activity(
                 Some(db) => db,
                 None => return vec![],
             };
-            let events = db
-                .events_since(&run_id_owned, cur, 50)
-                .unwrap_or_default();
+            let events = db.events_since(&run_id_owned, cur, 50).unwrap_or_default();
 
             // Filter events by team context and message dedup
             events

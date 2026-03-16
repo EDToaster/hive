@@ -54,7 +54,7 @@ Single binary, three entry points:
 
 | Capability           | Coordinator | Lead              | Worker                    |
 |----------------------|-------------|-------------------|---------------------------|
-| Spawn agents         | leads only  | workers only      | no                        |
+| Spawn agents         | leads + special roles | workers only      | no                        |
 | Submit to merge queue| process only| yes               | no                        |
 | Send messages        | to leads    | to workers + coord| to own lead only          |
 

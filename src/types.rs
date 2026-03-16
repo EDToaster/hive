@@ -52,7 +52,6 @@ pub enum AgentRole {
     Lead,
     Worker,
     Reviewer,
-    Planner,
     Postmortem,
     Explorer,
     Evaluator,
@@ -66,7 +65,6 @@ impl AgentRole {
             AgentRole::Lead => ModelTier::Sonnet,
             AgentRole::Worker => ModelTier::Sonnet,
             AgentRole::Reviewer => ModelTier::Haiku,
-            AgentRole::Planner => ModelTier::Opus,
             AgentRole::Postmortem => ModelTier::Haiku,
             AgentRole::Explorer => ModelTier::Sonnet,
             AgentRole::Evaluator => ModelTier::Sonnet,
@@ -81,7 +79,6 @@ pub struct ModelConfig {
     pub lead: Option<ModelTier>,
     pub worker: Option<ModelTier>,
     pub reviewer: Option<ModelTier>,
-    pub planner: Option<ModelTier>,
     pub postmortem: Option<ModelTier>,
     pub explorer: Option<ModelTier>,
     pub evaluator: Option<ModelTier>,
@@ -95,7 +92,6 @@ impl ModelConfig {
             AgentRole::Lead => self.lead,
             AgentRole::Worker => self.worker,
             AgentRole::Reviewer => self.reviewer,
-            AgentRole::Planner => self.planner,
             AgentRole::Postmortem => self.postmortem,
             AgentRole::Explorer => self.explorer,
             AgentRole::Evaluator => self.evaluator,
@@ -110,7 +106,6 @@ impl ModelConfig {
             "lead" => self.lead = Some(tier),
             "worker" => self.worker = Some(tier),
             "reviewer" => self.reviewer = Some(tier),
-            "planner" => self.planner = Some(tier),
             "postmortem" => self.postmortem = Some(tier),
             "explorer" => self.explorer = Some(tier),
             "evaluator" => self.evaluator = Some(tier),
@@ -373,13 +368,6 @@ mod tests {
         );
         let role: AgentRole = serde_json::from_str("\"reviewer\"").unwrap();
         assert_eq!(role, AgentRole::Reviewer);
-
-        assert_eq!(
-            serde_json::to_string(&AgentRole::Planner).unwrap(),
-            "\"planner\""
-        );
-        let role: AgentRole = serde_json::from_str("\"planner\"").unwrap();
-        assert_eq!(role, AgentRole::Planner);
 
         assert_eq!(
             serde_json::to_string(&AgentRole::Postmortem).unwrap(),
@@ -1213,7 +1201,6 @@ mod tests {
     #[test]
     fn default_model_assignments() {
         assert_eq!(AgentRole::Coordinator.default_model(), ModelTier::Opus);
-        assert_eq!(AgentRole::Planner.default_model(), ModelTier::Opus);
         assert_eq!(AgentRole::Lead.default_model(), ModelTier::Sonnet);
         assert_eq!(AgentRole::Worker.default_model(), ModelTier::Sonnet);
         assert_eq!(AgentRole::Explorer.default_model(), ModelTier::Sonnet);
@@ -1230,7 +1217,6 @@ mod tests {
             AgentRole::Lead,
             AgentRole::Worker,
             AgentRole::Reviewer,
-            AgentRole::Planner,
             AgentRole::Postmortem,
             AgentRole::Explorer,
             AgentRole::Evaluator,

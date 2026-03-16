@@ -72,11 +72,10 @@ impl HiveMcp {
                 }
             }
             AgentRole::Reviewer
-            | AgentRole::Planner
             | AgentRole::Postmortem
             | AgentRole::Explorer
             | AgentRole::Evaluator => {
-                // Reviewers/Planner/Postmortem/Explorer/Evaluator can only message the coordinator
+                // Reviewers/Postmortem/Explorer/Evaluator can only message the coordinator
                 if p.to != "coordinator" {
                     return Ok(CallToolResult::error(vec![Content::text(
                         "This role can only send messages to the coordinator.",

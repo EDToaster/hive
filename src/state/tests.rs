@@ -906,18 +906,6 @@ fn test_load_memory_for_prompt_worker() {
 }
 
 #[test]
-fn test_load_memory_for_prompt_planner() {
-    let dir = TempDir::new().unwrap();
-    let state = make_state(dir.path());
-    state.save_operation(&make_operation("run-1", 5)).unwrap();
-    state.save_conventions("Use snake_case.").unwrap();
-    let prompt = state.load_memory_for_prompt(&AgentRole::Planner);
-    assert!(prompt.contains("### Recent Operations"));
-    assert!(prompt.contains("### Conventions"));
-    assert!(!prompt.contains("### Known Failure Patterns"));
-}
-
-#[test]
 fn test_load_memory_for_prompt_postmortem() {
     let dir = TempDir::new().unwrap();
     let state = make_state(dir.path());
@@ -935,15 +923,13 @@ fn test_load_memory_for_prompt_empty() {
 }
 
 #[test]
-fn test_planner_spec_save_and_load() {
+fn test_spec_save_and_load() {
     let dir = TempDir::new().unwrap();
     let state = make_state(dir.path());
     state.create_run("run-1").unwrap();
-    state
-        .save_planner_spec("run-1", "# My Spec\nDo stuff.")
-        .unwrap();
-    let loaded = state.load_planner_spec("run-1");
-    assert_eq!(loaded.as_deref(), Some("# My Spec\nDo stuff."));
+    state.save_spec("run-1", "# My Spec\nDo stuff.").unwrap();
+    let loaded = state.load_spec("run-1");
+    assert_eq!(loaded.as_deref().ok(), Some("# My Spec\nDo stuff."));
 }
 
 #[test]
@@ -1360,11 +1346,11 @@ fn load_spec_nonexistent_fails() {
 }
 
 #[test]
-fn load_planner_spec_nonexistent_returns_none() {
+fn load_spec_nonexistent_returns_err() {
     let dir = TempDir::new().unwrap();
     let state = make_state(dir.path());
     state.create_run("run-1").unwrap();
-    assert!(state.load_planner_spec("run-1").is_none());
+    assert!(state.load_spec("run-1").is_err());
 }
 
 // --- Special characters in IDs ---

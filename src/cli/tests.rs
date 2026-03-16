@@ -21,7 +21,7 @@ fn test_all_subcommands_parseable() {
         vec!["hive", "summary"],
         vec!["hive", "cost"],
         vec!["hive", "watch"],
-        vec!["hive", "start"],
+        vec!["hive", "start", "spec.md"],
     ];
     for args in &subcommands {
         assert!(
@@ -126,19 +126,6 @@ fn test_mind_subcommands_exhaustive() {
 }
 
 #[test]
-fn test_start_spec_and_goal_both_provided() {
-    // Both positional spec and --goal flag: goal takes the flag value, spec gets positional
-    let cli = Cli::try_parse_from(["hive", "start", "path.md", "--goal", "my goal"]).unwrap();
-    match cli.command {
-        Commands::Start { spec, goal } => {
-            assert_eq!(spec, Some("path.md".to_string()));
-            assert_eq!(goal, Some("my goal".to_string()));
-        }
-        _ => panic!("expected Start"),
-    }
-}
-
-#[test]
 fn test_wait_timeout_invalid_type() {
     let result = Cli::try_parse_from(["hive", "wait", "--timeout", "not_a_number"]);
     assert!(result.is_err());
@@ -227,49 +214,18 @@ fn test_cli_explore_requires_intent() {
 fn test_cli_start_with_spec() {
     let cli = Cli::try_parse_from(["hive", "start", "docs/plans/my-spec.md"]).unwrap();
     match cli.command {
-        Commands::Start { spec, goal } => {
-            assert_eq!(spec, Some("docs/plans/my-spec.md".to_string()));
-            assert_eq!(goal, None);
+        Commands::Start { spec } => {
+            assert_eq!(spec, "docs/plans/my-spec.md".to_string());
         }
         _ => panic!("expected Start"),
     }
 }
 
 #[test]
-fn test_cli_start_with_goal_flag() {
-    let cli = Cli::try_parse_from(["hive", "start", "--goal", "add a login page"]).unwrap();
-    match cli.command {
-        Commands::Start { spec, goal } => {
-            assert_eq!(spec, None);
-            assert_eq!(goal, Some("add a login page".to_string()));
-        }
-        _ => panic!("expected Start"),
-    }
-}
-
-#[test]
-fn test_cli_start_with_positional_goal() {
-    let cli = Cli::try_parse_from(["hive", "start", "add more tests"]).unwrap();
-    match cli.command {
-        Commands::Start { spec, goal } => {
-            assert_eq!(spec, Some("add more tests".to_string()));
-            assert_eq!(goal, None);
-        }
-        _ => panic!("expected Start"),
-    }
-}
-
-#[test]
-fn test_cli_start_no_args() {
-    // start with no spec or goal is valid at parse time (handled at runtime)
-    let cli = Cli::try_parse_from(["hive", "start"]).unwrap();
-    match cli.command {
-        Commands::Start { spec, goal } => {
-            assert_eq!(spec, None);
-            assert_eq!(goal, None);
-        }
-        _ => panic!("expected Start"),
-    }
+fn test_cli_start_requires_spec() {
+    // start with no spec should fail at parse time
+    let result = Cli::try_parse_from(["hive", "start"]);
+    assert!(result.is_err());
 }
 
 // ── Tasks command ──

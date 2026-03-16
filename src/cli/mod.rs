@@ -33,13 +33,10 @@ pub enum Commands {
     /// Initialize .hive/ in the current repo
     Init,
 
-    /// Start a new run with a spec file or goal string
+    /// Start a new run with a spec file
     Start {
-        /// Path to spec file, or goal string (use --goal for explicit goal mode)
-        spec: Option<String>,
-        /// Provide a goal string directly (alternative to positional arg)
-        #[arg(long)]
-        goal: Option<String>,
+        /// Path to spec file
+        spec: String,
     },
 
     /// Show current run status
