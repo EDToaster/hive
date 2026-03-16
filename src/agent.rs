@@ -70,7 +70,7 @@ impl AgentSpawner {
 
         let settings_json = if matches!(
             role,
-            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem | AgentRole::Evaluator
+            AgentRole::Reviewer | AgentRole::Planner | AgentRole::Postmortem
         ) {
             serde_json::json!({
                 "hooks": {
