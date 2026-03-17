@@ -120,6 +120,25 @@ impl HiveMcp {
         })
         }; // end global_worktree else branch
 
+        // Validate sparse paths exist in git
+        if let Some(WorktreeStrategy::Sparse { ref paths }) = strategy_override {
+            let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+            match crate::git::Git::validate_sparse_paths(state.repo_root(), &path_refs) {
+                Ok(invalid) if !invalid.is_empty() => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Sparse paths not found in repo: {}",
+                        invalid.join(", ")
+                    ))]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to validate sparse paths: {e}"
+                    ))]));
+                }
+                _ => {}
+            }
+        }
+
         // Resolve source_paths for NoCheckout agents (reviewer, evaluator).
         // Priority: explicit param > auto-populate from parent worktree (for reviewers)
         let resolved_strategy = strategy_override

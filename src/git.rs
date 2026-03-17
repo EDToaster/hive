@@ -81,6 +81,19 @@ impl Git {
         Ok(())
     }
 
+    /// Check which paths do NOT exist as directories in the repo at HEAD.
+    /// Returns the subset of `paths` that are invalid (empty means all valid).
+    pub fn validate_sparse_paths(repo_root: &Path, paths: &[&str]) -> Result<Vec<String>, String> {
+        let mut invalid = Vec::new();
+        for path in paths {
+            let output = Self::run(&["ls-tree", "-d", "HEAD", path], repo_root)?;
+            if output.is_empty() {
+                invalid.push(path.to_string());
+            }
+        }
+        Ok(invalid)
+    }
+
     /// Remove a worktree
     pub fn worktree_remove(repo_root: &Path, worktree_path: &Path) -> Result<(), String> {
         Self::run(
@@ -587,5 +600,26 @@ mod tests {
 
         assert!(wt_path.join("src/main.rs").exists(), "src/ should be checked out");
         assert!(wt_path.join("docs/readme.md").exists(), "docs/ should be checked out");
+    }
+
+    #[test]
+    fn validate_sparse_paths_valid() {
+        let dir = init_test_repo_with_files();
+        let invalid = Git::validate_sparse_paths(dir.path(), &["src", "docs"]).unwrap();
+        assert!(invalid.is_empty());
+    }
+
+    #[test]
+    fn validate_sparse_paths_invalid() {
+        let dir = init_test_repo_with_files();
+        let invalid = Git::validate_sparse_paths(dir.path(), &["src", "nonexistent"]).unwrap();
+        assert_eq!(invalid, vec!["nonexistent"]);
+    }
+
+    #[test]
+    fn validate_sparse_paths_all_invalid() {
+        let dir = init_test_repo_with_files();
+        let invalid = Git::validate_sparse_paths(dir.path(), &["nope", "also-nope"]).unwrap();
+        assert_eq!(invalid, vec!["nope", "also-nope"]);
     }
 }
