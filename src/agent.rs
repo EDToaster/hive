@@ -387,56 +387,67 @@ impl AgentSpawner {
     pub fn generate_codebase_summary(repo_root: &Path) -> String {
         let mut lines = Vec::new();
 
-        // Read project name/version from Cargo.toml
-        let cargo_path = repo_root.join("Cargo.toml");
-        if let Ok(content) = fs::read_to_string(&cargo_path) {
-            for line in content.lines().take(10) {
-                if line.starts_with("name") || line.starts_with("version") {
-                    lines.push(line.trim().to_string());
-                }
-            }
-        }
+        // Detect project type from manifest files (no tree walk needed)
+        let manifests: &[(&str, &str)] = &[
+            ("Cargo.toml", "rust"),
+            ("package.json", "javascript/typescript"),
+            ("go.mod", "go"),
+            ("pyproject.toml", "python"),
+            ("setup.py", "python"),
+            ("Gemfile", "ruby"),
+            ("pom.xml", "java"),
+            ("build.gradle", "java/kotlin"),
+            ("build.gradle.kts", "kotlin"),
+            ("mix.exs", "elixir"),
+            ("Package.swift", "swift"),
+            ("CMakeLists.txt", "c/c++"),
+            ("Makefile", "make-based"),
+        ];
 
-        // Count .rs files
-        let mut rs_count = 0u32;
-        fn count_rs_files(dir: &Path, count: &mut u32) {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        if !name.starts_with('.') && name != "target" {
-                            count_rs_files(&path, count);
+        let mut detected = Vec::new();
+        for (file, lang) in manifests {
+            let path = repo_root.join(file);
+            if path.exists() {
+                detected.push(*lang);
+                // Extract name/version from the manifest
+                if let Ok(content) = fs::read_to_string(&path) {
+                    for line in content.lines().take(15) {
+                        let trimmed = line.trim();
+                        if trimmed.starts_with("name")
+                            || trimmed.starts_with("version")
+                            || trimmed.starts_with("\"name\"")
+                        {
+                            lines.push(trimmed.to_string());
                         }
-                    } else if path.extension().is_some_and(|e| e == "rs") {
-                        *count += 1;
                     }
                 }
             }
         }
-        count_rs_files(repo_root, &mut rs_count);
-        lines.push(format!("Rust files: {rs_count}"));
 
-        // List src/ modules
-        let src_dir = repo_root.join("src");
-        if let Ok(entries) = fs::read_dir(&src_dir) {
-            let mut modules: Vec<String> = entries
-                .flatten()
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().to_string();
-                    if name.ends_with(".rs") {
-                        Some(name.trim_end_matches(".rs").to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            modules.sort();
-            lines.push(format!("Modules: {}", modules.join(", ")));
+        if detected.is_empty() {
+            lines.push("Language: unknown".to_string());
+        } else {
+            lines.push(format!("Language: {}", detected.join(", ")));
         }
 
-        // Detect test framework
-        lines.push("Test framework: cargo test".to_string());
+        // List top-level directory structure (single readdir, no recursion)
+        if let Ok(entries) = fs::read_dir(repo_root) {
+            let mut dirs: Vec<String> = entries
+                .flatten()
+                .filter(|e| {
+                    e.file_type().is_ok_and(|ft| ft.is_dir())
+                        && !e
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with('.')
+                })
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            dirs.sort();
+            if !dirs.is_empty() {
+                lines.push(format!("Top-level dirs: {}", dirs.join(", ")));
+            }
+        }
 
         lines.join("\n")
     }
@@ -1277,8 +1288,8 @@ mod tests {
     }
 
     #[test]
-    fn generate_codebase_summary_returns_nonempty() {
-        let tmp = std::env::temp_dir().join("hive_test_summary");
+    fn generate_codebase_summary_detects_rust() {
+        let tmp = std::env::temp_dir().join("hive_test_summary_rust");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(tmp.join("src")).unwrap();
         fs::write(
@@ -1286,16 +1297,38 @@ mod tests {
             "name = \"test-project\"\nversion = \"0.1.0\"\n",
         )
         .unwrap();
-        fs::write(tmp.join("src/main.rs"), "fn main() {}").unwrap();
-        fs::write(tmp.join("src/lib.rs"), "").unwrap();
 
         let summary = AgentSpawner::generate_codebase_summary(&tmp);
-        assert!(!summary.is_empty());
         assert!(summary.contains("test-project"));
-        assert!(summary.contains("Rust files:"));
-        assert!(summary.contains("Modules:"));
-        assert!(summary.contains("main"));
-        assert!(summary.contains("lib"));
+        assert!(summary.contains("rust"));
+        assert!(summary.contains("Top-level dirs: src"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn generate_codebase_summary_detects_multiple_languages() {
+        let tmp = std::env::temp_dir().join("hive_test_summary_multi");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        fs::write(tmp.join("package.json"), "{\"name\": \"my-app\"}").unwrap();
+        fs::write(tmp.join("pyproject.toml"), "name = \"backend\"").unwrap();
+
+        let summary = AgentSpawner::generate_codebase_summary(&tmp);
+        assert!(summary.contains("javascript/typescript"));
+        assert!(summary.contains("python"));
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn generate_codebase_summary_unknown_project() {
+        let tmp = std::env::temp_dir().join("hive_test_summary_unknown");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        let summary = AgentSpawner::generate_codebase_summary(&tmp);
+        assert!(summary.contains("unknown"));
 
         let _ = fs::remove_dir_all(&tmp);
     }
