@@ -7,9 +7,37 @@ mod tasks;
 #[cfg(test)]
 mod tests;
 
-use crate::types::*;
+use crate::types::{AgentRole, ModelConfig, ModelTier, WorktreeStrategy, *};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Per-role worktree strategy configuration.
+/// Role-level defaults can be overridden in config.yaml via `worktree_<role>: full|sparse|no_checkout`.
+#[derive(Debug, Default)]
+pub struct WorktreeConfig {
+    pub lead: Option<WorktreeStrategy>,
+    pub worker: Option<WorktreeStrategy>,
+    pub explorer: Option<WorktreeStrategy>,
+    pub evaluator: Option<WorktreeStrategy>,
+    pub reviewer: Option<WorktreeStrategy>,
+    pub postmortem: Option<WorktreeStrategy>,
+}
+
+impl WorktreeConfig {
+    /// Resolve the worktree strategy for a role: config override > role default.
+    pub fn resolve(&self, role: AgentRole) -> WorktreeStrategy {
+        let config_override = match role {
+            AgentRole::Lead => self.lead.clone(),
+            AgentRole::Worker => self.worker.clone(),
+            AgentRole::Explorer => self.explorer.clone(),
+            AgentRole::Evaluator => self.evaluator.clone(),
+            AgentRole::Reviewer => self.reviewer.clone(),
+            AgentRole::Postmortem => self.postmortem.clone(),
+            AgentRole::Coordinator => None,
+        };
+        config_override.unwrap_or_else(|| WorktreeStrategy::default_for_role(role))
+    }
+}
 
 /// Configuration loaded from `.hive/config.yaml`.
 pub struct HiveConfig {
@@ -21,6 +49,13 @@ pub struct HiveConfig {
     pub models: ModelConfig,
     /// Global fallback model when default is rate-limited
     pub fallback_model: Option<String>,
+    /// Per-role worktree strategy configuration
+    pub worktrees: WorktreeConfig,
+    /// Global worktree strategy override (`worktree_strategy: full|sparse|auto` in config.yaml).
+    /// When Some, this is the HIGHEST priority — overrides per-spawn, task domain, and role defaults.
+    /// `None` means "auto" (use the role-based priority chain).
+    /// Use `full` for small repos where sparse/no-checkout adds unnecessary complexity.
+    pub global_worktree: Option<WorktreeStrategy>,
 }
 
 impl Default for HiveConfig {
@@ -32,6 +67,8 @@ impl Default for HiveConfig {
             budget_usd: None,
             models: ModelConfig::default(),
             fallback_model: None,
+            worktrees: WorktreeConfig::default(),
+            global_worktree: None,
         }
     }
 }
@@ -157,6 +194,47 @@ impl HiveState {
                     && let Some(tier) = ModelTier::from_str_loose(model)
                 {
                     config.models.set_role(role, tier);
+                }
+            }
+            // Parse global worktree_strategy: full|sparse|auto
+            // This is the highest-priority override — applies to all roles.
+            if let Some(value) = line.strip_prefix("worktree_strategy:") {
+                let value = value.trim();
+                config.global_worktree = match value {
+                    "full" => Some(WorktreeStrategy::Full),
+                    "no_checkout" | "no-checkout" => Some(WorktreeStrategy::NoCheckout),
+                    "sparse" => Some(WorktreeStrategy::Sparse {
+                        paths: vec!["src".to_string()],
+                    }),
+                    "auto" | "" => None,
+                    _ => None,
+                };
+            }
+            // Parse worktree_<role>: full|sparse|no_checkout entries
+            // e.g. worktree_worker: sparse  or  worktree_lead: full
+            if let Some(rest) = line.strip_prefix("worktree_")
+                && let Some((role, strategy_str)) = rest.split_once(':')
+            {
+                let role = role.trim();
+                let strategy_str = strategy_str.trim();
+                let strategy = match strategy_str {
+                    "full" => Some(WorktreeStrategy::Full),
+                    "no_checkout" | "no-checkout" => Some(WorktreeStrategy::NoCheckout),
+                    "sparse" => Some(WorktreeStrategy::Sparse {
+                        paths: vec!["src".to_string()],
+                    }),
+                    _ => None,
+                };
+                if let Some(s) = strategy {
+                    match role {
+                        "lead" => config.worktrees.lead = Some(s),
+                        "worker" => config.worktrees.worker = Some(s),
+                        "explorer" => config.worktrees.explorer = Some(s),
+                        "evaluator" => config.worktrees.evaluator = Some(s),
+                        "reviewer" => config.worktrees.reviewer = Some(s),
+                        "postmortem" => config.worktrees.postmortem = Some(s),
+                        _ => {}
+                    }
                 }
             }
         }

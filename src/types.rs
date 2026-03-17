@@ -43,6 +43,43 @@ impl std::fmt::Display for ModelTier {
     }
 }
 
+// --- Worktree Strategy ---
+
+/// How to set up the git worktree for an agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WorktreeStrategy {
+    /// Full checkout — all files present. Default for leads and reviewers.
+    Full,
+    /// Sparse checkout — only the specified path prefixes are checked out.
+    /// Workers use task.domain; explorers/evaluators use "src".
+    /// Falls back to Full if paths is empty.
+    Sparse { paths: Vec<String> },
+    /// Create the worktree branch but check out nothing.
+    /// Useful for postmortem agents that only read .hive/ data.
+    NoCheckout,
+}
+
+impl WorktreeStrategy {
+    /// Default strategy for a given role.
+    pub fn default_for_role(role: AgentRole) -> Self {
+        match role {
+            AgentRole::Lead => WorktreeStrategy::Full,
+            // Reviewers are read-only; they use `git show <branch>:<path>` to inspect code.
+            AgentRole::Reviewer => WorktreeStrategy::NoCheckout,
+            AgentRole::Worker => WorktreeStrategy::Sparse {
+                paths: vec!["src".to_string()],
+            },
+            AgentRole::Explorer | AgentRole::Evaluator => WorktreeStrategy::Sparse {
+                paths: vec!["src".to_string()],
+            },
+            AgentRole::Postmortem => WorktreeStrategy::NoCheckout,
+            // Coordinator never gets a worktree at all — this method won't be called for them.
+            AgentRole::Coordinator => WorktreeStrategy::NoCheckout,
+        }
+    }
+}
+
 // --- Agent Types ---
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,6 +383,73 @@ pub struct MindQueryResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worktree_strategy_default_for_lead_is_full() {
+        assert_eq!(WorktreeStrategy::default_for_role(AgentRole::Lead), WorktreeStrategy::Full);
+    }
+
+    #[test]
+    fn worktree_strategy_default_for_reviewer_is_no_checkout() {
+        assert_eq!(
+            WorktreeStrategy::default_for_role(AgentRole::Reviewer),
+            WorktreeStrategy::NoCheckout
+        );
+    }
+
+    #[test]
+    fn worktree_strategy_default_for_worker_is_sparse_src() {
+        assert_eq!(
+            WorktreeStrategy::default_for_role(AgentRole::Worker),
+            WorktreeStrategy::Sparse { paths: vec!["src".to_string()] }
+        );
+    }
+
+    #[test]
+    fn worktree_strategy_default_for_explorer_is_sparse_src() {
+        assert_eq!(
+            WorktreeStrategy::default_for_role(AgentRole::Explorer),
+            WorktreeStrategy::Sparse { paths: vec!["src".to_string()] }
+        );
+    }
+
+    #[test]
+    fn worktree_strategy_default_for_postmortem_is_no_checkout() {
+        assert_eq!(
+            WorktreeStrategy::default_for_role(AgentRole::Postmortem),
+            WorktreeStrategy::NoCheckout
+        );
+    }
+
+    #[test]
+    fn worktree_strategy_serializes_with_type_tag() {
+        let full = WorktreeStrategy::Full;
+        let json = serde_json::to_string(&full).unwrap();
+        assert!(json.contains("\"full\""), "Full should serialize as 'full'");
+
+        let sparse = WorktreeStrategy::Sparse { paths: vec!["src".to_string()] };
+        let json = serde_json::to_string(&sparse).unwrap();
+        assert!(json.contains("\"sparse\""), "Sparse should serialize as 'sparse'");
+        assert!(json.contains("src"), "Sparse should include paths");
+
+        let no_checkout = WorktreeStrategy::NoCheckout;
+        let json = serde_json::to_string(&no_checkout).unwrap();
+        assert!(json.contains("\"no_checkout\""), "NoCheckout should serialize as 'no_checkout'");
+    }
+
+    #[test]
+    fn worktree_strategy_roundtrip() {
+        let strategies = vec![
+            WorktreeStrategy::Full,
+            WorktreeStrategy::Sparse { paths: vec!["src".to_string(), "docs".to_string()] },
+            WorktreeStrategy::NoCheckout,
+        ];
+        for s in strategies {
+            let json = serde_json::to_string(&s).unwrap();
+            let deserialized: WorktreeStrategy = serde_json::from_str(&json).unwrap();
+            assert_eq!(s, deserialized);
+        }
+    }
 
     #[test]
     fn agent_role_serializes_lowercase() {

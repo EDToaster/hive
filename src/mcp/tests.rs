@@ -102,6 +102,8 @@ async fn spawn_agent_rejects_missing_task_id() {
         role: "lead".into(),
         task_id: "nonexistent-task".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1230,6 +1232,8 @@ async fn spawn_agent_worker_denied() {
         role: "worker".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1249,6 +1253,8 @@ async fn spawn_agent_invalid_role() {
         role: "superadmin".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1268,6 +1274,8 @@ async fn spawn_agent_coordinator_cannot_spawn_worker() {
         role: "worker".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1288,6 +1296,8 @@ async fn spawn_agent_task_wrong_status() {
         role: "lead".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1308,6 +1318,8 @@ async fn spawn_agent_lead_cannot_spawn_lead() {
         role: "lead".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -2660,6 +2672,8 @@ async fn spawn_agent_empty_role_rejected() {
         role: "".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -2677,6 +2691,8 @@ async fn spawn_agent_invalid_role_rejected() {
         role: "superadmin".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -2696,6 +2712,8 @@ async fn spawn_agent_task_already_active_rejected() {
         role: "lead".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -2716,6 +2734,8 @@ async fn spawn_agent_wrong_hierarchy_rejected() {
         role: "worker".into(),
         task_id: "task-1".into(),
         model: None,
+        sparse_paths: None,
+        source_paths: None,
     });
     let result = mcp.hive_spawn_agent(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));

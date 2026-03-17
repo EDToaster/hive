@@ -1,6 +1,6 @@
 use super::HiveMcp;
 use super::params::{RetryAgentParams, ReviewAgentParams, SpawnAgentParams, WaitForActivityParams};
-use crate::types::{AgentRole, AgentStatus, TaskStatus};
+use crate::types::{AgentRole, AgentStatus, TaskStatus, WorktreeStrategy};
 use chrono::Utc;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, Content};
@@ -88,7 +88,59 @@ impl HiveMcp {
             ))]));
         }
 
-        match crate::agent::AgentSpawner::spawn_with_model(
+        // Resolve worktree strategy (priority: global config > per-spawn > task domain > role config > role default)
+        // Global override: if worktree_strategy is set in config.yaml, it wins unconditionally.
+        let strategy_override = if config.global_worktree.is_some() {
+            config.global_worktree.clone()
+        } else {
+        p.sparse_paths.as_ref().map(|paths| {
+            if paths.is_empty() {
+                WorktreeStrategy::Full
+            } else {
+                WorktreeStrategy::Sparse { paths: paths.clone() }
+            }
+        }).or_else(|| {
+            // For workers with a task domain, use that domain as sparse path
+            if role == AgentRole::Worker {
+                task.domain.as_ref().map(|d| WorktreeStrategy::Sparse {
+                    paths: vec![d.clone()],
+                })
+            } else {
+                None
+            }
+        }).or_else(|| {
+            // Check config-level per-role override (may differ from hardcoded role default)
+            let config_strategy = config.worktrees.resolve(role);
+            let default_strategy = WorktreeStrategy::default_for_role(role);
+            if config_strategy != default_strategy {
+                Some(config_strategy)
+            } else {
+                None
+            }
+        })
+        }; // end global_worktree else branch
+
+        // Resolve source_paths for NoCheckout agents (reviewer, evaluator).
+        // Priority: explicit param > auto-populate from parent worktree (for reviewers)
+        let resolved_strategy = strategy_override
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| WorktreeStrategy::default_for_role(role));
+        let source_paths = if let Some(paths) = &p.source_paths {
+            paths.clone()
+        } else if matches!(resolved_strategy, WorktreeStrategy::NoCheckout) && role == AgentRole::Reviewer {
+            // Auto-populate: reviewer reads from the spawning lead's worktree
+            state
+                .load_agent(&self.run_id, &self.agent_id)
+                .ok()
+                .and_then(|a| a.worktree)
+                .map(|w| vec![w])
+                .unwrap_or_default()
+        } else {
+            vec![]
+        };
+
+        match crate::agent::AgentSpawner::spawn_with_options(
             &state,
             &self.run_id,
             &p.agent_id,
@@ -96,6 +148,8 @@ impl HiveMcp {
             Some(&self.agent_id),
             &task_description,
             p.model.as_deref(),
+            strategy_override,
+            source_paths,
         ) {
             Ok(agent) => {
                 // Bind agent to task

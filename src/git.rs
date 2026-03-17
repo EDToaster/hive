@@ -18,7 +18,7 @@ impl Git {
         }
     }
 
-    /// Create a new worktree with a new branch
+    /// Create a new worktree with a new branch (full checkout)
     pub fn worktree_add(
         repo_root: &Path,
         worktree_path: &Path,
@@ -31,6 +31,53 @@ impl Git {
             args.push(sp);
         }
         Self::run(&args, repo_root)?;
+        Ok(())
+    }
+
+    /// Create a new worktree with a new branch, skipping file checkout.
+    /// Use this as the first step for sparse or no-checkout worktrees.
+    pub fn worktree_add_no_checkout(
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch: &str,
+        start_point: Option<&str>,
+    ) -> Result<(), String> {
+        let wt_str = worktree_path.to_string_lossy();
+        let mut args = vec!["worktree", "add", "--no-checkout", &wt_str, "-b", branch];
+        if let Some(sp) = start_point {
+            args.push(sp);
+        }
+        Self::run(&args, repo_root)?;
+        Ok(())
+    }
+
+    /// Initialize cone-mode sparse checkout in a worktree.
+    /// Must be called after `worktree_add_no_checkout`.
+    pub fn sparse_checkout_init(worktree_path: &Path) -> Result<(), String> {
+        Self::run(&["sparse-checkout", "init", "--cone"], worktree_path)?;
+        Ok(())
+    }
+
+    /// Set the sparse checkout paths for a worktree.
+    /// Paths are directory prefixes (cone mode). This triggers file population.
+    pub fn sparse_checkout_set(worktree_path: &Path, paths: &[&str]) -> Result<(), String> {
+        let mut args = vec!["sparse-checkout", "set"];
+        args.extend_from_slice(paths);
+        Self::run(&args, worktree_path)?;
+        Ok(())
+    }
+
+    /// List current sparse checkout paths in a worktree.
+    pub fn sparse_checkout_list(worktree_path: &Path) -> Result<Vec<String>, String> {
+        let out = Self::run(&["sparse-checkout", "list"], worktree_path)?;
+        Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+    }
+
+    /// Populate files in a `--no-checkout` worktree by running `git checkout`.
+    /// This respects any active sparse-checkout configuration.
+    /// Must be called after `sparse_checkout_set` to actually write files to disk.
+    pub fn checkout_populate(worktree_path: &Path) -> Result<(), String> {
+        Self::run(&["checkout"], worktree_path)?;
         Ok(())
     }
 
@@ -471,5 +518,74 @@ mod tests {
 
         // Clean up
         Git::rebase_abort(dir.path()).unwrap();
+    }
+
+    /// Helper: create a test repo with some files in nested directories.
+    fn init_test_repo_with_files() -> TempDir {
+        let dir = init_test_repo();
+        // Create some dirs and files to test sparse checkout
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join("docs")).unwrap();
+        fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
+        fs::write(dir.path().join("docs/readme.md"), "# readme").unwrap();
+        fs::write(dir.path().join("root.txt"), "root file").unwrap();
+        Command::new("git").args(["add", "-A"]).current_dir(dir.path()).output().unwrap();
+        Command::new("git").args(["commit", "-m", "add files"]).current_dir(dir.path()).output().unwrap();
+        dir
+    }
+
+    #[test]
+    fn worktree_add_no_checkout_creates_empty_worktree() {
+        let dir = init_test_repo_with_files();
+        let wt_path = dir.path().join("wt-no-checkout");
+
+        Git::worktree_add_no_checkout(dir.path(), &wt_path, "no-checkout-branch", None).unwrap();
+
+        assert!(wt_path.exists(), "worktree dir should exist");
+        assert!(!wt_path.join("src/main.rs").exists(), "files should NOT be checked out");
+        assert!(!wt_path.join("root.txt").exists(), "root file should NOT be checked out");
+        assert_eq!(Git::current_branch(&wt_path).unwrap(), "no-checkout-branch");
+    }
+
+    #[test]
+    fn sparse_checkout_init_and_set_populates_paths() {
+        let dir = init_test_repo_with_files();
+        let wt_path = dir.path().join("wt-sparse");
+
+        Git::worktree_add_no_checkout(dir.path(), &wt_path, "sparse-branch", None).unwrap();
+        Git::sparse_checkout_init(&wt_path).unwrap();
+        Git::sparse_checkout_set(&wt_path, &["src"]).unwrap();
+        Git::checkout_populate(&wt_path).unwrap();
+
+        assert!(wt_path.join("src/main.rs").exists(), "src/ should be checked out");
+        assert!(!wt_path.join("docs/readme.md").exists(), "docs/ should NOT be checked out");
+    }
+
+    #[test]
+    fn sparse_checkout_list_returns_paths() {
+        let dir = init_test_repo_with_files();
+        let wt_path = dir.path().join("wt-sparse-list");
+
+        Git::worktree_add_no_checkout(dir.path(), &wt_path, "sparse-list-branch", None).unwrap();
+        Git::sparse_checkout_init(&wt_path).unwrap();
+        Git::sparse_checkout_set(&wt_path, &["src"]).unwrap();
+        Git::checkout_populate(&wt_path).unwrap();
+
+        let paths = Git::sparse_checkout_list(&wt_path).unwrap();
+        assert!(paths.iter().any(|p| p.contains("src")), "sparse list should include 'src'");
+    }
+
+    #[test]
+    fn sparse_checkout_multiple_paths() {
+        let dir = init_test_repo_with_files();
+        let wt_path = dir.path().join("wt-multi-sparse");
+
+        Git::worktree_add_no_checkout(dir.path(), &wt_path, "multi-sparse-branch", None).unwrap();
+        Git::sparse_checkout_init(&wt_path).unwrap();
+        Git::sparse_checkout_set(&wt_path, &["src", "docs"]).unwrap();
+        Git::checkout_populate(&wt_path).unwrap();
+
+        assert!(wt_path.join("src/main.rs").exists(), "src/ should be checked out");
+        assert!(wt_path.join("docs/readme.md").exists(), "docs/ should be checked out");
     }
 }
