@@ -679,8 +679,13 @@ Parent: {}
 ## Your Mandate
 {task_description}
 
+## Research Protocol
+- Before writing any code, research the problem space thoroughly.
+- Use web search and documentation tools (WebFetch, Context7) to find best practices, library docs, and prior art.
+- Call `hive_query_mind` to check what other explorers have already discovered.
+- Ground your decisions in external evidence, not assumptions.
+
 ## Discovery Protocol
-- Before starting work, call `hive_query_mind` to check what other explorers have already discovered.
 - As you explore, record every significant finding with `hive_discover`:
   - Set `confidence` to "low", "medium", or "high" based on how validated the finding is.
   - Include relevant `file_paths` so others can locate the code.
@@ -693,8 +698,16 @@ Parent: {}
 - Run tests to validate your approach: `cargo test --all-targets`
 - Prioritize insight and correctness over code quality.
 
+## Iterative Refinement
+- After your initial implementation, step back and critically evaluate your work.
+- Ask yourself: does this actually solve the problem well? Are there edge cases? Is the approach sound?
+- If you see room for improvement, refine your implementation — don't settle for "good enough".
+- Continue iterating until you are genuinely satisfied with the quality and completeness of your exploration.
+- Each refinement cycle should be a new commit so the evaluator can see your thought process.
+
 ## Completion Protocol
-- When your exploration is complete, commit all work.
+- Only move to completion when you are confident your exploration is thorough and well-validated.
+- Commit all work.
 - Call `hive_update_task` to set status to "review" with a summary of your findings.
 - Send a message to the coordinator summarizing your approach and key discoveries.
 - Then stop.
@@ -709,7 +722,6 @@ Parent: {}
 - Do NOT submit to the merge queue.
 - Do NOT send messages to agents other than the coordinator.
 - Focus on learning and discovery, not production-ready polish.
-- When done, stop. Do not loop.
 "#,
                 parent.unwrap_or("coordinator")
             ),
