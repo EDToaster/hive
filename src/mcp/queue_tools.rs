@@ -60,15 +60,29 @@ impl HiveMcp {
                     &format!("review approved, queued (branch: {})", branch),
                 );
 
-                // Notify coordinator
+                // Emit queue_updated event — visible to all agents in wait_for_activity
+                self.append_event(
+                    "queue_updated",
+                    &p.task_id,
+                    &format!(
+                        "task '{}' added to merge queue (branch: {}, {} total)",
+                        p.task_id,
+                        branch,
+                        queue.entries.len()
+                    ),
+                );
+
                 let msg = format!(
                     "Review approved for task '{}'. Branch '{}' added to merge queue.",
                     p.task_id, branch
                 );
+
+                // Notify coordinator via message + event
+                let coord_msg_id = format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
                 let _ = state.save_message(
                     &self.run_id,
                     &Message {
-                        id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
+                        id: coord_msg_id.clone(),
                         from: self.agent_id.clone(),
                         to: "coordinator".to_string(),
                         timestamp: Utc::now(),
@@ -77,6 +91,38 @@ impl HiveMcp {
                         refs: vec![p.task_id.clone()],
                     },
                 );
+                self.append_event(
+                    "message_created",
+                    &coord_msg_id,
+                    &format!("from {} to coordinator", self.agent_id),
+                );
+                // Notify the submitting lead
+                if let Some(ref submitter) = task.submitted_by {
+                    let lead_msg_id =
+                        format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                    let lead_body = format!(
+                        "Your submission for task '{}' has been approved and added to the merge queue (branch: {}).",
+                        p.task_id, branch
+                    );
+                    let _ = state.save_message(
+                        &self.run_id,
+                        &Message {
+                            id: lead_msg_id.clone(),
+                            from: self.agent_id.clone(),
+                            to: submitter.clone(),
+                            timestamp: Utc::now(),
+                            message_type: MessageType::Status,
+                            body: lead_body.clone(),
+                            refs: vec![p.task_id.clone()],
+                        },
+                    );
+                    self.append_event(
+                        "message_created",
+                        &lead_msg_id,
+                        &format!("from {} to {submitter}", self.agent_id),
+                    );
+                    let _ = self.try_wake_agent(submitter, &lead_body);
+                }
 
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
@@ -303,6 +349,18 @@ impl HiveMcp {
                     &format!(
                         "submitted directly to queue (reviewer spawn failed, branch: {})",
                         p.branch
+                    ),
+                );
+
+                // Emit queue_updated so coordinator sees it in wait_for_activity
+                self.append_event(
+                    "queue_updated",
+                    &p.task_id,
+                    &format!(
+                        "task '{}' added to merge queue (branch: {}, {} total)",
+                        p.task_id,
+                        p.branch,
+                        queue.entries.len()
                     ),
                 );
 
