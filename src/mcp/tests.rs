@@ -89,6 +89,7 @@ fn make_task(id: &str, parent: Option<&str>, status: TaskStatus) -> Task {
         branch: None,
         domain: None,
         review_count: 0,
+        submitted_by: None,
         created_at: now,
         updated_at: now,
     }
@@ -635,7 +636,8 @@ async fn review_verdict_request_changes_sends_feedback_message() {
     let state = mcp.state();
 
     let mut task = make_task("task-test", None, TaskStatus::Review);
-    task.assigned_to = Some("lead-1".into());
+    task.assigned_to = Some("worker-1".into());
+    task.submitted_by = Some("lead-1".into());
     task.review_count = 0;
     state.save_task("test-run", &task).unwrap();
 

@@ -22,6 +22,7 @@ fn make_task(id: &str, status: TaskStatus) -> Task {
         branch: None,
         domain: None,
         review_count: 0,
+        submitted_by: None,
         created_at: now,
         updated_at: now,
     }
@@ -1966,8 +1967,16 @@ worktree_postmortem: no_checkout
 
     // Explicit config overrides
     assert_eq!(config.worktrees.lead, Some(WorktreeStrategy::Full));
-    assert_eq!(config.worktrees.worker, Some(WorktreeStrategy::Sparse { paths: vec!["src".to_string()] }));
-    assert_eq!(config.worktrees.postmortem, Some(WorktreeStrategy::NoCheckout));
+    assert_eq!(
+        config.worktrees.worker,
+        Some(WorktreeStrategy::Sparse {
+            paths: vec!["src".to_string()]
+        })
+    );
+    assert_eq!(
+        config.worktrees.postmortem,
+        Some(WorktreeStrategy::NoCheckout)
+    );
 
     // Unset fields remain None (resolved via default_for_role)
     assert!(config.worktrees.explorer.is_none());
@@ -1986,15 +1995,23 @@ fn worktree_config_resolve_uses_config_then_default() {
     let config = state.load_config();
 
     // Worker config overrides default (full instead of sparse)
-    assert_eq!(config.worktrees.resolve(AgentRole::Worker), WorktreeStrategy::Full);
+    assert_eq!(
+        config.worktrees.resolve(AgentRole::Worker),
+        WorktreeStrategy::Full
+    );
 
     // Lead has no config entry, falls back to role default (Full)
-    assert_eq!(config.worktrees.resolve(AgentRole::Lead), WorktreeStrategy::Full);
+    assert_eq!(
+        config.worktrees.resolve(AgentRole::Lead),
+        WorktreeStrategy::Full
+    );
 
     // Explorer has no config entry, falls back to role default (Sparse)
     assert_eq!(
         config.worktrees.resolve(AgentRole::Explorer),
-        WorktreeStrategy::Sparse { paths: vec!["src".to_string()] }
+        WorktreeStrategy::Sparse {
+            paths: vec!["src".to_string()]
+        }
     );
 }
 
@@ -2023,7 +2040,9 @@ fn load_config_global_worktree_strategy_sparse() {
     let config = state.load_config();
     assert_eq!(
         config.global_worktree,
-        Some(WorktreeStrategy::Sparse { paths: vec!["src".to_string()] })
+        Some(WorktreeStrategy::Sparse {
+            paths: vec!["src".to_string()]
+        })
     );
 }
 
@@ -2044,11 +2063,10 @@ fn load_config_global_worktree_strategy_auto_is_none() {
 fn load_config_global_worktree_absent_is_none() {
     let dir = tempfile::tempdir().unwrap();
     let state = make_state(dir.path());
-    fs::write(
-        dir.path().join(".hive/config.yaml"),
-        "budget_usd: 10.0\n",
-    )
-    .unwrap();
+    fs::write(dir.path().join(".hive/config.yaml"), "budget_usd: 10.0\n").unwrap();
     let config = state.load_config();
-    assert_eq!(config.global_worktree, None, "no worktree_strategy key → None");
+    assert_eq!(
+        config.global_worktree, None,
+        "no worktree_strategy key → None"
+    );
 }

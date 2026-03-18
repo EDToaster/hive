@@ -242,6 +242,8 @@ pub struct Task {
     pub created_by: String,
     pub parent_task: Option<String>,
     pub branch: Option<String>,
+    #[serde(default)]
+    pub submitted_by: Option<String>,
     pub domain: Option<String>,
     #[serde(default)]
     pub review_count: u32,
@@ -386,7 +388,10 @@ mod tests {
 
     #[test]
     fn worktree_strategy_default_for_lead_is_full() {
-        assert_eq!(WorktreeStrategy::default_for_role(AgentRole::Lead), WorktreeStrategy::Full);
+        assert_eq!(
+            WorktreeStrategy::default_for_role(AgentRole::Lead),
+            WorktreeStrategy::Full
+        );
     }
 
     #[test]
@@ -401,7 +406,9 @@ mod tests {
     fn worktree_strategy_default_for_worker_is_sparse_src() {
         assert_eq!(
             WorktreeStrategy::default_for_role(AgentRole::Worker),
-            WorktreeStrategy::Sparse { paths: vec!["src".to_string()] }
+            WorktreeStrategy::Sparse {
+                paths: vec!["src".to_string()]
+            }
         );
     }
 
@@ -409,7 +416,9 @@ mod tests {
     fn worktree_strategy_default_for_explorer_is_sparse_src() {
         assert_eq!(
             WorktreeStrategy::default_for_role(AgentRole::Explorer),
-            WorktreeStrategy::Sparse { paths: vec!["src".to_string()] }
+            WorktreeStrategy::Sparse {
+                paths: vec!["src".to_string()]
+            }
         );
     }
 
@@ -427,21 +436,31 @@ mod tests {
         let json = serde_json::to_string(&full).unwrap();
         assert!(json.contains("\"full\""), "Full should serialize as 'full'");
 
-        let sparse = WorktreeStrategy::Sparse { paths: vec!["src".to_string()] };
+        let sparse = WorktreeStrategy::Sparse {
+            paths: vec!["src".to_string()],
+        };
         let json = serde_json::to_string(&sparse).unwrap();
-        assert!(json.contains("\"sparse\""), "Sparse should serialize as 'sparse'");
+        assert!(
+            json.contains("\"sparse\""),
+            "Sparse should serialize as 'sparse'"
+        );
         assert!(json.contains("src"), "Sparse should include paths");
 
         let no_checkout = WorktreeStrategy::NoCheckout;
         let json = serde_json::to_string(&no_checkout).unwrap();
-        assert!(json.contains("\"no_checkout\""), "NoCheckout should serialize as 'no_checkout'");
+        assert!(
+            json.contains("\"no_checkout\""),
+            "NoCheckout should serialize as 'no_checkout'"
+        );
     }
 
     #[test]
     fn worktree_strategy_roundtrip() {
         let strategies = vec![
             WorktreeStrategy::Full,
-            WorktreeStrategy::Sparse { paths: vec!["src".to_string(), "docs".to_string()] },
+            WorktreeStrategy::Sparse {
+                paths: vec!["src".to_string(), "docs".to_string()],
+            },
             WorktreeStrategy::NoCheckout,
         ];
         for s in strategies {
@@ -623,6 +642,7 @@ mod tests {
             branch: None,
             domain: Some("backend".into()),
             review_count: 0,
+            submitted_by: None,
             created_at: now,
             updated_at: now,
         };
@@ -1061,6 +1081,7 @@ mod tests {
             branch: None,
             domain: None,
             review_count: 0,
+            submitted_by: None,
             created_at: now,
             updated_at: now,
         };
@@ -1087,6 +1108,7 @@ mod tests {
             branch: None,
             domain: None,
             review_count: 0,
+            submitted_by: None,
             created_at: now,
             updated_at: now,
         };

@@ -92,14 +92,15 @@ impl HiveMcp {
                     .save_task(&self.run_id, &task)
                     .map_err(|e| McpError::internal_error(e, None))?;
 
-                // Send feedback to the agent that worked on this task
+                // Send feedback to the agent that submitted the task (falls back to assigned)
                 self.append_event(
                     "task_changed",
                     &p.task_id,
                     &format!("review requested changes (cycle {})", task.review_count),
                 );
 
-                if let Some(ref assigned) = task.assigned_to {
+                let recipient = task.submitted_by.as_deref().or(task.assigned_to.as_deref());
+                if let Some(recipient) = recipient {
                     let body = format!(
                         "Review feedback for task '{}' (review cycle {}):\n{}",
                         p.task_id, task.review_count, feedback
@@ -109,7 +110,7 @@ impl HiveMcp {
                         &Message {
                             id: format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]),
                             from: self.agent_id.clone(),
-                            to: assigned.clone(),
+                            to: recipient.to_string(),
                             timestamp: Utc::now(),
                             message_type: MessageType::Request,
                             body: body.clone(),
@@ -118,14 +119,14 @@ impl HiveMcp {
                     );
 
                     // Auto-wake the agent to process feedback
-                    let _ = self.try_wake_agent(assigned, &body);
+                    let _ = self.try_wake_agent(recipient, &body);
                 }
 
                 Ok(CallToolResult::success(vec![Content::text(format!(
                     "Requested changes for task '{}' (review cycle {}). Feedback sent to {}.",
                     p.task_id,
                     task.review_count,
-                    task.assigned_to.as_deref().unwrap_or("unknown")
+                    recipient.unwrap_or("unknown")
                 ))]))
             }
             "reject" => {
@@ -238,6 +239,7 @@ impl HiveMcp {
 
         task.status = TaskStatus::Review;
         task.branch = Some(p.branch.clone());
+        task.submitted_by = Some(self.agent_id.clone());
         task.updated_at = Utc::now();
         state
             .save_task(&self.run_id, &task)
@@ -271,7 +273,7 @@ impl HiveMcp {
                     &format!("submitted for review (branch: {})", p.branch),
                 );
                 Ok(CallToolResult::success(vec![Content::text(format!(
-                    "Spawned reviewer '{}' for task '{}'. Awaiting review verdict.",
+                    "Spawned reviewer '{}' for task '{}'. Stay alive and call hive_wait_for_activity — the reviewer may request changes that you'll need to address.",
                     reviewer_id, p.task_id
                 ))]))
             }

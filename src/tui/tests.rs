@@ -24,6 +24,7 @@ fn make_task(id: &str, title: &str, parent: Option<&str>, status: TaskStatus) ->
         branch: None,
         domain: None,
         review_count: 0,
+        submitted_by: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
     }
