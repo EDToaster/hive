@@ -2400,7 +2400,7 @@ async fn create_task_with_special_chars_in_title() {
         title: "Task with <html>&\"quotes'</html> and \n newlines \t tabs".into(),
         description: "描述 with unicode 🚀 and \0 null bytes".into(),
         urgency: "normal".into(),
-        domain: Some("domaine-spécial".into()),
+        domain: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2424,6 +2424,95 @@ async fn create_task_with_very_long_title() {
     });
     let result = mcp.hive_create_task(params).await.unwrap();
     assert!(!result.is_error.unwrap_or(false));
+}
+
+#[tokio::test]
+async fn create_task_rejects_invalid_domain() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().to_path_buf();
+    // Initialize a git repo with a "src" directory
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "test"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() {}").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "init"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+
+    std::fs::create_dir_all(root.join(".hive")).unwrap();
+    let state = HiveState::new(root.clone());
+    state.create_run("test-run").unwrap();
+    let agent = Agent {
+        id: "coordinator".into(),
+        role: AgentRole::Coordinator,
+        status: AgentStatus::Running,
+        parent: None,
+        pid: None,
+        worktree: None,
+        heartbeat: None,
+        task_id: None,
+        session_id: None,
+        last_completed_at: None,
+        messages_read_at: None,
+        retry_count: 0,
+        model: None,
+        branched_from: None,
+        wait_cursor: None,
+    };
+    state.save_agent("test-run", &agent).unwrap();
+    let mcp = HiveMcp::new(
+        "test-run".into(),
+        "coordinator".into(),
+        root.to_string_lossy().to_string(),
+    );
+
+    // Valid domain should succeed
+    let params = Parameters(CreateTaskParams {
+        title: "Valid domain task".into(),
+        description: "desc".into(),
+        urgency: "normal".into(),
+        domain: Some("src".into()),
+        blocking: vec![],
+        blocked_by: vec![],
+        parent_task: None,
+    });
+    let result = mcp.hive_create_task(params).await.unwrap();
+    assert!(!result.is_error.unwrap_or(false));
+
+    // Invalid domain should fail
+    let params = Parameters(CreateTaskParams {
+        title: "Bad domain task".into(),
+        description: "desc".into(),
+        urgency: "normal".into(),
+        domain: Some("nonexistent".into()),
+        blocking: vec![],
+        blocked_by: vec![],
+        parent_task: None,
+    });
+    let result = mcp.hive_create_task(params).await.unwrap();
+    assert!(result.is_error.unwrap_or(false));
+    let text = serde_json::to_string(&result.content).unwrap();
+    assert!(text.contains("not found in repo"));
 }
 
 #[tokio::test]
@@ -2883,7 +2972,7 @@ async fn integration_task_lifecycle_create_assign_update_complete() {
         title: "Build feature X".into(),
         description: "Implement the full feature".into(),
         urgency: "high".into(),
-        domain: Some("backend".into()),
+        domain: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2897,7 +2986,7 @@ async fn integration_task_lifecycle_create_assign_update_complete() {
     let task = state.load_task("test-run", &task_id).unwrap();
     assert_eq!(task.status, TaskStatus::Pending);
     assert_eq!(task.urgency, Urgency::High);
-    assert_eq!(task.domain.as_deref(), Some("backend"));
+    assert_eq!(task.domain, None);
     assert_eq!(task.created_by, "coordinator");
 
     // 2. Coordinator assigns task to lead (simulating what spawn does)
@@ -3060,7 +3149,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
         title: "Task A (foundation)".into(),
         description: "First task".into(),
         urgency: "high".into(),
-        domain: Some("backend".into()),
+        domain: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -3073,7 +3162,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
         title: "Task B (depends on A)".into(),
         description: "Second task".into(),
         urgency: "normal".into(),
-        domain: Some("backend".into()),
+        domain: None,
         blocking: vec![],
         blocked_by: vec![task_a_id.clone()],
         parent_task: None,
@@ -3086,7 +3175,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
         title: "Task C (depends on B)".into(),
         description: "Third task".into(),
         urgency: "normal".into(),
-        domain: Some("backend".into()),
+        domain: None,
         blocking: vec![],
         blocked_by: vec![task_b_id.clone()],
         parent_task: None,
@@ -3108,7 +3197,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
     let params = Parameters(ListTasksParams {
         status: Some("pending".into()),
         assignee: None,
-        domain: Some("backend".into()),
+        domain: None,
         parent_task: None,
     });
     let result = coord_mcp.hive_list_tasks(params).await.unwrap();

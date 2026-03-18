@@ -71,6 +71,24 @@ impl HiveMcp {
             _ => Urgency::Normal,
         };
 
+        // Validate domain path exists in git
+        if let Some(ref domain) = p.domain {
+            let state = self.state();
+            match crate::git::Git::validate_sparse_paths(state.repo_root(), &[domain.as_str()]) {
+                Ok(invalid) if !invalid.is_empty() => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Domain path not found in repo: {domain}"
+                    ))]));
+                }
+                Err(e) => {
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "Failed to validate domain path: {e}"
+                    ))]));
+                }
+                _ => {}
+            }
+        }
+
         let task_id = format!("task-{}", &uuid::Uuid::new_v4().to_string()[..8]);
         let now = Utc::now();
         let task = Task {
