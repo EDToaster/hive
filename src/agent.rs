@@ -73,7 +73,8 @@ impl AgentSpawner {
         let branch = format!("hive/{run_id}/{agent_id}");
 
         // Determine worktree strategy: per-spawn override > role default
-        let strategy = strategy_override.unwrap_or_else(|| WorktreeStrategy::default_for_role(role));
+        let strategy =
+            strategy_override.unwrap_or_else(|| WorktreeStrategy::default_for_role(role));
 
         // Step 1: Create worktree (branch from parent's branch if parent has a worktree)
         let start_point = parent.and_then(|parent_id| {
@@ -240,7 +241,14 @@ impl AgentSpawner {
 
         // Step 5: Write CLAUDE.local.md
         let memory = state.load_memory_for_prompt(&role);
-        let mut prompt = Self::generate_prompt(agent_id, role, parent, task_description, &memory, &source_paths);
+        let mut prompt = Self::generate_prompt(
+            agent_id,
+            role,
+            parent,
+            task_description,
+            &memory,
+            &source_paths,
+        );
         if let Some(worktree_section) = Self::generate_worktree_section(&strategy, &source_paths) {
             prompt.push_str(&worktree_section);
         }
@@ -436,10 +444,7 @@ impl AgentSpawner {
                 .flatten()
                 .filter(|e| {
                     e.file_type().is_ok_and(|ft| ft.is_dir())
-                        && !e
-                            .file_name()
-                            .to_string_lossy()
-                            .starts_with('.')
+                        && !e.file_name().to_string_lossy().starts_with('.')
                 })
                 .map(|e| e.file_name().to_string_lossy().to_string())
                 .collect();
@@ -976,7 +981,7 @@ Parent: {}
 "#,
                     parent.unwrap_or("coordinator")
                 )
-            },
+            }
             AgentRole::Postmortem => format!(
                 r#"You are a post-mortem analysis agent in a hive swarm.
 Agent ID: {agent_id}
@@ -1050,7 +1055,8 @@ mod tests {
             AgentRole::Coordinator,
             None,
             "Build a REST API",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("Agent ID: coord-1"));
         assert!(prompt.contains("Role: coordinator"));
@@ -1066,7 +1072,8 @@ mod tests {
             AgentRole::Lead,
             Some("coord-1"),
             "Handle backend domain",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("Agent ID: lead-1"));
         assert!(prompt.contains("Role: lead"));
@@ -1080,7 +1087,8 @@ mod tests {
 
     #[test]
     fn lead_prompt_defaults_parent_to_coordinator() {
-        let prompt = AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, None, "task", "", &[]);
+        let prompt =
+            AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, None, "task", "", &[]);
         assert!(prompt.contains("Parent: coordinator"));
     }
 
@@ -1091,7 +1099,8 @@ mod tests {
             AgentRole::Worker,
             Some("lead-1"),
             "Implement login endpoint",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("Agent ID: worker-1"));
         assert!(prompt.contains("Role: worker"));
@@ -1105,14 +1114,21 @@ mod tests {
 
     #[test]
     fn worker_prompt_defaults_parent_to_unknown() {
-        let prompt = AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, None, "task", "", &[]);
+        let prompt =
+            AgentSpawner::generate_prompt("worker-1", AgentRole::Worker, None, "task", "", &[]);
         assert!(prompt.contains("Parent: unknown"));
     }
 
     #[test]
     fn context_management_prompt_in_lead() {
-        let prompt =
-            AgentSpawner::generate_prompt("lead-1", AgentRole::Lead, Some("coord-1"), "task", "", &[]);
+        let prompt = AgentSpawner::generate_prompt(
+            "lead-1",
+            AgentRole::Lead,
+            Some("coord-1"),
+            "task",
+            "",
+            &[],
+        );
         assert!(prompt.contains("## Context Management"));
         assert!(prompt.contains("commit your work, update the task status"));
     }
@@ -1124,7 +1140,8 @@ mod tests {
             AgentRole::Worker,
             Some("lead-1"),
             "task",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("## Context Management"));
         assert!(prompt.contains("commit your work, update the task status"));
@@ -1144,7 +1161,8 @@ mod tests {
             AgentRole::Reviewer,
             Some("lead-1"),
             "Review the changes for task-123",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("Agent ID: reviewer-1"));
         assert!(prompt.contains("Role: reviewer"));
@@ -1171,12 +1189,24 @@ mod tests {
         assert!(prompt.contains("READ-ONLY"));
         assert!(prompt.contains("hive_review_verdict"));
         // With source_paths: Read/Glob/Grep with absolute paths
-        assert!(prompt.contains("Read, Glob, Grep"), "should instruct use of file tools");
-        assert!(prompt.contains("/repo/.hive/runs/abc/worktrees/lead-backend"), "should list path");
+        assert!(
+            prompt.contains("Read, Glob, Grep"),
+            "should instruct use of file tools"
+        );
+        assert!(
+            prompt.contains("/repo/.hive/runs/abc/worktrees/lead-backend"),
+            "should list path"
+        );
         // Must NOT tell agent to use git show for file reading
-        assert!(!prompt.contains("git show <branch-name>:<path"), "git show file reading must not appear");
+        assert!(
+            !prompt.contains("git show <branch-name>:<path"),
+            "git show file reading must not appear"
+        );
         // Must NOT say no files are checked out (they can use source paths)
-        assert!(!prompt.contains("no files are checked out"), "conflicting no-checkout msg must not appear");
+        assert!(
+            !prompt.contains("no files are checked out"),
+            "conflicting no-checkout msg must not appear"
+        );
     }
 
     #[test]
@@ -1190,10 +1220,19 @@ mod tests {
             &[],
         );
         // Without source_paths: git show workflow
-        assert!(prompt.contains("git show"), "should use git show when no source paths");
-        assert!(prompt.contains("no files are checked out"), "should mention no checkout");
+        assert!(
+            prompt.contains("git show"),
+            "should use git show when no source paths"
+        );
+        assert!(
+            prompt.contains("no files are checked out"),
+            "should mention no checkout"
+        );
         // Must NOT instruct to use Read/Glob/Grep on local paths
-        assert!(!prompt.contains("Read, Glob, Grep") || prompt.contains("do NOT use Read/Glob/Grep"), "must not instruct file tools without paths");
+        assert!(
+            !prompt.contains("Read, Glob, Grep") || prompt.contains("do NOT use Read/Glob/Grep"),
+            "must not instruct file tools without paths"
+        );
     }
 
     #[test]
@@ -1229,7 +1268,8 @@ mod tests {
             AgentRole::Coordinator,
             None,
             "Build something",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("## Task Creation Protocol"));
         assert!(prompt.contains("one task per domain/lead"));
@@ -1256,7 +1296,8 @@ mod tests {
             AgentRole::Lead,
             Some("coord-1"),
             "Handle backend",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("## Task Decomposition Protocol"));
         assert!(prompt.contains("Break your task into subtasks"));
@@ -1277,7 +1318,8 @@ mod tests {
             AgentRole::Worker,
             Some("lead-1"),
             "Implement feature",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("## Implementation Protocol"));
         assert!(prompt.contains("Write tests BEFORE implementation"));
@@ -1355,7 +1397,8 @@ mod tests {
             AgentRole::Worker,
             Some("lead-1"),
             "Implement feature",
-            "", &[]
+            "",
+            &[],
         );
         assert!(!prompt.contains("Project Memory"));
     }
@@ -1380,7 +1423,8 @@ mod tests {
             AgentRole::Postmortem,
             None,
             "Analyze run",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("Role: postmortem"));
         assert!(prompt.contains("Analysis Steps"));
@@ -1413,7 +1457,8 @@ mod tests {
             AgentRole::Explorer,
             Some("coordinator"),
             "Explore alternative caching strategies",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("Agent ID: explorer-1"));
         assert!(prompt.contains("Role: explorer"));
@@ -1435,7 +1480,8 @@ mod tests {
             AgentRole::Evaluator,
             Some("coordinator"),
             "Evaluate explorer branches",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("Agent ID: evaluator-1"));
         assert!(prompt.contains("Role: evaluator"));
@@ -1489,7 +1535,8 @@ mod tests {
             AgentRole::Worker,
             Some("lead-1"),
             "Implement feature",
-            "", &[]
+            "",
+            &[],
         );
         assert!(prompt.contains("## If No Code Changes Needed"));
         assert!(prompt.contains("Do not submit to review"));
@@ -1517,7 +1564,9 @@ mod tests {
 
     #[test]
     fn worktree_section_sparse_single_path() {
-        let s = WorktreeStrategy::Sparse { paths: vec!["src".to_string()] };
+        let s = WorktreeStrategy::Sparse {
+            paths: vec!["src".to_string()],
+        };
         let section = AgentSpawner::generate_worktree_section(&s, &[]).unwrap();
         assert!(section.contains("Sparse Checkout"));
         assert!(section.contains("`src`"));
@@ -1541,7 +1590,10 @@ mod tests {
         let section =
             AgentSpawner::generate_worktree_section(&WorktreeStrategy::NoCheckout, &[]).unwrap();
         assert!(section.contains("No Checkout"));
-        assert!(!section.contains("git show HEAD:<path>"), "git show must not appear — it doesn't work with Claude Code tools");
+        assert!(
+            !section.contains("git show HEAD:<path>"),
+            "git show must not appear — it doesn't work with Claude Code tools"
+        );
         assert!(section.contains("Do not attempt to modify source files"));
     }
 
@@ -1557,7 +1609,10 @@ mod tests {
         assert!(section.contains("`/repo/.hive/worktrees/lead-backend`"));
         assert!(section.contains("`/repo/.hive/worktrees/lead-frontend`"));
         assert!(section.contains("Read, Glob, and Grep"));
-        assert!(!section.contains("git show HEAD:<path>"), "git show must not appear");
+        assert!(
+            !section.contains("git show HEAD:<path>"),
+            "git show must not appear"
+        );
         assert!(section.contains("Do not attempt to modify source files"));
     }
 }

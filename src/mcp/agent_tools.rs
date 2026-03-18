@@ -93,31 +93,37 @@ impl HiveMcp {
         let strategy_override = if config.global_worktree.is_some() {
             config.global_worktree.clone()
         } else {
-        p.sparse_paths.as_ref().map(|paths| {
-            if paths.is_empty() {
-                WorktreeStrategy::Full
-            } else {
-                WorktreeStrategy::Sparse { paths: paths.clone() }
-            }
-        }).or_else(|| {
-            // For workers with a task domain, use that domain as sparse path
-            if role == AgentRole::Worker {
-                task.domain.as_ref().map(|d| WorktreeStrategy::Sparse {
-                    paths: vec![d.clone()],
+            p.sparse_paths
+                .as_ref()
+                .map(|paths| {
+                    if paths.is_empty() {
+                        WorktreeStrategy::Full
+                    } else {
+                        WorktreeStrategy::Sparse {
+                            paths: paths.clone(),
+                        }
+                    }
                 })
-            } else {
-                None
-            }
-        }).or_else(|| {
-            // Check config-level per-role override (may differ from hardcoded role default)
-            let config_strategy = config.worktrees.resolve(role);
-            let default_strategy = WorktreeStrategy::default_for_role(role);
-            if config_strategy != default_strategy {
-                Some(config_strategy)
-            } else {
-                None
-            }
-        })
+                .or_else(|| {
+                    // For workers with a task domain, use that domain as sparse path
+                    if role == AgentRole::Worker {
+                        task.domain.as_ref().map(|d| WorktreeStrategy::Sparse {
+                            paths: vec![d.clone()],
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .or_else(|| {
+                    // Check config-level per-role override (may differ from hardcoded role default)
+                    let config_strategy = config.worktrees.resolve(role);
+                    let default_strategy = WorktreeStrategy::default_for_role(role);
+                    if config_strategy != default_strategy {
+                        Some(config_strategy)
+                    } else {
+                        None
+                    }
+                })
         }; // end global_worktree else branch
 
         // Validate sparse paths exist in git
@@ -147,7 +153,9 @@ impl HiveMcp {
             .unwrap_or_else(|| WorktreeStrategy::default_for_role(role));
         let source_paths = if let Some(paths) = &p.source_paths {
             paths.clone()
-        } else if matches!(resolved_strategy, WorktreeStrategy::NoCheckout) && role == AgentRole::Reviewer {
+        } else if matches!(resolved_strategy, WorktreeStrategy::NoCheckout)
+            && role == AgentRole::Reviewer
+        {
             // Auto-populate: reviewer reads from the spawning lead's worktree
             state
                 .load_agent(&self.run_id, &self.agent_id)

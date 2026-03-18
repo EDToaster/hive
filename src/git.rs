@@ -70,7 +70,11 @@ impl Git {
     /// List current sparse checkout paths in a worktree.
     pub fn sparse_checkout_list(worktree_path: &Path) -> Result<Vec<String>, String> {
         let out = Self::run(&["sparse-checkout", "list"], worktree_path)?;
-        Ok(out.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect())
+        Ok(out
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect())
     }
 
     /// Populate files in a `--no-checkout` worktree by running `git checkout`.
@@ -542,8 +546,16 @@ mod tests {
         fs::write(dir.path().join("src/main.rs"), "fn main() {}").unwrap();
         fs::write(dir.path().join("docs/readme.md"), "# readme").unwrap();
         fs::write(dir.path().join("root.txt"), "root file").unwrap();
-        Command::new("git").args(["add", "-A"]).current_dir(dir.path()).output().unwrap();
-        Command::new("git").args(["commit", "-m", "add files"]).current_dir(dir.path()).output().unwrap();
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-m", "add files"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
         dir
     }
 
@@ -555,8 +567,14 @@ mod tests {
         Git::worktree_add_no_checkout(dir.path(), &wt_path, "no-checkout-branch", None).unwrap();
 
         assert!(wt_path.exists(), "worktree dir should exist");
-        assert!(!wt_path.join("src/main.rs").exists(), "files should NOT be checked out");
-        assert!(!wt_path.join("root.txt").exists(), "root file should NOT be checked out");
+        assert!(
+            !wt_path.join("src/main.rs").exists(),
+            "files should NOT be checked out"
+        );
+        assert!(
+            !wt_path.join("root.txt").exists(),
+            "root file should NOT be checked out"
+        );
         assert_eq!(Git::current_branch(&wt_path).unwrap(), "no-checkout-branch");
     }
 
@@ -570,8 +588,14 @@ mod tests {
         Git::sparse_checkout_set(&wt_path, &["src"]).unwrap();
         Git::checkout_populate(&wt_path).unwrap();
 
-        assert!(wt_path.join("src/main.rs").exists(), "src/ should be checked out");
-        assert!(!wt_path.join("docs/readme.md").exists(), "docs/ should NOT be checked out");
+        assert!(
+            wt_path.join("src/main.rs").exists(),
+            "src/ should be checked out"
+        );
+        assert!(
+            !wt_path.join("docs/readme.md").exists(),
+            "docs/ should NOT be checked out"
+        );
     }
 
     #[test]
@@ -585,7 +609,10 @@ mod tests {
         Git::checkout_populate(&wt_path).unwrap();
 
         let paths = Git::sparse_checkout_list(&wt_path).unwrap();
-        assert!(paths.iter().any(|p| p.contains("src")), "sparse list should include 'src'");
+        assert!(
+            paths.iter().any(|p| p.contains("src")),
+            "sparse list should include 'src'"
+        );
     }
 
     #[test]
@@ -598,8 +625,14 @@ mod tests {
         Git::sparse_checkout_set(&wt_path, &["src", "docs"]).unwrap();
         Git::checkout_populate(&wt_path).unwrap();
 
-        assert!(wt_path.join("src/main.rs").exists(), "src/ should be checked out");
-        assert!(wt_path.join("docs/readme.md").exists(), "docs/ should be checked out");
+        assert!(
+            wt_path.join("src/main.rs").exists(),
+            "src/ should be checked out"
+        );
+        assert!(
+            wt_path.join("docs/readme.md").exists(),
+            "docs/ should be checked out"
+        );
     }
 
     #[test]
