@@ -88,31 +88,15 @@ impl HiveMcp {
             ))]));
         }
 
-        // Resolve worktree strategy (priority: global config > per-spawn > task domain > role config > role default)
+        // Resolve worktree strategy (priority: global config > task domain > role config > role default)
         // Global override: if worktree_strategy is set in config.yaml, it wins unconditionally.
         let strategy_override = if config.global_worktree.is_some() {
             config.global_worktree.clone()
         } else {
-            p.sparse_paths
+            task.domain
                 .as_ref()
-                .map(|paths| {
-                    if paths.is_empty() {
-                        WorktreeStrategy::Full
-                    } else {
-                        WorktreeStrategy::Sparse {
-                            paths: paths.clone(),
-                        }
-                    }
-                })
-                .or_else(|| {
-                    // For workers with a task domain, use that domain as sparse path
-                    if role == AgentRole::Worker {
-                        task.domain.as_ref().map(|d| WorktreeStrategy::Sparse {
-                            paths: vec![d.clone()],
-                        })
-                    } else {
-                        None
-                    }
+                .map(|d| WorktreeStrategy::Sparse {
+                    paths: vec![d.clone()],
                 })
                 .or_else(|| {
                     // Check config-level per-role override (may differ from hardcoded role default)

@@ -11,11 +11,6 @@ pub struct SpawnAgentParams {
     pub task_id: String,
     /// Optional model override (e.g. "sonnet", "haiku", "opus"). Overrides role-level config default.
     pub model: Option<String>,
-    /// Optional sparse checkout paths override. If set, only these directory prefixes are checked out.
-    /// Workers default to their task's domain; leads default to full checkout.
-    /// Pass an empty list to force full checkout for any role.
-    #[serde(default)]
-    pub sparse_paths: Option<Vec<String>>,
     /// Optional source paths for NoCheckout agents (reviewer, evaluator).
     /// These are absolute paths to existing worktrees where the source code lives.
     /// The agent's prompt will instruct it to use Read/Glob/Grep with these absolute paths.
