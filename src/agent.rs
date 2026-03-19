@@ -922,11 +922,14 @@ Write a structured comparison to `evaluation.md` in your worktree with:
                     // No source_paths: use git commands only (no files on disk)
                     (
                         r#"## Reviewing Code
-Your worktree has no source files — use git commands to inspect the branch:
-- See all changes: `git diff main...<branch-name>`
-- Read a specific file: `git show <branch-name>:<path/to/file>`
-- List changed files: `git diff --name-only main...<branch-name>`
+Your worktree has no source files — use git commands to inspect the branch.
+The base branch and branch name are specified in your review task above.
+IMPORTANT: Always use THREE-DOT diff (`...`) to compare. This shows only changes introduced by this branch.
+- See all changes: `git diff <base>...<branch>`
+- Read a specific file: `git show <branch>:<path/to/file>`
+- List changed files: `git diff --name-only <base>...<branch>`
 - Run tests on the branch: `cargo test --all-targets` (after checking out with `git checkout <branch>`)
+NEVER use two-dot diff (`..`) — it includes unrelated changes when the base branch has moved forward.
 "#.to_string(),
                         "Use Bash with `git show` and `git diff` to examine code — do NOT use Read/Glob/Grep on local paths (no files are checked out).",
                     )
@@ -942,8 +945,11 @@ Your worktree has no source files — use git commands to inspect the branch:
                             r#"## Reviewing Code
 Source files are available at these absolute paths (use Read, Glob, Grep with full paths):
 {path_list}
-- See all changes: `git diff main...<branch-name>`
-- List changed files: `git diff --name-only main...<branch-name>`
+The base branch and branch name are specified in your review task above.
+IMPORTANT: Always use THREE-DOT diff (`...`) to compare. This shows only changes introduced by this branch.
+- See all changes: `git diff <base>...<branch>`
+- List changed files: `git diff --name-only <base>...<branch>`
+NEVER use two-dot diff (`..`) — it includes unrelated changes when the base branch has moved forward.
 "#
                         ),
                         "Use Read/Glob/Grep with the absolute paths listed above to examine source files. Use Bash with `git diff` to see changes.",

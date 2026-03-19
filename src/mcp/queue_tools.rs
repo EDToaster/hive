@@ -293,9 +293,11 @@ impl HiveMcp {
 
         // Spawn reviewer agent
         let reviewer_id = format!("reviewer-{}", &p.task_id[..8.min(p.task_id.len())]);
+        let base_branch = self.agent_base_branch(&self.agent_id);
         let review_description = format!(
-            "Review task '{}': {}\n\nBranch: {}\nTask description: {}\n\nExamine the diff on this branch against main. Run `git log main..HEAD --oneline` and `git diff main...HEAD --stat` to see what changed. Then read the changed files and evaluate.",
-            p.task_id, task.title, p.branch, task.description
+            "Review task '{}': {}\n\nBranch: {}\nBase branch: {}\nTask description: {}\n\nIMPORTANT: Always use THREE-DOT diff (`...`) to compare against the base branch. This shows only what this branch introduced.\nRun `git log {base}...{branch} --oneline` and `git diff {base}...{branch} --stat` to see what changed. Then read the changed files and evaluate.\nDo NOT use two-dot diff — it will include unrelated changes.",
+            p.task_id, task.title, p.branch, base_branch, task.description,
+            base = base_branch, branch = p.branch,
         );
 
         match crate::agent::AgentSpawner::spawn(
