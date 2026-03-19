@@ -98,8 +98,7 @@ impl HiveMcp {
                 );
                 // Notify the submitting lead
                 if let Some(ref submitter) = task.submitted_by {
-                    let lead_msg_id =
-                        format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
+                    let lead_msg_id = format!("msg-{}", &uuid::Uuid::new_v4().to_string()[..8]);
                     let lead_body = format!(
                         "Your submission for task '{}' has been approved and added to the merge queue (branch: {}).",
                         p.task_id, branch
@@ -296,8 +295,13 @@ impl HiveMcp {
         let base_branch = self.agent_base_branch(&self.agent_id);
         let review_description = format!(
             "Review task '{}': {}\n\nBranch: {}\nBase branch: {}\nTask description: {}\n\nIMPORTANT: Always use THREE-DOT diff (`...`) to compare against the base branch. This shows only what this branch introduced.\nRun `git log {base}...{branch} --oneline` and `git diff {base}...{branch} --stat` to see what changed. Then read the changed files and evaluate.\nDo NOT use two-dot diff — it will include unrelated changes.",
-            p.task_id, task.title, p.branch, base_branch, task.description,
-            base = base_branch, branch = p.branch,
+            p.task_id,
+            task.title,
+            p.branch,
+            base_branch,
+            task.description,
+            base = base_branch,
+            branch = p.branch,
         );
 
         match crate::agent::AgentSpawner::spawn(
