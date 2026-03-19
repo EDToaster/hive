@@ -59,8 +59,11 @@ export class TaskManager {
 
     const updated = this.state.updateTask(taskId, { status: newStatus });
 
-    // If this task just reached a terminal success state, unblock dependents
-    if (isTerminalTaskStatus(newStatus) && isSuccessTaskStatus(newStatus)) {
+    // Whenever a task reaches any terminal state, unblock dependents.
+    // unblockDependents() filters remaining blockers to non-terminal tasks,
+    // so failed/cancelled deps are removed from blockedBy and dependents that
+    // have no remaining non-terminal blockers transition to Pending.
+    if (isTerminalTaskStatus(newStatus)) {
       this.unblockDependents(taskId);
     }
 

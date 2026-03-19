@@ -108,7 +108,14 @@ export class StateManager {
       .trim()
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line));
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line) as AgentMessage];
+        } catch {
+          // Skip corrupt/truncated lines (e.g. from mid-write crash)
+          return [];
+        }
+      });
   }
 
   saveAgentMeta(agentId: string, meta: Record<string, unknown>): void {

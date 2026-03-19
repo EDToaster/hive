@@ -42,8 +42,9 @@ vi.mock("@mariozechner/pi-agent-core", () => ({
   },
 }));
 
-import { Hive } from "../src/hive.js";
+import { Hive, transformContext, CONTEXT_CHAR_THRESHOLD, CONTEXT_KEEP_RECENT } from "../src/hive.js";
 import { TaskStatus, AgentRole, AgentStatus } from "../src/types.js";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
 
 describe("Hive", () => {
   let repoDir: string;
@@ -66,9 +67,9 @@ describe("Hive", () => {
     hive = new Hive({ repoRoot: repoDir });
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     try {
-      hive.stop();
+      await hive.stop();
     } catch {}
     fs.rmSync(repoDir, { recursive: true, force: true });
   });
@@ -212,6 +213,81 @@ describe("Hive", () => {
     hive.initRun("# Spec");
     const result = await hive.processMergeQueue();
     expect(result).toContain("No pending");
+  });
+
+  // ── transformContext tests ──────────────────────────────────────────────────
+
+  it("transformContext returns messages unchanged when under threshold", async () => {
+    const messages: AgentMessage[] = [
+      { role: "user", content: "hello", timestamp: 1 },
+      { role: "user", content: "world", timestamp: 2 },
+    ];
+    const result = await transformContext(messages);
+    expect(result).toEqual(messages);
+  });
+
+  it("transformContext returns messages unchanged when not enough to truncate", async () => {
+    const bigContent = "x".repeat(CONTEXT_CHAR_THRESHOLD + 1);
+    const messages: AgentMessage[] = Array.from({ length: CONTEXT_KEEP_RECENT + 1 }, (_, i) => ({
+      role: "user" as const,
+      content: i === 0 ? bigContent : "short",
+      timestamp: i,
+    }));
+    const result = await transformContext(messages);
+    expect(result).toHaveLength(messages.length);
+  });
+
+  it("transformContext truncates middle messages when over threshold", async () => {
+    const msgCount = CONTEXT_KEEP_RECENT + 10;
+    const chunkSize = Math.ceil(CONTEXT_CHAR_THRESHOLD / msgCount) + 1;
+    const messages: AgentMessage[] = Array.from({ length: msgCount }, (_, i) => ({
+      role: "user" as const,
+      content: "y".repeat(chunkSize),
+      timestamp: i,
+    }));
+
+    const result = await transformContext(messages);
+    expect(result[0]).toEqual(messages[0]);
+    const marker = result[1] as any;
+    expect(marker.role).toBe("user");
+    expect(marker.content).toMatch(/\[context truncated — \d+ earlier messages removed\]/);
+    const tail = result.slice(2);
+    expect(tail).toHaveLength(CONTEXT_KEEP_RECENT);
+    expect(tail[0]).toEqual(messages[msgCount - CONTEXT_KEEP_RECENT]);
+    expect(result).toHaveLength(CONTEXT_KEEP_RECENT + 2);
+  });
+
+  it("transformContext marker contains correct removed count", async () => {
+    const msgCount = CONTEXT_KEEP_RECENT + 5;
+    const chunkSize = Math.ceil(CONTEXT_CHAR_THRESHOLD / msgCount) + 1;
+    const messages: AgentMessage[] = Array.from({ length: msgCount }, (_, i) => ({
+      role: "user" as const,
+      content: "z".repeat(chunkSize),
+      timestamp: i,
+    }));
+
+    const result = await transformContext(messages);
+    const marker = result[1] as any;
+    const expectedRemoved = msgCount - 1 - CONTEXT_KEEP_RECENT;
+    expect(marker.content).toContain(`${expectedRemoved} earlier messages removed`);
+  });
+
+  it("transformContext preserves most recent messages in order", async () => {
+    const msgCount = CONTEXT_KEEP_RECENT + 10;
+    const chunkSize = Math.ceil(CONTEXT_CHAR_THRESHOLD / msgCount) + 1;
+    const messages: AgentMessage[] = Array.from({ length: msgCount }, (_, i) => ({
+      role: "user" as const,
+      content: `msg-${i}-${"a".repeat(chunkSize)}`,
+      timestamp: i,
+    }));
+
+    const result = await transformContext(messages);
+    const tail = result.slice(2);
+    for (let i = 0; i < CONTEXT_KEEP_RECENT; i++) {
+      const expectedMsg = messages[msgCount - CONTEXT_KEEP_RECENT + i] as any;
+      const actualMsg = tail[i] as any;
+      expect(actualMsg.content).toBe(expectedMsg.content);
+    }
   });
 
   it("recordDiscovery writes to discoveries.jsonl", async () => {

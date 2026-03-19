@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { Agent } from "@mariozechner/pi-agent-core";
-import type { AgentEvent } from "@mariozechner/pi-agent-core";
+import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import { getModel } from "@mariozechner/pi-ai";
 import { StateManager } from "./state.js";
 import { TaskManager } from "./task-manager.js";
@@ -11,6 +11,69 @@ import { getToolsForRole } from "./tools/index.js";
 import { coordinatorPrompt, leadPrompt, workerPrompt } from "./prompts/index.js";
 import { AgentRole, AgentStatus, TaskStatus } from "./types.js";
 import type { AgentInfo, HiveMessage } from "./types.js";
+
+/** Character threshold above which context pruning is triggered. */
+export const CONTEXT_CHAR_THRESHOLD = 100_000;
+
+/** Number of most-recent messages to preserve when pruning. */
+export const CONTEXT_KEEP_RECENT = 20;
+
+/**
+ * Compute approximate character count for a single AgentMessage's content.
+ * Handles UserMessage (string or block array), AssistantMessage (block array),
+ * and ToolResultMessage (block array).
+ */
+function messageContentLength(msg: AgentMessage): number {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const m = msg as any;
+  if (!m.content) return 0;
+  if (typeof m.content === "string") return m.content.length;
+  if (Array.isArray(m.content)) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (m.content as any[]).reduce((sum: number, block: any) => {
+      if (typeof block.text === "string") return sum + block.text.length;
+      // tool call input JSON
+      if (block.input && typeof block.input === "object") {
+        return sum + JSON.stringify(block.input).length;
+      }
+      return sum;
+    }, 0);
+  }
+  return 0;
+}
+
+/**
+ * Context pruning callback for long-running agents.
+ *
+ * When the total character count of all messages exceeds CONTEXT_CHAR_THRESHOLD,
+ * this function truncates older messages while preserving:
+ * - The first message (initial task instruction)
+ * - The most recent CONTEXT_KEEP_RECENT messages
+ *
+ * A "[context truncated — N earlier messages removed]" user message is injected
+ * between the preserved head and tail so the LLM knows history was dropped.
+ *
+ * Exported for unit testing.
+ */
+export async function transformContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+  const totalLength = messages.reduce((sum, msg) => sum + messageContentLength(msg), 0);
+  if (totalLength <= CONTEXT_CHAR_THRESHOLD) return messages;
+
+  // Not enough messages to meaningfully truncate — keep all
+  if (messages.length <= CONTEXT_KEEP_RECENT + 1) return messages;
+
+  const first = messages[0];
+  const recent = messages.slice(-CONTEXT_KEEP_RECENT);
+  const removedCount = messages.length - 1 - CONTEXT_KEEP_RECENT;
+
+  const marker: AgentMessage = {
+    role: "user" as const,
+    content: `[context truncated — ${removedCount} earlier messages removed]`,
+    timestamp: Date.now(),
+  };
+
+  return [first, marker, ...recent];
+}
 
 export interface SpawnAgentParams {
   agentId: string;
@@ -88,16 +151,24 @@ export class Hive {
     if (params.role !== AgentRole.Coordinator) {
       const task = this.taskManager.get(params.taskId);
       // Workers share the lead's worktree — look up parent agent's worktree
-      if (params.role === AgentRole.Worker && params.parentAgent) {
+      if (params.role === AgentRole.Worker) {
+        if (!params.parentAgent) {
+          throw new Error(`Worker agent "${params.agentId}" must specify a parentAgent`);
+        }
         const parentInfo = state.agents[params.parentAgent];
-        if (parentInfo?.worktree) {
+        if (!parentInfo) {
+          throw new Error(
+            `Worker agent "${params.agentId}": parent agent "${params.parentAgent}" not found in state`
+          );
+        }
+        if (parentInfo.worktree) {
           worktreePath = parentInfo.worktree;
           branch = parentInfo.branch;
         }
       }
       // Lead gets its own worktree
       if (!worktreePath) {
-        const wt = this.gitManager.createWorktree(params.agentId, runId, {
+        const wt = await this.gitManager.createWorktree(params.agentId, runId, {
           sparsePaths: task.domain ? [task.domain] : undefined,
         });
         worktreePath = wt.worktreePath;
@@ -143,12 +214,46 @@ export class Hive {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const model = (getModel as any)(provider, modelId);
 
-    // Create pi-mono Agent instance
+    // Create pi-mono Agent instance with all refinements:
+    // - steeringMode: "all" for responsive inter-agent messaging
+    // - transformContext for context window management on long-running agents
+    // - beforeToolCall/afterToolCall hooks for observability
+    const toolLogPath = path.join(this.hiveDir, "tool-calls.jsonl");
+    const agentId = params.agentId;
+    const agentRole = params.role;
     const agent = new Agent({
+      steeringMode: "all",
       initialState: {
         model,
         systemPrompt,
         tools,
+      },
+      transformContext,
+      beforeToolCall: async (context, _signal) => {
+        const entry = {
+          timestamp: new Date().toISOString(),
+          agentId,
+          role: agentRole,
+          toolName: context.toolCall.name,
+          toolCallId: context.toolCall.id,
+          args: context.args,
+          phase: "before",
+        };
+        fs.appendFileSync(toolLogPath, JSON.stringify(entry) + "\n");
+        return undefined; // allow all tool calls (observability only)
+      },
+      afterToolCall: async (context, _signal) => {
+        const entry = {
+          timestamp: new Date().toISOString(),
+          agentId,
+          role: agentRole,
+          toolName: context.toolCall.name,
+          toolCallId: context.toolCall.id,
+          isError: context.isError,
+          phase: "after",
+        };
+        fs.appendFileSync(toolLogPath, JSON.stringify(entry) + "\n");
+        return undefined; // no result override
       },
     });
 
@@ -226,16 +331,16 @@ export class Hive {
     if (!pending) return "No pending entries in merge queue.";
 
     this.stateManager.updateMergeQueueEntry(pending.taskId, { status: "merging" });
-    const mainBranch = this.gitManager.getMainBranch();
+    const mainBranch = await this.gitManager.getMainBranch();
 
     // Try direct merge first
-    let result = this.gitManager.mergeBranch(pending.branch, mainBranch);
+    let result = await this.gitManager.mergeBranch(pending.branch, mainBranch);
 
     // If merge fails, try rebase then merge
     if (!result.success) {
-      const rebaseResult = this.gitManager.rebaseBranch(pending.branch, mainBranch);
+      const rebaseResult = await this.gitManager.rebaseBranch(pending.branch, mainBranch);
       if (rebaseResult.success) {
-        result = this.gitManager.mergeBranch(pending.branch, mainBranch);
+        result = await this.gitManager.mergeBranch(pending.branch, mainBranch);
       }
     }
 
@@ -268,12 +373,12 @@ export class Hive {
   }
 
   /** Stop all agents and clean up worktrees. */
-  stop(): void {
+  async stop(): Promise<void> {
     for (const agent of this.liveAgents.values()) {
       agent.abort();
     }
     this.liveAgents.clear();
-    this.gitManager.cleanupAllWorktrees();
+    await this.gitManager.cleanupAllWorktrees();
     const state = this.stateManager.getState();
     state.status = "stopped";
     this.stateManager.save();

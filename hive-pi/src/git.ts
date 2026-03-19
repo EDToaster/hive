@@ -1,6 +1,9 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import * as path from "node:path";
 import * as fs from "node:fs";
+
+const execFileAsync = promisify(execFile);
 
 export interface WorktreeResult {
   worktreePath: string;
@@ -23,22 +26,21 @@ export class GitManager {
     private hiveDir: string
   ) {}
 
-  private exec(cmd: string, cwd?: string): string {
-    return execSync(cmd, {
+  private async exec(args: string[], cwd?: string): Promise<string> {
+    const { stdout } = await execFileAsync("git", args, {
       cwd: cwd ?? this.repoRoot,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
+    });
+    return stdout.trim();
   }
 
-  getMainBranch(): string {
+  async getMainBranch(): Promise<string> {
     try {
-      const ref = this.exec("git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null");
+      const ref = await this.exec(["symbolic-ref", "refs/remotes/origin/HEAD"]);
       return ref.replace("refs/remotes/origin/", "");
     } catch {
       // Fallback: check if main or master exists
       try {
-        this.exec("git rev-parse --verify main");
+        await this.exec(["rev-parse", "--verify", "main"]);
         return "main";
       } catch {
         return "master";
@@ -46,17 +48,17 @@ export class GitManager {
     }
   }
 
-  createWorktree(agentId: string, runId: string, options?: WorktreeOptions): WorktreeResult {
+  async createWorktree(agentId: string, runId: string, options?: WorktreeOptions): Promise<WorktreeResult> {
     const branch = `hive/${runId}/${agentId}`;
     const worktreePath = path.join(this.hiveDir, "worktrees", agentId);
 
     const base = options?.baseBranch ?? "HEAD";
-    this.exec(`git worktree add "${worktreePath}" -b "${branch}" ${base}`);
+    await this.exec(["worktree", "add", worktreePath, "-b", branch, base]);
 
     if (options?.sparsePaths && options.sparsePaths.length > 0) {
-      this.exec("git sparse-checkout init --cone", worktreePath);
-      this.exec(
-        `git sparse-checkout set ${options.sparsePaths.join(" ")}`,
+      await this.exec(["sparse-checkout", "init", "--cone"], worktreePath);
+      await this.exec(
+        ["sparse-checkout", "set", ...options.sparsePaths],
         worktreePath
       );
     }
@@ -64,79 +66,80 @@ export class GitManager {
     return { worktreePath, branch };
   }
 
-  removeWorktree(agentId: string): void {
+  async removeWorktree(agentId: string): Promise<void> {
     const worktreePath = path.join(this.hiveDir, "worktrees", agentId);
     if (fs.existsSync(worktreePath)) {
-      this.exec(`git worktree remove "${worktreePath}" --force`);
+      await this.exec(["worktree", "remove", worktreePath, "--force"]);
     }
     // Clean up the branch too
-    const branches = this.exec("git branch").split("\n").map((b) => b.trim().replace("* ", ""));
+    const branchList = await this.exec(["branch"]);
+    const branches = branchList.split("\n").map((b) => b.trim().replace("* ", ""));
     for (const branch of branches) {
       if (branch.includes(`/${agentId}`)) {
         try {
-          this.exec(`git branch -D "${branch}"`);
+          await this.exec(["branch", "-D", branch]);
         } catch {}
       }
     }
   }
 
-  cleanupAllWorktrees(): void {
+  async cleanupAllWorktrees(): Promise<void> {
     const worktreeDir = path.join(this.hiveDir, "worktrees");
     if (!fs.existsSync(worktreeDir)) return;
 
     for (const entry of fs.readdirSync(worktreeDir)) {
-      this.removeWorktree(entry);
+      await this.removeWorktree(entry);
     }
   }
 
-  mergeBranch(branch: string, targetBranch: string): MergeResult {
+  async mergeBranch(branch: string, targetBranch: string): Promise<MergeResult> {
     try {
       // Save current branch
-      const currentBranch = this.exec("git rev-parse --abbrev-ref HEAD");
+      const currentBranch = await this.exec(["rev-parse", "--abbrev-ref", "HEAD"]);
 
       // Checkout target, merge, return to original
-      this.exec(`git checkout "${targetBranch}"`);
+      await this.exec(["checkout", targetBranch]);
       try {
-        this.exec(`git merge "${branch}" --no-ff -m "merge: ${branch}"`);
+        await this.exec(["merge", branch, "--no-ff", "-m", `merge: ${branch}`]);
         return { success: true };
       } catch (err: any) {
         // Abort failed merge
-        try { this.exec("git merge --abort"); } catch {}
-        return { success: false, error: err.message };
+        try { await this.exec(["merge", "--abort"]); } catch {}
+        return { success: false, error: err.stderr ?? err.message };
       } finally {
         // Return to original branch
         if (currentBranch !== targetBranch) {
-          try { this.exec(`git checkout "${currentBranch}"`); } catch {}
+          try { await this.exec(["checkout", currentBranch]); } catch {}
         }
       }
     } catch (err: any) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.stderr ?? err.message };
     }
   }
 
-  rebaseBranch(branch: string, ontoBranch: string): MergeResult {
+  async rebaseBranch(branch: string, ontoBranch: string): Promise<MergeResult> {
     try {
-      this.exec(`git checkout "${branch}"`);
+      await this.exec(["checkout", branch]);
       try {
-        this.exec(`git rebase "${ontoBranch}"`);
+        await this.exec(["rebase", ontoBranch]);
         return { success: true };
       } catch (err: any) {
-        try { this.exec("git rebase --abort"); } catch {}
-        return { success: false, error: err.message };
+        try { await this.exec(["rebase", "--abort"]); } catch {}
+        return { success: false, error: err.stderr ?? err.message };
       } finally {
-        try { this.exec(`git checkout "${ontoBranch}"`); } catch {}
+        try { await this.exec(["checkout", ontoBranch]); } catch {}
       }
     } catch (err: any) {
-      return { success: false, error: err.message };
+      return { success: false, error: err.stderr ?? err.message };
     }
   }
 
   /**
    * Validate that a domain path exists in the git tree.
    */
-  validateDomainPath(domainPath: string): boolean {
+  async validateDomainPath(domainPath: string): Promise<boolean> {
     try {
-      this.exec(`git ls-tree HEAD "${domainPath}"`);
+      await this.exec(["ls-tree", "HEAD", domainPath]);
       return true;
     } catch {
       return false;

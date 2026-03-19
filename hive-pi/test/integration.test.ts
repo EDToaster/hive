@@ -63,9 +63,9 @@ describe("Integration: full run lifecycle", () => {
     return dir;
   }
 
-  afterEach(() => {
+  afterEach(async () => {
     try {
-      hive?.stop();
+      await hive?.stop();
     } catch {}
     if (repoDir) fs.rmSync(repoDir, { recursive: true, force: true });
   });
@@ -255,7 +255,7 @@ describe("Integration: full run lifecycle", () => {
     execSync("git add -A && git commit -m 'lead change'", { cwd: lead.worktree! });
 
     // Also make a conflicting commit on main (simulating another lead already merged)
-    const mainBranch = hive.gitManager.getMainBranch();
+    const mainBranch = await hive.gitManager.getMainBranch();
     execSync(`git checkout ${mainBranch}`, { cwd: repoDir });
     fs.writeFileSync(path.join(repoDir, "conflict.txt"), "from main");
     execSync("git add -A && git commit -m 'main change'", { cwd: repoDir });
