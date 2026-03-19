@@ -1,0 +1,27 @@
+{
+  "name": "@hive/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "hive-pi": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.60.0",
+    "@mariozechner/pi-agent-core": "^0.60.0",
+    "@sinclair/typebox": "^0.34.0",
+    "commander": "^13.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  }
+}
