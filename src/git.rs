@@ -124,6 +124,14 @@ impl Git {
         Ok(())
     }
 
+    /// Squash-merge a branch into the current branch as a single commit.
+    /// Runs `git merge --squash` then `git commit -m <message>`.
+    pub fn merge_squash(repo_root: &Path, branch: &str, message: &str) -> Result<(), String> {
+        Self::run(&["merge", "--squash", branch], repo_root)?;
+        Self::run(&["commit", "-m", message], repo_root)?;
+        Ok(())
+    }
+
     /// Abort a merge in progress
     pub fn merge_abort(repo_root: &Path) -> Result<(), String> {
         Self::run(&["merge", "--abort"], repo_root)?;
@@ -330,6 +338,47 @@ mod tests {
 
         let log = Git::run(&["log", "--oneline", "-1"], dir.path()).unwrap();
         assert!(log.contains("Merge branch"));
+    }
+
+    #[test]
+    fn merge_squash_creates_single_commit() {
+        let dir = init_test_repo();
+        let main_branch = Git::current_branch(dir.path()).unwrap();
+
+        Git::run(&["checkout", "-b", "feature-squash"], dir.path()).unwrap();
+        fs::write(dir.path().join("a.txt"), "first").unwrap();
+        Git::run(&["add", "a.txt"], dir.path()).unwrap();
+        Git::run(&["commit", "-m", "first commit"], dir.path()).unwrap();
+        fs::write(dir.path().join("b.txt"), "second").unwrap();
+        Git::run(&["add", "b.txt"], dir.path()).unwrap();
+        Git::run(&["commit", "-m", "second commit"], dir.path()).unwrap();
+
+        Git::checkout(dir.path(), &main_branch).unwrap();
+        Git::merge_squash(dir.path(), "feature-squash", "squashed: add a and b").unwrap();
+
+        let log = Git::run(&["log", "--oneline", "-1"], dir.path()).unwrap();
+        assert!(log.contains("squashed: add a and b"));
+        assert!(!log.contains("Merge branch"));
+        assert!(dir.path().join("a.txt").exists());
+        assert!(dir.path().join("b.txt").exists());
+    }
+
+    #[test]
+    fn merge_squash_conflict_fails() {
+        let dir = init_test_repo();
+        let main_branch = Git::current_branch(dir.path()).unwrap();
+
+        fs::write(dir.path().join("conflict.txt"), "main content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "main version").unwrap();
+
+        Git::run(&["checkout", "-b", "squash-conflict", "HEAD~1"], dir.path()).unwrap();
+        fs::write(dir.path().join("conflict.txt"), "branch content").unwrap();
+        Git::add_all(dir.path()).unwrap();
+        Git::commit(dir.path(), "branch version").unwrap();
+
+        Git::checkout(dir.path(), &main_branch).unwrap();
+        assert!(Git::merge_squash(dir.path(), "squash-conflict", "should fail").is_err());
     }
 
     #[test]
