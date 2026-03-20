@@ -118,12 +118,6 @@ impl Git {
         Ok(())
     }
 
-    /// Merge a branch into the current branch
-    pub fn merge(repo_root: &Path, branch: &str) -> Result<(), String> {
-        Self::run(&["merge", branch, "--no-ff"], repo_root)?;
-        Ok(())
-    }
-
     /// Squash-merge a branch into the current branch as a single commit.
     /// Runs `git merge --squash` then `git commit -m <message>`.
     pub fn merge_squash(repo_root: &Path, branch: &str, message: &str) -> Result<(), String> {
@@ -324,23 +318,6 @@ mod tests {
     }
 
     #[test]
-    fn merge_no_ff_creates_merge_commit() {
-        let dir = init_test_repo();
-        let main_branch = Git::current_branch(dir.path()).unwrap();
-
-        Git::run(&["checkout", "-b", "feature-merge"], dir.path()).unwrap();
-        fs::write(dir.path().join("feature.txt"), "feature content").unwrap();
-        Git::run(&["add", "feature.txt"], dir.path()).unwrap();
-        Git::run(&["commit", "-m", "add feature"], dir.path()).unwrap();
-
-        Git::checkout(dir.path(), &main_branch).unwrap();
-        Git::merge(dir.path(), "feature-merge").unwrap();
-
-        let log = Git::run(&["log", "--oneline", "-1"], dir.path()).unwrap();
-        assert!(log.contains("Merge branch"));
-    }
-
-    #[test]
     fn merge_squash_creates_single_commit() {
         let dir = init_test_repo();
         let main_branch = Git::current_branch(dir.path()).unwrap();
@@ -385,33 +362,6 @@ mod tests {
     fn has_conflicts_returns_false_on_clean_repo() {
         let dir = init_test_repo();
         assert!(!Git::has_conflicts(dir.path()).unwrap());
-    }
-
-    #[test]
-    fn merge_conflicting_branches_detected() {
-        let dir = init_test_repo();
-        let main_branch = Git::current_branch(dir.path()).unwrap();
-
-        // Create conflicting file on main
-        fs::write(dir.path().join("conflict.txt"), "main content").unwrap();
-        Git::run(&["add", "conflict.txt"], dir.path()).unwrap();
-        Git::run(&["commit", "-m", "main version"], dir.path()).unwrap();
-
-        // Create branch with different content for same file
-        Git::run(&["checkout", "-b", "conflict-branch", "HEAD~1"], dir.path()).unwrap();
-        fs::write(dir.path().join("conflict.txt"), "branch content").unwrap();
-        Git::run(&["add", "conflict.txt"], dir.path()).unwrap();
-        Git::run(&["commit", "-m", "branch version"], dir.path()).unwrap();
-
-        // Try to merge — should fail
-        Git::checkout(dir.path(), &main_branch).unwrap();
-        assert!(Git::merge(dir.path(), "conflict-branch").is_err());
-
-        // Check for conflicts
-        assert!(Git::has_conflicts(dir.path()).unwrap());
-
-        // Abort merge
-        Git::merge_abort(dir.path()).unwrap();
     }
 
     #[test]
