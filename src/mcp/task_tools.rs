@@ -105,6 +105,7 @@ impl HiveMcp {
             branch: None,
             domain: p.domain.clone(),
             review_count: 0,
+            commit_message: None,
             submitted_by: None,
             created_at: now,
             updated_at: now,

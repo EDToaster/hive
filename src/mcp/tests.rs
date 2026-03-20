@@ -89,6 +89,7 @@ fn make_task(id: &str, parent: Option<&str>, status: TaskStatus) -> Task {
         branch: None,
         domain: None,
         review_count: 0,
+        commit_message: None,
         submitted_by: None,
         created_at: now,
         updated_at: now,
@@ -361,6 +362,7 @@ async fn submit_to_queue_blocked_by_unresolved_subtasks() {
     let params = Parameters(SubmitToQueueParams {
         task_id: "task-lead".into(),
         branch: "hive/test/lead-1".into(),
+        commit_message: "test commit message".into(),
     });
     let result = mcp.hive_submit_to_queue(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1445,6 +1447,7 @@ async fn submit_to_queue_non_lead_denied() {
     let params = Parameters(SubmitToQueueParams {
         task_id: "task-1".into(),
         branch: "branch".into(),
+        commit_message: "test commit message".into(),
     });
     let result = mcp.hive_submit_to_queue(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1465,6 +1468,7 @@ async fn submit_to_queue_review_cycle_exceeded() {
     let params = Parameters(SubmitToQueueParams {
         task_id: "task-maxrev".into(),
         branch: "hive/test/lead-1".into(),
+        commit_message: "test commit message".into(),
     });
     let result = mcp.hive_submit_to_queue(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -1497,6 +1501,7 @@ async fn submit_to_queue_all_subtasks_resolved_ok() {
     let params = Parameters(SubmitToQueueParams {
         task_id: "task-lead".into(),
         branch: "hive/test/lead-1".into(),
+        commit_message: "test commit message".into(),
     });
     // This may fail due to AgentSpawner trying to actually spawn, but
     // it should NOT fail on the subtask gate
@@ -3222,6 +3227,7 @@ async fn integration_subtask_completion_gate_blocks_then_allows_submit() {
     let params = Parameters(SubmitToQueueParams {
         task_id: "task-lead".into(),
         branch: "hive/test/lead-1".into(),
+        commit_message: "test commit message".into(),
     });
     let result = lead_mcp.hive_submit_to_queue(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));
@@ -3239,6 +3245,7 @@ async fn integration_subtask_completion_gate_blocks_then_allows_submit() {
     let params = Parameters(SubmitToQueueParams {
         task_id: "task-lead".into(),
         branch: "hive/test/lead-1".into(),
+        commit_message: "test commit message".into(),
     });
     let _result = lead_mcp.hive_submit_to_queue(params).await.unwrap();
     // The result should succeed (either reviewer spawned or fallback to queue)
@@ -3526,6 +3533,7 @@ async fn integration_review_cycle_limit_fails_task() {
     let params = Parameters(SubmitToQueueParams {
         task_id: "task-lead".into(),
         branch: "hive/test/lead-1".into(),
+        commit_message: "test commit message".into(),
     });
     let result = lead_mcp.hive_submit_to_queue(params).await.unwrap();
     assert!(result.is_error.unwrap_or(false));

@@ -22,6 +22,7 @@ fn make_task(id: &str, status: TaskStatus) -> Task {
         branch: None,
         domain: None,
         review_count: 0,
+        commit_message: None,
         submitted_by: None,
         created_at: now,
         updated_at: now,
@@ -322,12 +323,14 @@ fn merge_queue_save_and_load() {
                 branch: "hive/run-1/lead-1".into(),
                 submitted_by: "lead-1".into(),
                 submitted_at: chrono::Utc::now(),
+                commit_message: "test msg".into(),
             },
             MergeQueueEntry {
                 task_id: "task-2".into(),
                 branch: "hive/run-1/lead-2".into(),
                 submitted_by: "lead-2".into(),
                 submitted_at: chrono::Utc::now(),
+                commit_message: "test msg".into(),
             },
         ],
     };

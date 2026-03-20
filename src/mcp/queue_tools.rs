@@ -49,6 +49,10 @@ impl HiveMcp {
                     branch: branch.clone(),
                     submitted_by: submitted_by.clone(),
                     submitted_at: Utc::now(),
+                    commit_message: task
+                        .commit_message
+                        .clone()
+                        .unwrap_or_else(|| task.title.clone()),
                 });
                 state
                     .save_merge_queue(&self.run_id, &queue)
@@ -285,6 +289,7 @@ impl HiveMcp {
         task.status = TaskStatus::Review;
         task.branch = Some(p.branch.clone());
         task.submitted_by = Some(self.agent_id.clone());
+        task.commit_message = Some(p.commit_message.clone());
         task.updated_at = Utc::now();
         state
             .save_task(&self.run_id, &task)
@@ -346,6 +351,7 @@ impl HiveMcp {
                     branch: p.branch.clone(),
                     submitted_by: self.agent_id.clone(),
                     submitted_at: Utc::now(),
+                    commit_message: p.commit_message.clone(),
                 });
                 let _ = state.save_merge_queue(&self.run_id, &queue);
 
@@ -403,6 +409,11 @@ impl HiveMcp {
         let repo_root = state.repo_root().to_path_buf();
         let target_branch = self.repo_current_branch();
 
+        let full_message = format!(
+            "{}\n\nTask: {}\nAgent: {}\nRun: {}",
+            entry.commit_message, entry.task_id, entry.submitted_by, self.run_id
+        );
+
         // Helper closure: mark task as failed and log event
         let log_path = state.run_dir(&self.run_id).join("log.db");
         let run_id_for_closure = self.run_id.clone();
@@ -429,12 +440,12 @@ impl HiveMcp {
             ))]));
         }
 
-        // Attempt merge
-        let merge_result = crate::git::Git::merge(&repo_root, &entry.branch);
+        // Attempt squash merge
+        let merge_result = crate::git::Git::merge_squash(&repo_root, &entry.branch, &full_message);
 
-        // If merge failed, try auto-rebase then retry
+        // If squash merge failed, try auto-rebase then retry
         let merge_result = if let Err(merge_err) = merge_result {
-            let _ = crate::git::Git::merge_abort(&repo_root);
+            let _ = crate::git::Git::reset_hard(&repo_root, "HEAD");
 
             match crate::git::Git::rebase(&repo_root, &entry.branch, &target_branch) {
                 Ok(()) => {
@@ -450,7 +461,7 @@ impl HiveMcp {
                         Self::notify_submitter(&state, &self.run_id, &entry.submitted_by, &msg);
                         return Ok(CallToolResult::error(vec![Content::text(msg)]));
                     }
-                    crate::git::Git::merge(&repo_root, &entry.branch)
+                    crate::git::Git::merge_squash(&repo_root, &entry.branch, &full_message)
                 }
                 Err(rebase_err) => {
                     let _ = crate::git::Git::rebase_abort(&repo_root);
@@ -542,8 +553,8 @@ impl HiveMcp {
                 Ok(CallToolResult::success(vec![Content::text(msg)]))
             }
             Err(e) => {
-                // Merge failed even after rebase
-                let _ = crate::git::Git::merge_abort(&repo_root);
+                // Squash merge failed even after rebase
+                let _ = crate::git::Git::reset_hard(&repo_root, "HEAD");
                 mark_failed(&state, &self.run_id, &entry.task_id);
                 state.save_merge_queue(&self.run_id, &queue).ok();
                 let msg = format!(

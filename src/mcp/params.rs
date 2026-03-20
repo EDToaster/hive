@@ -94,6 +94,8 @@ pub struct SubmitToQueueParams {
     pub task_id: String,
     /// Branch name to merge
     pub branch: String,
+    /// Commit message for the squash merge
+    pub commit_message: String,
 }
 
 #[derive(Deserialize, JsonSchema)]

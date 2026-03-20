@@ -247,6 +247,9 @@ pub struct Task {
     pub domain: Option<String>,
     #[serde(default)]
     pub review_count: u32,
+    /// Commit message for squash merge (set by lead at submit time)
+    #[serde(default)]
+    pub commit_message: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -281,6 +284,9 @@ pub struct MergeQueueEntry {
     pub branch: String,
     pub submitted_by: String,
     pub submitted_at: DateTime<Utc>,
+    /// Commit message for squash merge
+    #[serde(default)]
+    pub commit_message: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -642,6 +648,7 @@ mod tests {
             branch: None,
             domain: Some("backend".into()),
             review_count: 0,
+            commit_message: None,
             submitted_by: None,
             created_at: now,
             updated_at: now,
@@ -685,6 +692,7 @@ mod tests {
                 branch: "hive/run1/lead-1".into(),
                 submitted_by: "lead-1".into(),
                 submitted_at: chrono::Utc::now(),
+                commit_message: "test msg".into(),
             }],
         };
         let json = serde_json::to_string(&queue).unwrap();
@@ -1081,6 +1089,7 @@ mod tests {
             branch: None,
             domain: None,
             review_count: 0,
+            commit_message: None,
             submitted_by: None,
             created_at: now,
             updated_at: now,
@@ -1108,6 +1117,7 @@ mod tests {
             branch: None,
             domain: None,
             review_count: 0,
+            commit_message: None,
             submitted_by: None,
             created_at: now,
             updated_at: now,

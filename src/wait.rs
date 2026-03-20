@@ -821,6 +821,7 @@ mod tests {
             branch: None,
             domain: None,
             review_count: 0,
+            commit_message: None,
             submitted_by: None,
             created_at: now,
             updated_at: now,
