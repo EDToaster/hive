@@ -98,6 +98,15 @@ impl Git {
         Ok(invalid)
     }
 
+    /// Count the number of tracked files in the repo.
+    pub fn file_count(repo_root: &Path) -> Result<usize, String> {
+        let output = Self::run(&["ls-files"], repo_root)?;
+        if output.is_empty() {
+            return Ok(0);
+        }
+        Ok(output.lines().count())
+    }
+
     /// Remove a worktree
     pub fn worktree_remove(repo_root: &Path, worktree_path: &Path) -> Result<(), String> {
         Self::run(
@@ -632,6 +641,14 @@ mod tests {
             wt_path.join("docs/readme.md").exists(),
             "docs/ should be checked out"
         );
+    }
+
+    #[test]
+    fn file_count_returns_tracked_files() {
+        let dir = init_test_repo_with_files();
+        // init_test_repo_with_files creates: src/main.rs, docs/readme.md, root.txt
+        let count = Git::file_count(dir.path()).unwrap();
+        assert_eq!(count, 3);
     }
 
     #[test]

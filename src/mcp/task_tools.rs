@@ -71,6 +71,30 @@ impl HiveMcp {
             _ => Urgency::Normal,
         };
 
+        // Warn if no sparse_checkout_path and repo is large
+        if p.sparse_checkout_path.is_none() {
+            let state = self.state();
+            match crate::git::Git::file_count(state.repo_root()) {
+                Ok(count) if count > 50_000 => {
+                    let example = std::env::current_dir()
+                        .ok()
+                        .and_then(|cwd| {
+                            cwd.strip_prefix(state.repo_root()).ok().map(|rel| {
+                                let s = rel.to_string_lossy().to_string();
+                                if s.is_empty() { ".".to_string() } else { s }
+                            })
+                        })
+                        .unwrap_or_else(|| "src".to_string());
+                    return Ok(CallToolResult::error(vec![Content::text(format!(
+                        "This repo has {count} tracked files. Set sparse_checkout_path to a \
+                         directory (e.g. \"{example}\") to scope worker worktrees, \
+                         or use sparse_checkout_path: \".\" to force a full checkout."
+                    ))]));
+                }
+                _ => {}
+            }
+        }
+
         // Validate sparse_checkout_path exists in git
         if let Some(ref path) = p.sparse_checkout_path {
             let state = self.state();
