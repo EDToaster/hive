@@ -52,7 +52,7 @@ pub enum WorktreeStrategy {
     /// Full checkout — all files present. Default for leads and reviewers.
     Full,
     /// Sparse checkout — only the specified path prefixes are checked out.
-    /// Workers use task.domain; explorers/evaluators use "src".
+    /// Workers use task.sparse_checkout_path; explorers/evaluators use "src".
     /// Falls back to Full if paths is empty.
     Sparse { paths: Vec<String> },
     /// Create the worktree branch but check out nothing.
@@ -244,7 +244,11 @@ pub struct Task {
     pub branch: Option<String>,
     #[serde(default)]
     pub submitted_by: Option<String>,
-    pub domain: Option<String>,
+    /// Directory path that scopes this task's worktree via git sparse checkout.
+    /// Only this path (plus .hive/) will be checked out for workers.
+    /// Also used to prevent file conflicts between leads.
+    /// Example: "src/mcp", "src", "docs/plans"
+    pub sparse_checkout_path: Option<String>,
     #[serde(default)]
     pub review_count: u32,
     /// Commit message for squash merge (set by lead at submit time)
@@ -646,7 +650,7 @@ mod tests {
             created_by: "coordinator".into(),
             parent_task: None,
             branch: None,
-            domain: Some("backend".into()),
+            sparse_checkout_path: Some("backend".into()),
             review_count: 0,
             commit_message: None,
             submitted_by: None,
@@ -662,7 +666,7 @@ mod tests {
 
     #[test]
     fn task_without_review_count_defaults_to_zero() {
-        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"domain":null,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}"#;
+        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"sparse_checkout_path":null,"created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}"#;
         let task: Task = serde_json::from_str(json).unwrap();
         assert_eq!(task.review_count, 0);
     }
@@ -945,14 +949,14 @@ mod tests {
 
     #[test]
     fn task_missing_timestamps_rejected() {
-        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"domain":null}"#;
+        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"sparse_checkout_path":null}"#;
         let result = serde_json::from_str::<Task>(json);
         assert!(result.is_err());
     }
 
     #[test]
     fn task_invalid_timestamp_format_rejected() {
-        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"domain":null,"review_count":0,"created_at":"not-a-date","updated_at":"2026-01-01T00:00:00Z"}"#;
+        let json = r#"{"id":"t1","title":"test","description":"d","status":"pending","urgency":"normal","blocking":[],"blocked_by":[],"assigned_to":null,"created_by":"coord","parent_task":null,"branch":null,"sparse_checkout_path":null,"review_count":0,"created_at":"not-a-date","updated_at":"2026-01-01T00:00:00Z"}"#;
         let result = serde_json::from_str::<Task>(json);
         assert!(result.is_err());
     }
@@ -1087,7 +1091,7 @@ mod tests {
             created_by: "test".into(),
             parent_task: None,
             branch: None,
-            domain: None,
+            sparse_checkout_path: None,
             review_count: 0,
             commit_message: None,
             submitted_by: None,
@@ -1115,7 +1119,7 @@ mod tests {
             created_by: "test".into(),
             parent_task: None,
             branch: None,
-            domain: None,
+            sparse_checkout_path: None,
             review_count: 0,
             commit_message: None,
             submitted_by: None,

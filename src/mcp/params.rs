@@ -28,8 +28,10 @@ pub struct CreateTaskParams {
     /// Urgency: low, normal, high, critical
     #[serde(default = "default_urgency")]
     pub urgency: String,
-    /// Optional domain tag
-    pub domain: Option<String>,
+    /// Directory path that scopes this task's git sparse checkout.
+    /// Workers will only have this path checked out in their worktree.
+    /// Must be a valid path in the repo. Example: "src/mcp", "src", "docs"
+    pub sparse_checkout_path: Option<String>,
     /// Optional list of task IDs this blocks
     #[serde(default)]
     pub blocking: Vec<String>,
@@ -64,8 +66,8 @@ pub struct ListTasksParams {
     pub status: Option<String>,
     /// Filter by assignee
     pub assignee: Option<String>,
-    /// Filter by domain
-    pub domain: Option<String>,
+    /// Filter by sparse_checkout_path
+    pub sparse_checkout_path: Option<String>,
     /// Filter by parent task. Use "none" for top-level only, or a task ID for that task's subtasks.
     pub parent_task: Option<String>,
 }

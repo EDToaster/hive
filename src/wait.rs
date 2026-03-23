@@ -491,7 +491,7 @@ mod tests {
             "created_by": "test",
             "parent_task": null,
             "branch": null,
-            "domain": null,
+            "sparse_checkout_path": null,
             "created_at": "2026-03-08T00:00:00Z",
             "updated_at": "2026-03-08T00:00:00Z"
         });
@@ -819,7 +819,7 @@ mod tests {
             created_by: "test".into(),
             parent_task: None,
             branch: None,
-            domain: None,
+            sparse_checkout_path: None,
             review_count: 0,
             commit_message: None,
             submitted_by: None,
@@ -1046,7 +1046,7 @@ mod tests {
             "created_by": "test",
             "parent_task": null,
             "branch": null,
-            "domain": null,
+            "sparse_checkout_path": null,
             "created_at": "2026-03-08T00:00:00Z",
             "updated_at": "2026-03-08T00:00:00Z"
         });
@@ -1084,7 +1084,7 @@ mod tests {
             "created_by": "test",
             "parent_task": null,
             "branch": null,
-            "domain": null,
+            "sparse_checkout_path": null,
             "created_at": "2026-03-08T00:00:00Z",
             "updated_at": "2026-03-08T00:00:00Z"
         });

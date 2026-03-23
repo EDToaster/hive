@@ -52,7 +52,7 @@ pub struct HiveConfig {
     /// Per-role worktree strategy configuration
     pub worktrees: WorktreeConfig,
     /// Global worktree strategy override (`worktree_strategy: full|sparse|auto` in config.yaml).
-    /// When Some, this is the HIGHEST priority — overrides per-spawn, task domain, and role defaults.
+    /// When Some, this is the HIGHEST priority — overrides per-spawn, task sparse_checkout_path, and role defaults.
     /// `None` means "auto" (use the role-based priority chain).
     /// Use `full` for small repos where sparse/no-checkout adds unnecessary complexity.
     pub global_worktree: Option<WorktreeStrategy>,

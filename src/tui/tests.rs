@@ -22,7 +22,7 @@ fn make_task(id: &str, title: &str, parent: Option<&str>, status: TaskStatus) ->
         created_by: "test".into(),
         parent_task: parent.map(|s| s.into()),
         branch: None,
-        domain: None,
+        sparse_checkout_path: None,
         review_count: 0,
         commit_message: None,
         submitted_by: None,

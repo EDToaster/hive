@@ -87,7 +87,7 @@ fn make_task(id: &str, parent: Option<&str>, status: TaskStatus) -> Task {
         created_by: "coordinator".into(),
         parent_task: parent.map(|s| s.to_string()),
         branch: None,
-        domain: None,
+        sparse_checkout_path: None,
         review_count: 0,
         commit_message: None,
         submitted_by: None,
@@ -267,7 +267,7 @@ async fn create_task_coordinator_no_parent_ok() {
         title: "Lead task".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -286,7 +286,7 @@ async fn create_task_coordinator_denied_with_parent() {
         title: "Subtask".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: Some("task-lead".into()),
@@ -310,7 +310,7 @@ async fn create_task_lead_with_own_parent_ok() {
         title: "Subtask".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: Some("task-lead".into()),
@@ -329,7 +329,7 @@ async fn create_task_worker_denied() {
         title: "Task".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -384,7 +384,7 @@ async fn list_tasks_parent_filter_none() {
     let params = Parameters(ListTasksParams {
         status: None,
         assignee: None,
-        domain: None,
+        sparse_checkout_path: None,
         parent_task: Some("none".into()),
     });
     let result = mcp.hive_list_tasks(params).await.unwrap();
@@ -406,7 +406,7 @@ async fn list_tasks_parent_filter_by_id() {
     let params = Parameters(ListTasksParams {
         status: None,
         assignee: None,
-        domain: None,
+        sparse_checkout_path: None,
         parent_task: Some("task-top".into()),
     });
     let result = mcp.hive_list_tasks(params).await.unwrap();
@@ -1728,7 +1728,7 @@ async fn create_task_lead_denied_without_parent() {
         title: "Top level".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -1752,7 +1752,7 @@ async fn create_task_lead_denied_wrong_parent() {
         title: "Subtask".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: Some("task-lead-2".into()), // Not their own
@@ -1771,7 +1771,7 @@ async fn create_task_explorer_denied() {
         title: "Task".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -1789,7 +1789,7 @@ async fn create_task_reviewer_denied() {
         title: "Task".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2005,7 +2005,7 @@ async fn list_tasks_status_filter() {
     let params = Parameters(ListTasksParams {
         status: Some("active".into()),
         assignee: None,
-        domain: None,
+        sparse_checkout_path: None,
         parent_task: None,
     });
     let result = mcp.hive_list_tasks(params).await.unwrap();
@@ -2029,7 +2029,7 @@ async fn list_tasks_assignee_filter() {
     let params = Parameters(ListTasksParams {
         status: None,
         assignee: Some("lead-1".into()),
-        domain: None,
+        sparse_checkout_path: None,
         parent_task: None,
     });
     let result = mcp.hive_list_tasks(params).await.unwrap();
@@ -2039,21 +2039,21 @@ async fn list_tasks_assignee_filter() {
 }
 
 #[tokio::test]
-async fn list_tasks_domain_filter() {
+async fn list_tasks_sparse_checkout_path_filter() {
     let (_dir, mcp) = setup_mcp(AgentRole::Coordinator);
     let state = mcp.state();
 
     let mut t1 = make_task("task-1", None, TaskStatus::Active);
-    t1.domain = Some("backend".into());
+    t1.sparse_checkout_path = Some("backend".into());
     let mut t2 = make_task("task-2", None, TaskStatus::Active);
-    t2.domain = Some("frontend".into());
+    t2.sparse_checkout_path = Some("frontend".into());
     state.save_task("test-run", &t1).unwrap();
     state.save_task("test-run", &t2).unwrap();
 
     let params = Parameters(ListTasksParams {
         status: None,
         assignee: None,
-        domain: Some("backend".into()),
+        sparse_checkout_path: Some("backend".into()),
         parent_task: None,
     });
     let result = mcp.hive_list_tasks(params).await.unwrap();
@@ -2362,7 +2362,7 @@ async fn create_task_with_empty_title_succeeds() {
         title: "".into(),
         description: "".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2380,7 +2380,7 @@ async fn create_task_with_invalid_urgency_defaults() {
         title: "Test task".into(),
         description: "desc".into(),
         urgency: "URGENT".into(), // not a valid urgency
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2399,7 +2399,7 @@ async fn create_task_with_special_chars_in_title() {
         title: "Task with <html>&\"quotes'</html> and \n newlines \t tabs".into(),
         description: "描述 with unicode 🚀 and \0 null bytes".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2416,7 +2416,7 @@ async fn create_task_with_very_long_title() {
         title: long_title,
         description: "y".repeat(100_000),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2426,7 +2426,7 @@ async fn create_task_with_very_long_title() {
 }
 
 #[tokio::test]
-async fn create_task_rejects_invalid_domain() {
+async fn create_task_rejects_invalid_sparse_checkout_path() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
     // Initialize a git repo with a "src" directory
@@ -2485,12 +2485,12 @@ async fn create_task_rejects_invalid_domain() {
         root.to_string_lossy().to_string(),
     );
 
-    // Valid domain should succeed
+    // Valid sparse_checkout_path should succeed
     let params = Parameters(CreateTaskParams {
-        title: "Valid domain task".into(),
+        title: "Valid sparse path task".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: Some("src".into()),
+        sparse_checkout_path: Some("src".into()),
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2498,12 +2498,12 @@ async fn create_task_rejects_invalid_domain() {
     let result = mcp.hive_create_task(params).await.unwrap();
     assert!(!result.is_error.unwrap_or(false));
 
-    // Invalid domain should fail
+    // Invalid sparse_checkout_path should fail
     let params = Parameters(CreateTaskParams {
-        title: "Bad domain task".into(),
+        title: "Bad sparse path task".into(),
         description: "desc".into(),
         urgency: "normal".into(),
-        domain: Some("nonexistent".into()),
+        sparse_checkout_path: Some("nonexistent".into()),
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2563,7 +2563,7 @@ async fn list_tasks_with_invalid_status_filter() {
     let params = Parameters(ListTasksParams {
         status: Some("INVALID_STATUS".into()),
         assignee: None,
-        domain: None,
+        sparse_checkout_path: None,
         parent_task: None,
     });
     let result = mcp.hive_list_tasks(params).await.unwrap();
@@ -2967,7 +2967,7 @@ async fn integration_task_lifecycle_create_assign_update_complete() {
         title: "Build feature X".into(),
         description: "Implement the full feature".into(),
         urgency: "high".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -2981,7 +2981,7 @@ async fn integration_task_lifecycle_create_assign_update_complete() {
     let task = state.load_task("test-run", &task_id).unwrap();
     assert_eq!(task.status, TaskStatus::Pending);
     assert_eq!(task.urgency, Urgency::High);
-    assert_eq!(task.domain, None);
+    assert_eq!(task.sparse_checkout_path, None);
     assert_eq!(task.created_by, "coordinator");
 
     // 2. Coordinator assigns task to lead (simulating what spawn does)
@@ -2999,7 +2999,7 @@ async fn integration_task_lifecycle_create_assign_update_complete() {
         title: "Sub-feature Y".into(),
         description: "Worker task".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: Some(task_id.clone()),
@@ -3144,7 +3144,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
         title: "Task A (foundation)".into(),
         description: "First task".into(),
         urgency: "high".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![],
         parent_task: None,
@@ -3157,7 +3157,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
         title: "Task B (depends on A)".into(),
         description: "Second task".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![task_a_id.clone()],
         parent_task: None,
@@ -3170,7 +3170,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
         title: "Task C (depends on B)".into(),
         description: "Third task".into(),
         urgency: "normal".into(),
-        domain: None,
+        sparse_checkout_path: None,
         blocking: vec![],
         blocked_by: vec![task_b_id.clone()],
         parent_task: None,
@@ -3192,7 +3192,7 @@ async fn integration_blocked_by_chain_tracks_dependencies() {
     let params = Parameters(ListTasksParams {
         status: Some("pending".into()),
         assignee: None,
-        domain: None,
+        sparse_checkout_path: None,
         parent_task: None,
     });
     let result = coord_mcp.hive_list_tasks(params).await.unwrap();
@@ -3312,7 +3312,7 @@ async fn integration_discovery_to_query_mind_roundtrip() {
 // --- Integration: Ownership enforcement across role hierarchy ---
 
 #[tokio::test]
-async fn integration_ownership_cross_domain_isolation() {
+async fn integration_ownership_cross_scope_isolation() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().to_path_buf();
     std::fs::create_dir_all(root.join(".hive")).unwrap();

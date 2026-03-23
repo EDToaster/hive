@@ -88,12 +88,12 @@ impl HiveMcp {
             ))]));
         }
 
-        // Resolve worktree strategy (priority: global config > task domain > role config > role default)
+        // Resolve worktree strategy (priority: global config > task sparse_checkout_path > role config > role default)
         // Global override: if worktree_strategy is set in config.yaml, it wins unconditionally.
         let strategy_override = if config.global_worktree.is_some() {
             config.global_worktree.clone()
         } else {
-            task.domain
+            task.sparse_checkout_path
                 .as_ref()
                 .map(|d| WorktreeStrategy::Sparse {
                     paths: vec![d.clone()],

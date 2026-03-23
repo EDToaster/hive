@@ -71,18 +71,18 @@ impl HiveMcp {
             _ => Urgency::Normal,
         };
 
-        // Validate domain path exists in git
-        if let Some(ref domain) = p.domain {
+        // Validate sparse_checkout_path exists in git
+        if let Some(ref path) = p.sparse_checkout_path {
             let state = self.state();
-            match crate::git::Git::validate_sparse_paths(state.repo_root(), &[domain.as_str()]) {
+            match crate::git::Git::validate_sparse_paths(state.repo_root(), &[path.as_str()]) {
                 Ok(invalid) if !invalid.is_empty() => {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "Domain path not found in repo: {domain}"
+                        "sparse_checkout_path not found in repo: {path}"
                     ))]));
                 }
                 Err(e) => {
                     return Ok(CallToolResult::error(vec![Content::text(format!(
-                        "Failed to validate domain path: {e}"
+                        "Failed to validate sparse_checkout_path: {e}"
                     ))]));
                 }
                 _ => {}
@@ -103,7 +103,7 @@ impl HiveMcp {
             created_by: self.agent_id.clone(),
             parent_task: p.parent_task.clone(),
             branch: None,
-            domain: p.domain.clone(),
+            sparse_checkout_path: p.sparse_checkout_path.clone(),
             review_count: 0,
             commit_message: None,
             submitted_by: None,
@@ -206,7 +206,7 @@ impl HiveMcp {
                 }
                 AgentRole::Lead => {
                     format!(
-                        "Permission denied: {} belongs to another lead's domain. Send a message to the coordinator to coordinate cross-domain changes.",
+                        "Permission denied: {} belongs to another lead's scope. Send a message to the coordinator to coordinate cross-scope changes.",
                         p.task_id
                     )
                 }
@@ -285,7 +285,7 @@ impl HiveMcp {
         }
     }
 
-    #[tool(description = "List tasks, optionally filtered by status, assignee, or domain")]
+    #[tool(description = "List tasks, optionally filtered by status, assignee, or sparse_checkout_path")]
     pub(crate) async fn hive_list_tasks(
         &self,
         params: Parameters<ListTasksParams>,
@@ -312,8 +312,8 @@ impl HiveMcp {
                 {
                     return false;
                 }
-                if let Some(ref d) = p.domain
-                    && t.domain.as_deref() != Some(d.as_str())
+                if let Some(ref d) = p.sparse_checkout_path
+                    && t.sparse_checkout_path.as_deref() != Some(d.as_str())
                 {
                     return false;
                 }

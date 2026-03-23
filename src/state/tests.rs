@@ -20,7 +20,7 @@ fn make_task(id: &str, status: TaskStatus) -> Task {
         created_by: "test".into(),
         parent_task: None,
         branch: None,
-        domain: None,
+        sparse_checkout_path: None,
         review_count: 0,
         commit_message: None,
         submitted_by: None,

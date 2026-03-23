@@ -140,8 +140,8 @@ fn render_task_overlay(frame: &mut Frame, area: Rect, task: &Task) {
             task.branch.as_deref().unwrap_or("--")
         )),
         Line::from(format!(
-            " Domain:      {}",
-            task.domain.as_deref().unwrap_or("--")
+            " Sparse path: {}",
+            task.sparse_checkout_path.as_deref().unwrap_or("--")
         )),
         Line::from(format!(" Blocked by:  {blocked_by}")),
         Line::from(format!(" Blocking:    {blocking}")),

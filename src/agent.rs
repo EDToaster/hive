@@ -491,7 +491,7 @@ Role: coordinator
 ## Task Creation Protocol
 - Create one task per domain/lead. These are high-level tasks describing WHAT needs to happen, not HOW.
 - Set blocked_by relationships between lead-level tasks for cross-domain dependencies.
-- Use the domain field to tag each task for file-conflict prevention.
+- Use the sparse_checkout_path field to scope each task's worktree to a specific directory (e.g. "src/mcp", "docs").
 - Set urgency: critical for blocking tasks, high for core features, normal for polish.
 - Each task title should describe the domain and goal, not implementation steps.
 - Do NOT create worker-level subtasks — leads will decompose their own tasks.
@@ -677,7 +677,7 @@ Role: coordinator
 ## Task Creation Protocol
 - Create one task per domain/lead. These are high-level tasks describing WHAT needs to happen, not HOW.
 - Set blocked_by relationships between lead-level tasks for cross-domain dependencies.
-- Use the domain field to tag each task for file-conflict prevention.
+- Use the sparse_checkout_path field to scope each task's worktree to a specific directory (e.g. "src/mcp", "docs").
 - Set urgency: critical for blocking tasks, high for core features, normal for polish.
 - Each task title should describe the domain and goal, not implementation steps.
 - Do NOT create worker-level subtasks — leads will decompose their own tasks.
@@ -785,7 +785,7 @@ Parent: {}
 - Fix any issues before marking the task as review.
 
 ## Scope Discipline
-- Only modify files in your assigned domain. Do not touch files outside your scope.
+- Only modify files within your task's sparse_checkout_path. Do not touch files outside your scope.
 - If you discover a bug in another file, create a task for it — don't fix it yourself.
 - Do not run `cargo fmt` on the entire project — only format files you modified.
 - Keep commits focused: one logical change per commit.
@@ -1330,7 +1330,7 @@ mod tests {
         assert!(prompt.contains("## Implementation Protocol"));
         assert!(prompt.contains("Write tests BEFORE implementation"));
         assert!(prompt.contains("## Scope Discipline"));
-        assert!(prompt.contains("Only modify files in your assigned domain"));
+        assert!(prompt.contains("Only modify files within your task's sparse_checkout_path"));
         assert!(prompt.contains("## Completion Protocol"));
         assert!(prompt.contains("Run the full test suite one final time"));
     }
