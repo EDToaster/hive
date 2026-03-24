@@ -7,6 +7,137 @@ use std::collections::HashMap;
 use super::AgentToolCall;
 
 // ---------------------------------------------------------------------------
+// Time compression — collapse idle gaps > 5 minutes
+// ---------------------------------------------------------------------------
+
+/// Minimum gap duration (in seconds) before we collapse it.
+const COLLAPSE_THRESHOLD_SECS: i64 = 300; // 5 minutes
+
+/// How many display-seconds a collapsed gap occupies (visual width of the marker).
+const COLLAPSED_DISPLAY_SECS: i64 = 15;
+
+/// A gap in the timeline that will be collapsed.
+#[derive(Clone, Debug)]
+struct CollapsedGap {
+    /// Start of the gap in real seconds from t_start
+    real_start: i64,
+    /// End of the gap in real seconds from t_start
+    real_end: i64,
+}
+
+/// Maps real elapsed seconds to display seconds, compressing idle gaps.
+struct TimeMapper {
+    gaps: Vec<CollapsedGap>,
+    /// Total display seconds after compression
+    pub display_total: i64,
+}
+
+impl TimeMapper {
+    /// Build a TimeMapper by finding global idle gaps in tool call activity.
+    fn new(
+        total_secs: i64,
+        agent_tool_calls: &HashMap<String, Vec<AgentToolCall>>,
+        t_start: DateTime<Utc>,
+    ) -> Self {
+        // Collect all tool call timestamps as seconds from t_start
+        let mut all_secs: Vec<i64> = agent_tool_calls
+            .values()
+            .flat_map(|calls| {
+                calls
+                    .iter()
+                    .map(|c| (c.timestamp - t_start).num_seconds().max(0))
+            })
+            .collect();
+        all_secs.sort_unstable();
+        all_secs.dedup();
+
+        let mut gaps = Vec::new();
+
+        if !all_secs.is_empty() {
+            // Check gap from start to first call
+            if all_secs[0] > COLLAPSE_THRESHOLD_SECS {
+                gaps.push(CollapsedGap {
+                    real_start: 0,
+                    real_end: all_secs[0],
+                });
+            }
+            // Check gaps between consecutive calls
+            for window in all_secs.windows(2) {
+                let gap = window[1] - window[0];
+                if gap > COLLAPSE_THRESHOLD_SECS {
+                    gaps.push(CollapsedGap {
+                        real_start: window[0],
+                        real_end: window[1],
+                    });
+                }
+            }
+            // Check gap from last call to now
+            if let Some(&last) = all_secs.last()
+                && total_secs - last > COLLAPSE_THRESHOLD_SECS
+            {
+                gaps.push(CollapsedGap {
+                    real_start: last,
+                    real_end: total_secs,
+                });
+            }
+        }
+
+        // Compute display_total: real_total minus removed time plus collapsed markers
+        let removed: i64 = gaps
+            .iter()
+            .map(|g| (g.real_end - g.real_start) - COLLAPSED_DISPLAY_SECS)
+            .sum();
+        let display_total = (total_secs - removed).max(60);
+
+        Self {
+            gaps,
+            display_total,
+        }
+    }
+
+    /// Map a real-seconds offset to a display-seconds offset.
+    fn map(&self, real_secs: i64) -> i64 {
+        let mut removed = 0i64;
+        for gap in &self.gaps {
+            if real_secs <= gap.real_start {
+                break;
+            }
+            let gap_duration = gap.real_end - gap.real_start;
+            if real_secs >= gap.real_end {
+                // Past this gap entirely — account for the collapsed portion
+                removed += gap_duration - COLLAPSED_DISPLAY_SECS;
+            } else {
+                // Inside a gap — map linearly within the collapsed marker
+                let frac = (real_secs - gap.real_start) as f64 / gap_duration.max(1) as f64;
+                let marker_pos = (frac * COLLAPSED_DISPLAY_SECS as f64) as i64;
+                return (gap.real_start - removed) + marker_pos;
+            }
+        }
+        real_secs - removed
+    }
+
+    /// Map a real-seconds offset to a virtual sub-column index.
+    fn to_vcol(&self, real_secs: i64, virt_w: usize) -> usize {
+        let display_secs = self.map(real_secs);
+        let dt = self.display_total.max(1) as usize;
+        (display_secs.max(0) as usize * virt_w) / dt
+    }
+
+    /// Return the virtual sub-column ranges occupied by collapse markers.
+    fn collapse_marker_ranges(&self, virt_w: usize) -> Vec<(usize, usize)> {
+        let mut ranges = Vec::new();
+        for gap in &self.gaps {
+            let start = self.to_vcol(gap.real_start, virt_w);
+            let end = self.to_vcol(gap.real_end, virt_w);
+            if end > start {
+                ranges.push((start, end));
+            }
+        }
+        ranges
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tool call phase classification
 // ---------------------------------------------------------------------------
 
@@ -39,13 +170,15 @@ fn classify_tool(tool_name: &str) -> Phase {
     }
 }
 
-fn phase_char(phase: Phase) -> char {
-    match phase {
-        Phase::Explore => '\u{2591}',   // light shade
-        Phase::Implement => '\u{2593}', // dark shade
-        Phase::Test => '\u{2592}',      // medium shade
-        Phase::Hive => '\u{2588}',      // full block
-        Phase::Other => '\u{2588}',     // full block
+/// Convert a pair of sub-column colors into a half-block terminal cell.
+/// Each terminal cell encodes two virtual columns via fg (left) and bg (right).
+fn half_block_cell(left: Color, right: Color) -> (char, Style) {
+    match (left, right) {
+        (Color::Reset, Color::Reset) => (' ', Style::default().bg(Color::Reset)),
+        (l, r) if l == r => ('\u{2588}', Style::default().fg(l).bg(Color::Reset)),
+        (Color::Reset, r) => ('\u{2590}', Style::default().fg(r).bg(Color::Reset)),
+        (l, Color::Reset) => ('\u{258C}', Style::default().fg(l).bg(Color::Reset)),
+        (l, r) => ('\u{258C}', Style::default().fg(l).bg(r)),
     }
 }
 
@@ -91,7 +224,12 @@ fn role_symbol(role: AgentRole) -> char {
 // Time axis header
 // ---------------------------------------------------------------------------
 
-fn build_time_axis(total_secs: i64, bar_w: usize, label_w: usize) -> Line<'static> {
+fn build_time_axis(
+    total_secs: i64,
+    bar_w: usize,
+    label_w: usize,
+    mapper: &TimeMapper,
+) -> Line<'static> {
     let mut axis = vec![' '; bar_w];
 
     let num_ticks = 4usize.min(bar_w / 8);
@@ -101,7 +239,12 @@ fn build_time_axis(total_secs: i64, bar_w: usize, label_w: usize) -> Line<'stati
         } else {
             i * (bar_w.saturating_sub(1)) / num_ticks
         };
-        let secs = (pos as i64 * total_secs) / bar_w.max(1) as i64;
+        // Reverse-map: display position → real seconds for the label
+        // Use linear interpolation on display_total for tick placement
+        let display_secs =
+            (pos as i64 * mapper.display_total) / bar_w.max(1) as i64;
+        // Find the real seconds that maps to this display position
+        let secs = reverse_map_approx(mapper, display_secs, total_secs);
         let label = if secs < 60 {
             format!("{secs}s")
         } else {
@@ -115,12 +258,38 @@ fn build_time_axis(total_secs: i64, bar_w: usize, label_w: usize) -> Line<'stati
         }
     }
 
+    // Mark collapse regions on the axis
+    let collapse_ranges = mapper.collapse_marker_ranges(bar_w * 2);
+    for (vs, ve) in &collapse_ranges {
+        let cell_start = vs / 2;
+        let cell_end = ve.div_ceil(2);
+        for item in axis.iter_mut().take(cell_end.min(bar_w)).skip(cell_start) {
+            *item = '\u{2508}'; // ┈ dashed line
+        }
+    }
+
     let label_part = " ".repeat(label_w + 1);
     let axis_str: String = axis.into_iter().collect();
     Line::from(vec![
         Span::styled(label_part, Style::default()),
         Span::styled(axis_str, Style::default().fg(Color::DarkGray)),
     ])
+}
+
+/// Approximate reverse mapping: given display_secs, find real_secs.
+fn reverse_map_approx(mapper: &TimeMapper, display_secs: i64, total_secs: i64) -> i64 {
+    // Binary search for the real_secs that maps closest to display_secs
+    let mut lo = 0i64;
+    let mut hi = total_secs;
+    while lo < hi {
+        let mid = lo + (hi - lo) / 2;
+        if mapper.map(mid) < display_secs {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    lo
 }
 
 // ---------------------------------------------------------------------------
@@ -141,6 +310,7 @@ fn render_agent_row(
     spawn_times: &HashMap<String, DateTime<Utc>>,
     agent_tool_calls: &HashMap<String, Vec<AgentToolCall>>,
     queue_timestamps: &[DateTime<Utc>],
+    mapper: &TimeMapper,
 ) -> Line<'static> {
     let color = role_color(agent.role);
     let symbol = role_symbol(agent.role);
@@ -161,128 +331,130 @@ fn render_agent_row(
         _ => t_now,
     };
 
+    // Virtual sub-columns: 2 per terminal cell for half-block rendering (2x resolution)
+    let virt_w = bar_w * 2;
+
     let start_secs = (agent_start - t_start).num_seconds().max(0);
     let end_secs = (agent_end - t_start)
         .num_seconds()
         .max(start_secs + 1)
         .min(total_secs);
 
-    let ts = total_secs.max(1) as usize;
-    let bar_start = (start_secs as usize * bar_w) / ts;
-    let bar_end = ((end_secs as usize * bar_w) / ts).clamp(bar_start + 1, bar_w);
-
-    // Build per-column phase + idle data from tool calls
-    let mut bar_chars: Vec<char> = vec![' '; bar_w];
-    let mut bar_colors: Vec<Color> = vec![Color::Reset; bar_w];
+    let vstart = mapper.to_vcol(start_secs, virt_w);
+    let vend = mapper.to_vcol(end_secs, virt_w).clamp(vstart + 1, virt_w);
 
     let is_done = matches!(agent.status, AgentStatus::Done | AgentStatus::Failed);
+    let base = if is_done { Color::DarkGray } else { color };
 
-    if let Some(calls) = agent_tool_calls.get(&agent.id) {
+    // Build per-virtual-sub-column colors (Color::Reset = empty/outside lifetime)
+    let mut sub_colors: Vec<Color> = vec![Color::Reset; virt_w];
+
+    let has_mapped_calls = if let Some(calls) = agent_tool_calls.get(&agent.id) {
         if !calls.is_empty() {
-            // Map each tool call to a bar column and assign phase
-            let mut column_phases: Vec<Option<Phase>> = vec![None; bar_w];
+            let mut column_phases: Vec<Option<Phase>> = vec![None; virt_w];
 
             for call in calls {
                 let call_secs = (call.timestamp - t_start).num_seconds().max(0);
-                let col = ((call_secs as usize) * bar_w) / ts;
-                if col >= bar_start && col < bar_end {
-                    let phase = classify_tool(&call.tool_name);
-                    // Later phases overwrite earlier ones in same column
-                    column_phases[col] = Some(phase);
+                let col = mapper.to_vcol(call_secs, virt_w);
+                if col >= vstart && col < vend {
+                    column_phases[col] = Some(classify_tool(&call.tool_name));
                 }
             }
 
-            // Detect idle gaps: columns within agent lifetime that have no tool calls
-            // and are far from the nearest call
-            let mut last_call_col: Option<usize> = None;
-            for (col, phase) in column_phases
-                .iter()
-                .enumerate()
-                .take(bar_end)
-                .skip(bar_start)
-            {
-                if phase.is_some() {
-                    last_call_col = Some(col);
-                }
-            }
+            let any_mapped = column_phases[vstart..vend].iter().any(|p| p.is_some());
 
-            // Build a "nearest call distance" map for idle detection
-            let mut nearest_dist: Vec<usize> = vec![usize::MAX; bar_w];
-            // Forward pass
-            let mut last_seen = None;
-            for col in bar_start..bar_end {
-                if column_phases[col].is_some() {
-                    last_seen = Some(col);
+            if any_mapped {
+                // Nearest call distance for idle detection
+                let mut nearest_dist: Vec<usize> = vec![usize::MAX; virt_w];
+                let mut last_seen = None;
+                let mut last_call_col = vstart;
+                for col in vstart..vend {
+                    if column_phases[col].is_some() {
+                        last_seen = Some(col);
+                        last_call_col = col;
+                    }
+                    if let Some(lc) = last_seen {
+                        nearest_dist[col] = col - lc;
+                    }
                 }
-                if let Some(lc) = last_seen {
-                    nearest_dist[col] = col - lc;
+                last_seen = None;
+                for col in (vstart..vend).rev() {
+                    if column_phases[col].is_some() {
+                        last_seen = Some(col);
+                    }
+                    if let Some(lc) = last_seen {
+                        nearest_dist[col] = nearest_dist[col].min(lc - col);
+                    }
                 }
-            }
-            // Backward pass
-            last_seen = None;
-            for col in (bar_start..bar_end).rev() {
-                if column_phases[col].is_some() {
-                    last_seen = Some(col);
-                }
-                if let Some(lc) = last_seen {
-                    nearest_dist[col] = nearest_dist[col].min(lc - col);
-                }
-            }
 
-            // How many columns correspond to IDLE_GAP_SECS?
-            let idle_cols = ((IDLE_GAP_SECS as usize) * bar_w) / ts;
+                // Use display_total for idle threshold calc (since columns are now compressed)
+                let idle_cols =
+                    ((IDLE_GAP_SECS as usize) * virt_w / mapper.display_total.max(1) as usize)
+                        .max(1);
 
-            // Fill the bar
-            for col in bar_start..bar_end {
-                if let Some(phase) = column_phases[col] {
-                    bar_chars[col] = phase_char(phase);
-                    bar_colors[col] = if is_done {
-                        Color::DarkGray
+                for col in vstart..vend {
+                    if let Some(phase) = column_phases[col] {
+                        sub_colors[col] =
+                            if is_done { Color::DarkGray } else { phase_color(phase, color) };
+                    } else if col > last_call_col {
+                        // After last tool call — leave empty (Color::Reset)
+                    } else if nearest_dist[col] > idle_cols {
+                        // Idle gap between tool calls
+                        sub_colors[col] = Color::Rgb(80, 80, 80);
                     } else {
-                        phase_color(phase, color)
-                    };
-                } else if nearest_dist[col] > idle_cols && idle_cols > 0 {
-                    // Idle gap — use dots
-                    bar_chars[col] = '\u{2504}'; // box drawings light triple dash horizontal
-                    bar_colors[col] = Color::Rgb(80, 80, 80);
-                } else {
-                    // Active region between calls — fill with base color
-                    bar_chars[col] = '\u{2588}'; // full block
-                    bar_colors[col] = if is_done { Color::DarkGray } else { color };
+                        // Active region between nearby calls
+                        sub_colors[col] = base;
+                    }
                 }
-            }
-
-            // Override: if no calls mapped to columns (very sparse), just show solid bar
-            if last_call_col.is_none() {
-                for col in bar_start..bar_end {
-                    bar_chars[col] = '\u{2588}';
-                    bar_colors[col] = if is_done { Color::DarkGray } else { color };
-                }
+                true
+            } else {
+                false
             }
         } else {
-            // No tool calls — solid bar
-            for col in bar_start..bar_end {
-                bar_chars[col] = '\u{2588}';
-                bar_colors[col] = if is_done { Color::DarkGray } else { color };
-            }
+            false
         }
     } else {
-        // No tool call data — solid bar
-        for col in bar_start..bar_end {
-            bar_chars[col] = '\u{2588}';
-            bar_colors[col] = if is_done { Color::DarkGray } else { color };
+        false
+    };
+
+    if !has_mapped_calls {
+        sub_colors[vstart..vend].fill(base);
+    }
+
+    // Mark collapsed regions — override with a distinct pattern
+    let collapse_ranges = mapper.collapse_marker_ranges(virt_w);
+    for (cs, ce) in &collapse_ranges {
+        for (col, color) in sub_colors.iter_mut().enumerate().take(*ce.min(&virt_w)).skip(*cs) {
+            // Only mark within the agent's active range for visual clarity
+            if col >= vstart && col < vend && *color != Color::Reset {
+                *color = Color::Rgb(60, 60, 90); // distinct dim blue-gray
+            }
         }
     }
 
-    // Mark merge queue submission times with '│' (only in empty space)
+    // Merge queue markers — track which terminal cells are queue markers
+    let mut queue_cells: Vec<bool> = vec![false; bar_w];
     for &qt in queue_timestamps {
         let q_secs = (qt - t_start).num_seconds();
         if q_secs >= 0 && q_secs < total_secs {
-            let q_pos = (q_secs as usize * bar_w) / ts;
-            if q_pos < bar_w && bar_chars[q_pos] == ' ' {
-                bar_chars[q_pos] = '\u{2502}';
-                bar_colors[q_pos] = Color::White;
+            let q_vcol = mapper.to_vcol(q_secs, virt_w);
+            let cell = q_vcol / 2;
+            if cell < bar_w
+                && sub_colors[cell * 2] == Color::Reset
+                && sub_colors[cell * 2 + 1] == Color::Reset
+            {
+                queue_cells[cell] = true;
             }
+        }
+    }
+
+    // Collapse marker cells — show ┊ pattern in collapsed regions
+    let mut collapse_cells: Vec<bool> = vec![false; bar_w];
+    for (cs, ce) in &collapse_ranges {
+        let cell_start = cs / 2;
+        let cell_end = ce.div_ceil(2);
+        for item in collapse_cells.iter_mut().take(cell_end.min(bar_w)).skip(cell_start) {
+            *item = true;
         }
     }
 
@@ -295,19 +467,41 @@ fn render_agent_row(
         AgentStatus::Stalled => '!',
     };
 
-    // Build spans — group consecutive columns with same color to reduce span count
+    // Convert virtual sub-columns to half-block terminal cells, grouping runs
     let mut bar_spans: Vec<Span> = Vec::new();
     let mut run_start = 0;
     while run_start < bar_w {
-        let run_color = bar_colors[run_start];
-        let run_char = bar_chars[run_start];
-        let mut run_end = run_start + 1;
-        while run_end < bar_w && bar_colors[run_end] == run_color && bar_chars[run_end] == run_char
+        let (ch, style) = if queue_cells[run_start] {
+            ('\u{2502}', Style::default().fg(Color::White))
+        } else if collapse_cells[run_start]
+            && sub_colors[run_start * 2] == Color::Reset
+            && sub_colors[run_start * 2 + 1] == Color::Reset
         {
+            ('\u{250A}', Style::default().fg(Color::Rgb(80, 80, 120))) // ┊ for empty collapse
+        } else {
+            half_block_cell(sub_colors[run_start * 2], sub_colors[run_start * 2 + 1])
+        };
+
+        let mut run_end = run_start + 1;
+        while run_end < bar_w {
+            let (ch2, style2) = if queue_cells[run_end] {
+                ('\u{2502}', Style::default().fg(Color::White))
+            } else if collapse_cells[run_end]
+                && sub_colors[run_end * 2] == Color::Reset
+                && sub_colors[run_end * 2 + 1] == Color::Reset
+            {
+                ('\u{250A}', Style::default().fg(Color::Rgb(80, 80, 120)))
+            } else {
+                half_block_cell(sub_colors[run_end * 2], sub_colors[run_end * 2 + 1])
+            };
+            if ch2 != ch || style2 != style {
+                break;
+            }
             run_end += 1;
         }
-        let s: String = bar_chars[run_start..run_end].iter().collect();
-        bar_spans.push(Span::styled(s, Style::default().fg(run_color)));
+
+        let s: String = std::iter::repeat_n(ch, run_end - run_start).collect();
+        bar_spans.push(Span::styled(s, style));
         run_start = run_end;
     }
 
@@ -441,11 +635,15 @@ fn build_dep_gutter(sorted_agents: &[&Agent], gutter_w: usize) -> Vec<(String, C
 fn build_legend() -> Line<'static> {
     Line::from(vec![
         Span::styled(" Phases: ", Style::default().fg(Color::DarkGray)),
-        Span::styled("\u{2591}explore ", Style::default().fg(Color::Cyan)),
-        Span::styled("\u{2593}implement ", Style::default().fg(Color::Green)),
-        Span::styled("\u{2592}test ", Style::default().fg(Color::Magenta)),
+        Span::styled("\u{2588}explore ", Style::default().fg(Color::Cyan)),
+        Span::styled("\u{2588}implement ", Style::default().fg(Color::Green)),
+        Span::styled("\u{2588}test ", Style::default().fg(Color::Magenta)),
         Span::styled("\u{2588}hive ", Style::default().fg(Color::Yellow)),
-        Span::styled("\u{2504}idle ", Style::default().fg(Color::Rgb(80, 80, 80))),
+        Span::styled("\u{2588}idle ", Style::default().fg(Color::Rgb(80, 80, 80))),
+        Span::styled(
+            "\u{250A}skip ",
+            Style::default().fg(Color::Rgb(80, 80, 120)),
+        ),
         Span::styled(
             "  \u{2502}\u{2514}\u{2500}deps",
             Style::default().fg(Color::DarkGray),
@@ -517,6 +715,9 @@ pub(super) fn render_gantt_view(
     let queue_timestamps: Vec<DateTime<Utc>> =
         queue.entries.iter().map(|e| e.submitted_at).collect();
 
+    // Build time mapper to collapse idle gaps > 5 minutes
+    let mapper = TimeMapper::new(total_secs, agent_tool_calls, t_start);
+
     let dep_gutter = build_dep_gutter(&sorted, gutter_w);
 
     let total_agents = sorted.len();
@@ -528,7 +729,7 @@ pub(super) fn render_gantt_view(
 
     // Time axis header
     let axis_prefix = " ".repeat(gutter_w);
-    let axis = build_time_axis(total_secs, bar_w, label_w);
+    let axis = build_time_axis(total_secs, bar_w, label_w, &mapper);
     let mut axis_spans = vec![Span::raw(axis_prefix)];
     axis_spans.extend(axis.spans);
     lines.push(Line::from(axis_spans));
@@ -551,6 +752,7 @@ pub(super) fn render_gantt_view(
             spawn_times,
             agent_tool_calls,
             &queue_timestamps,
+            &mapper,
         );
 
         // Prepend dependency gutter
