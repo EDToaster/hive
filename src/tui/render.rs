@@ -142,10 +142,9 @@ pub(super) fn render_stats_bar(
     }
 
     // Timeline toggle hint
-    spans.push(Span::styled(
-        "    [t] timeline",
-        Style::default().fg(Color::DarkGray),
-    ));
+    spans.push(Span::styled("    ", Style::default()));
+    spans.push(Span::styled("[t]", Style::default().fg(Color::White)));
+    spans.push(Span::styled(" timeline", Style::default().fg(Color::Gray)));
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }

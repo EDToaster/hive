@@ -230,8 +230,42 @@ fn build_time_axis(
     label_w: usize,
     mapper: &TimeMapper,
 ) -> Line<'static> {
-    let mut axis = vec![' '; bar_w];
+    // Per-cell character and highlight flag (true = tick label, false = collapse/empty)
+    let mut axis = vec![(' ', false); bar_w];
 
+    // Helper: format a real-seconds value as a tick label
+    let fmt_tick = |secs: i64| -> String {
+        if secs < 60 {
+            format!("{secs}s")
+        } else {
+            format!("{}m", secs / 60)
+        }
+    };
+
+    // Helper: place a tick label at a cell position, returns true if placed
+    let place_tick = |axis: &mut Vec<(char, bool)>, pos: usize, label: &str| {
+        let start = pos.min(bar_w.saturating_sub(label.len()));
+        // Check for overlap with existing tick labels
+        let can_place = (start..start + label.len())
+            .all(|j| j < bar_w && !axis[j].1);
+        if !can_place {
+            return;
+        }
+        for (j, ch) in label.chars().enumerate() {
+            if start + j < bar_w {
+                axis[start + j] = (ch, true);
+            }
+        }
+    };
+
+    // 1) Priority ticks: at the end of each collapsed section (where activity resumes)
+    for gap in &mapper.gaps {
+        let pos = mapper.to_vcol(gap.real_end, bar_w);
+        let label = fmt_tick(gap.real_end);
+        place_tick(&mut axis, pos, &label);
+    }
+
+    // 2) Fill remaining space with evenly-spaced ticks
     let num_ticks = 4usize.min(bar_w / 8);
     for i in 0..=num_ticks {
         let pos = if num_ticks == 0 {
@@ -239,41 +273,46 @@ fn build_time_axis(
         } else {
             i * (bar_w.saturating_sub(1)) / num_ticks
         };
-        // Reverse-map: display position → real seconds for the label
-        // Use linear interpolation on display_total for tick placement
-        let display_secs =
-            (pos as i64 * mapper.display_total) / bar_w.max(1) as i64;
-        // Find the real seconds that maps to this display position
+        let display_secs = (pos as i64 * mapper.display_total) / bar_w.max(1) as i64;
         let secs = reverse_map_approx(mapper, display_secs, total_secs);
-        let label = if secs < 60 {
-            format!("{secs}s")
-        } else {
-            format!("{}m", secs / 60)
-        };
-        let start = pos.min(bar_w.saturating_sub(label.len()));
-        for (j, ch) in label.chars().enumerate() {
-            if start + j < bar_w {
-                axis[start + j] = ch;
-            }
-        }
+        let label = fmt_tick(secs);
+        place_tick(&mut axis, pos, &label);
     }
 
-    // Mark collapse regions on the axis
+    // 3) Mark collapse regions on the axis (only cells not occupied by ticks)
     let collapse_ranges = mapper.collapse_marker_ranges(bar_w * 2);
     for (vs, ve) in &collapse_ranges {
         let cell_start = vs / 2;
         let cell_end = ve.div_ceil(2);
         for item in axis.iter_mut().take(cell_end.min(bar_w)).skip(cell_start) {
-            *item = '\u{2508}'; // ┈ dashed line
+            if !item.1 {
+                *item = ('\u{2508}', false); // ┈ dashed line
+            }
         }
     }
 
+    // Build spans with tick labels brighter than background
     let label_part = " ".repeat(label_w + 1);
-    let axis_str: String = axis.into_iter().collect();
-    Line::from(vec![
-        Span::styled(label_part, Style::default()),
-        Span::styled(axis_str, Style::default().fg(Color::DarkGray)),
-    ])
+    let mut spans = vec![Span::styled(label_part, Style::default())];
+
+    let mut run_start = 0;
+    while run_start < bar_w {
+        let is_tick = axis[run_start].1;
+        let mut run_end = run_start + 1;
+        while run_end < bar_w && axis[run_end].1 == is_tick {
+            run_end += 1;
+        }
+        let s: String = axis[run_start..run_end].iter().map(|(c, _)| c).collect();
+        let style = if is_tick {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        spans.push(Span::styled(s, style));
+        run_start = run_end;
+    }
+
+    Line::from(spans)
 }
 
 /// Approximate reverse mapping: given display_secs, find real_secs.
@@ -676,7 +715,16 @@ pub(super) fn render_gantt_view(
 
     let block = Block::default()
         .title(" Timeline ")
-        .title_bottom(Line::from(" [t] normal view  [j/k] scroll ").right_aligned())
+        .title_bottom(
+            Line::from(vec![
+                Span::raw(" "),
+                Span::styled("[t]", Style::default().fg(Color::White)),
+                Span::styled(" normal view  ", Style::default().fg(Color::Gray)),
+                Span::styled("[j/k]", Style::default().fg(Color::White)),
+                Span::styled(" scroll ", Style::default().fg(Color::Gray)),
+            ])
+            .right_aligned(),
+        )
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Cyan));
 
